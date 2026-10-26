@@ -1,0 +1,1195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Two-point perspective drafting tool: horizon, vanishing points, patterned rays, snapping boxes with perspective-correct face divisions, PNG export.">
+<style>*,*::before,*::after{box-sizing:border-box}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}[hidden]{display:none!important}</style>
+<title>Two-Point Perspective Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap">
+</head>
+<body>
+<style>
+/* Layout: full-bleed drafting canvas on the left, a dense instrument panel on the right (stacks below on phones). */
+:root {
+  --chrome: #e6eaed;
+  --panel: #f5f7f8;
+  --ink: #1b252d;
+  --muted: #5b6873;
+  --rule: #d0d8de;
+  --accent: #17607a;
+  --accent-soft: #d6e8ef;
+  --desk: #cfd6db;
+  --paper: #ffffff;
+  --danger: #b43c2f;
+  --f-ui: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-data: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --chrome: #12181c; --panel: #172025; --ink: #dbe4ea; --muted: #8d9ca7; --rule: #2a363e;
+    --accent: #5fb7d6; --accent-soft: #1d3540; --desk: #2a3339; --paper: #ffffff; --danger: #ef7b6c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --chrome: #12181c; --panel: #172025; --ink: #dbe4ea; --muted: #8d9ca7; --rule: #2a363e;
+  --accent: #5fb7d6; --accent-soft: #1d3540; --desk: #2a3339; --paper: #ffffff; --danger: #ef7b6c;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--chrome); color: var(--ink); font-family: var(--f-ui); font-size: 13px; overflow: hidden; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: 100%; }
+.stage { position: relative; min-width: 0; overflow: hidden; background: var(--desk); }
+#cv { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; outline: none; }
+.toolbar {
+  position: absolute; top: 12px; left: max(12px, env(safe-area-inset-left, 0px));
+  display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 24px);
+}
+.tb {
+  font: 500 12px/1 var(--f-ui); letter-spacing: .02em; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 2px rgb(0 0 0 / .08);
+}
+.tb:hover { border-color: var(--accent); }
+.tb:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tb[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+.tb.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.tb:disabled { opacity: .45; cursor: default; }
+.status {
+  position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 10px; right: 12px;
+  display: flex; gap: 14px; flex-wrap: wrap; pointer-events: none;
+  font: 400 11px/1.3 var(--f-data); color: var(--ink);
+}
+.status span { background: color-mix(in srgb, var(--panel) 88%, transparent); padding: 4px 7px; border-radius: 4px; }
+.status .hint { font-family: var(--f-ui); font-size: 12px; }
+
+.panel { background: var(--panel); border-left: 1px solid var(--rule); overflow-y: auto; min-width: 0; }
+.ph {
+  padding-block: 16px 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--rule);
+}
+.ph h1 { margin: 0; font: 600 17px/1.15 var(--f-ui); letter-spacing: .01em; text-wrap: balance; }
+.ph p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+details.sec { border-bottom: 1px solid var(--rule); }
+details.sec > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  padding-block: 11px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  font: 600 11px/1 var(--f-ui); text-transform: uppercase; letter-spacing: .1em; color: var(--muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary::after { content: "+"; font: 400 15px/1 var(--f-data); }
+details.sec[open] > summary::after { content: "–"; }
+details.sec[open] > summary { color: var(--ink); }
+.sb {
+  display: grid; gap: 10px; padding-block: 2px 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; }
+.row > label, .row > .lab { color: var(--ink); min-width: 0; }
+.row.range input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+.num, .txt, select {
+  font: 400 12px/1 var(--f-data); color: var(--ink); background: var(--chrome);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 5px 6px; font-variant-numeric: tabular-nums;
+}
+.num { width: 76px; text-align: right; }
+.txt { width: 120px; letter-spacing: .12em; text-transform: uppercase; }
+select { font-family: var(--f-ui); font-size: 12px; max-width: 180px; }
+input[type=color] { width: 44px; height: 26px; padding: 0 2px; border: 1px solid var(--rule); border-radius: 4px; background: var(--chrome); cursor: pointer; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+.row.check { grid-template-columns: auto minmax(0, 1fr); }
+.row.check label { cursor: pointer; }
+.sub { font: 600 10.5px/1 var(--f-ui); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); padding-top: 6px; border-top: 1px dashed var(--rule); margin-top: 2px; }
+.note { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.note code { font-family: var(--f-data); font-size: 11px; color: var(--ink); }
+.seg { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; font: 600 12px/1 var(--f-ui); letter-spacing: .04em; padding: 8px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn { font: 500 12px/1 var(--f-ui); padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--chrome); color: var(--ink); cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.btn.warn { color: var(--danger); }
+.btn.solid { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pair .row { grid-template-columns: auto minmax(0, 1fr); }
+.pair .num { width: 100%; }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.patview { display: flex; gap: 2px; height: 14px; align-items: stretch; }
+.patview i { flex: 1; max-width: 10px; border-radius: 1px; }
+
+.modal { position: fixed; inset: 0; background: rgb(10 14 17 / .55); display: grid; place-items: center; padding: 16px; z-index: 10; }
+.modal .card { background: var(--panel); color: var(--ink); border-radius: 10px; padding: 16px; max-width: min(720px, 100%); max-height: 90%; overflow: auto; display: grid; gap: 10px; }
+.modal img { max-width: 100%; border: 1px solid var(--rule); background: repeating-conic-gradient(#ddd 0 25%, #fff 0 50%) 0 0 / 16px 16px; }
+.modal textarea { width: 100%; min-height: 200px; font: 11px/1.4 var(--f-data); background: var(--chrome); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--panel); padding: 9px 14px; border-radius: 6px; font-size: 12.5px; z-index: 11; }
+
+@media (max-width: 820px) {
+  body { overflow: auto; }
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62vh auto; height: auto; }
+  .panel { border-left: 0; border-top: 1px solid var(--rule); overflow: visible; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <main class="stage" id="stage">
+    <canvas id="cv" tabindex="0" aria-label="Perspective drawing canvas"></canvas>
+    <div class="toolbar" role="toolbar" aria-label="Canvas tools">
+      <button class="tb primary" id="tbAdd" type="button">Add box</button>
+      <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
+      <button class="tb" id="tbFit" type="button">Fit view</button>
+      <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z)">Undo</button>
+      <button class="tb" id="tbRedo" type="button" title="Redo (Ctrl/⌘ Shift Z)">Redo</button>
+      <button class="tb" id="tbExport" type="button">Export PNG</button>
+    </div>
+    <div class="status" aria-live="polite"><span id="stCoord">x 0 · y 0</span><span id="stZoom">100%</span><span class="hint" id="stHint">Drag empty space to pan · scroll or pinch to zoom</span></div>
+  </main>
+  <aside class="panel" id="panel">
+    <div class="ph">
+      <h1>Two-Point Perspective Studio</h1>
+      <p>Set the eye level, place two vanishing points, fan rays from each, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
+    </div>
+    <div id="sections"></div>
+  </aside>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="card" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <strong id="mTitle"></strong>
+    <div id="mBody"></div>
+    <div class="btns"><button class="btn" id="mClose" type="button">Close</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="fileIn" accept=".json,application/json" hidden>
+
+<script>
+(() => {
+"use strict";
+/* ---------- vector helpers ---------- */
+const deg = Math.PI / 180;
+const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+const mul = (a, k) => ({ x: a.x * k, y: a.y * k });
+const dot = (a, b) => a.x * b.x + a.y * b.y;
+const cross = (a, b) => a.x * b.y - a.y * b.x;
+const len = a => Math.hypot(a.x, a.y);
+const norm = a => { const l = len(a) || 1; return { x: a.x / l, y: a.y / l }; };
+const P = (x, y) => ({ x, y });
+function isect(p, d, q, e) {
+  const den = cross(d, e);
+  if (Math.abs(den) < 1e-12) return null;
+  const w = sub(q, p), t = cross(w, e) / den;
+  return { x: p.x + d.x * t, y: p.y + d.y * t, t, u: cross(w, d) / den };
+}
+function inPoly(pt, poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) c = !c;
+  }
+  return c;
+}
+function polyArea(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a.x * b.y - b.x * a.y; } return s / 2; }
+function segDist(p, a, b) { const ab = sub(b, a); const t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / (dot(ab, ab) || 1))); return len(sub(p, add(a, mul(ab, t)))); }
+const hex2rgb = h => { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+const shade = (rgb, k) => `rgb(${rgb.map(c => Math.round(Math.min(255, c * k))).join(",")})`;
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* ---------- state ---------- */
+const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
+const raysDefault = (ca, cb) => ({ show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center", a: st(ca, 1, "solid", 0.9), b: st(cb, 0.6, "solid", 0.55) });
+function defaultState() {
+  return {
+    horizon: { show: true, x: 0, y: -60, tilt: 0, color: "#1b252d", width: 1.5, dash: "solid", opacity: 1 },
+    vps: [
+      { dist: -1300, color: "#1d6fa5", size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
+      { dist: 1300, color: "#b8463a", size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") }
+    ],
+    linkRays: true, symmetric: false, lockFrame: false,
+    verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
+    cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
+    snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
+    boxes: [], sel: -1,
+    viewport: { show: true, x: -800, y: -450, w: 1600, h: 900, dim: true, clip: false, lockAspect: false },
+    export: { scale: 1, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
+  };
+}
+const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+
+function deepMerge(base, over) {
+  if (Array.isArray(base)) return Array.isArray(over) ? over : base;
+  if (base && typeof base === "object") {
+    const out = {};
+    for (const k of Object.keys(base)) out[k] = (over && k in over) ? deepMerge(base[k], over[k]) : base[k];
+    return out;
+  }
+  return (over === undefined || over === null || typeof over !== typeof base) ? base : over;
+}
+function normalize(s) {
+  const d = defaultState();
+  const out = deepMerge(d, s || {});
+  out.vps = [0, 1].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
+  out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).map(b => deepMerge(boxDefaults(), b));
+  if (out.sel >= out.boxes.length) out.sel = out.boxes.length - 1;
+  return out;
+}
+
+const STORE_KEY = "tpp-studio-v1";
+let state;
+try { const raw = localStorage.getItem(STORE_KEY); state = raw ? normalize(JSON.parse(raw)) : null; } catch (e) { state = null; }
+const freshStart = !state;
+if (!state) state = defaultState();
+
+const ui = { vp: 0, resetArm: false };
+const view = { x: 0, y: 0, z: 1 };
+
+/* ---------- geometry ---------- */
+function geo() {
+  const h = state.horizon, a = h.tilt * deg;
+  const u = P(Math.cos(a), Math.sin(a)), n = P(-u.y, u.x);
+  const O = P(h.x, h.y);
+  return { O, u, n, vp: state.vps.map(v => add(O, mul(u, v.dist))) };
+}
+function rayList(vi, g) {
+  const R = state.vps[vi].rays, V = g.vp[vi], out = [];
+  const pat = R.pattern || "A";
+  if (R.mode === "spacing") {
+    const M = add(g.O, mul(g.u, R.measure)), c = Math.max(0, Math.round(R.count));
+    for (let k = -c; k <= c; k++) {
+      const d = sub(add(M, mul(g.n, k * R.spacing)), V);
+      if (len(d) < 1e-6) continue;
+      const idx = R.from === "edge" ? k + c : Math.abs(k);
+      out.push({ d: norm(d), ch: pat[idx % pat.length] });
+    }
+  } else {
+    const toward = sub(g.O, V);
+    const base = len(toward) > 1e-6 ? norm(toward) : (vi === 0 ? g.u : mul(g.u, -1));
+    const c = Math.max(1, Math.round(R.count));
+    for (let i = 0; i < c; i++) {
+      const a = ((c === 1 ? 0 : -R.spread / 2 + R.spread * i / (c - 1)) + R.rotate) * deg;
+      const cs = Math.cos(a), sn = Math.sin(a);
+      const idx = R.from === "edge" ? i : Math.floor(Math.abs(i - (c - 1) / 2));
+      out.push({ d: P(base.x * cs - base.y * sn, base.x * sn + base.y * cs), ch: pat[idx % pat.length] });
+    }
+  }
+  return out;
+}
+// Box faces: corners 0..3 on a face; edges 0-1 & 2-3 run to VP1, 1-2 & 3-0 run to VP2.
+const edgeVP = (i, j) => ((i + j) === 3 ? 1 : 0);
+function meet(p, vpA, q, vpB) { return isect(p, sub(vpA, p), q, sub(vpB, q)); }
+function bottomFromDiag(i, Pi, Po, g) {
+  // returns [b0,b2] given corner i at Pi and its opposite corner at Po
+  if (i % 2 === 0) return i === 0 ? [Pi, Po] : [Po, Pi];
+  const P1 = i === 1 ? Pi : Po, P3 = i === 1 ? Po : Pi;
+  const b0 = meet(P1, g.vp[0], P3, g.vp[1]), b2 = meet(P1, g.vp[1], P3, g.vp[0]);
+  if (!b0 || !b2) return null;
+  return [P(b0.x, b0.y), P(b2.x, b2.y)];
+}
+function bottomQuad(bx, g) {
+  const b0 = bx.b0, b2 = bx.b2;
+  const mid = mul(add(b0, b2), 0.5);
+  const b1 = meet(b0, g.vp[0], b2, g.vp[1]) || mid;
+  const b3 = meet(b0, g.vp[1], b2, g.vp[0]) || mid;
+  return [b0, P(b1.x, b1.y), b2, P(b3.x, b3.y)];
+}
+function topQuad(B, bx, g) {
+  const a = bx.anchor, T = [];
+  const vert = (from, vpIdx, j) => {
+    const r = isect(from, sub(g.vp[vpIdx], from), B[j], g.n);
+    return r && len(sub(r, B[j])) < 1e6 ? P(r.x, r.y) : add(B[j], mul(g.n, -bx.h));
+  };
+  T[a] = add(B[a], mul(g.n, -bx.h));
+  const j1 = (a + 1) % 4, j3 = (a + 3) % 4, o = (a + 2) % 4;
+  T[j1] = vert(T[a], edgeVP(a, j1), j1);
+  T[j3] = vert(T[a], edgeVP(a, j3), j3);
+  T[o] = vert(T[j1], edgeVP(j1, o), o);
+  return T;
+}
+const FACES = [
+  { id: "bottom", v: ["b0", "b3", "b2", "b1"], shade: 0.62 },
+  { id: "top", v: ["t0", "t1", "t2", "t3"], shade: 1 },
+  { id: "s01", v: ["b0", "b1", "t1", "t0"], shade: 0.88 },
+  { id: "s12", v: ["b1", "b2", "t2", "t1"], shade: 0.75 },
+  { id: "s23", v: ["b2", "b3", "t3", "t2"], shade: 0.88 },
+  { id: "s30", v: ["b3", "b0", "t0", "t3"], shade: 0.75 }
+];
+function boxGeo(bx, g) {
+  const B = bottomQuad(bx, g), T = topQuad(B, bx, g);
+  const pt = s => (s[0] === "b" ? B : T)[+s[1]];
+  const s1 = Math.sign(dot(sub(B[1], B[0]), sub(g.vp[0], B[0]))) || 1;
+  const s3 = Math.sign(dot(sub(B[3], B[0]), sub(g.vp[1], B[0]))) || 1;
+  const s0 = Math.sign(dot(sub(g.vp[1], g.vp[0]), g.u)) || 1;
+  const H = s1 * s3 * s0;
+  const faces = FACES.map(f => { const pts = f.v.map(pt); return { id: f.id, shade: f.shade, pts, front: polyArea(pts) * H > 0 }; });
+  return { B, T, faces };
+}
+function faceLabel(id) {
+  const bx = state.boxes[state.sel];
+  if (id === "top") return "Top";
+  if (id === "bottom") return "Bottom";
+  if (!bx) return id;
+  const G = boxGeo(bx, geo());
+  const f = G.faces.find(x => x.id === id);
+  const vp = (id === "s01" || id === "s23") ? "VP1" : "VP2";
+  return `${f.front ? "Near" : "Far"} side, receding to ${vp}`;
+}
+
+/* ---------- snapping ---------- */
+let snapCache = { key: "", lines: [], pts: [] };
+function snapData() {
+  const key = JSON.stringify([state.horizon, state.vps, state.verticals]);
+  if (key === snapCache.key) return snapCache;
+  const g = geo(), lines = [];
+  state.vps.forEach((v, vi) => { if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: !v.rays.behind, fam: "r" + vi }); }); });
+  if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
+  const V = state.verticals;
+  if (V.show) for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
+  const pts = [], LIM = 4e4;
+  for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+    const A = lines[i], Bl = lines[j];
+    if (A.fam === Bl.fam) continue;
+    const r = isect(A.p, A.d, Bl.p, Bl.d);
+    if (!r || (A.fwd && r.t < -1e-6) || (Bl.fwd && r.u < -1e-6)) continue;
+    if (Math.abs(r.x - g.O.x) > LIM || Math.abs(r.y - g.O.y) > LIM) continue;
+    pts.push(P(r.x, r.y));
+  }
+  snapCache = { key, lines, pts };
+  return snapCache;
+}
+function snapPoint(w, excludeBox) {
+  const S = state.snap, r = S.radius / view.z;
+  let best = null, bd = r;
+  if (S.points) for (const p of snapData().pts) { const d = Math.hypot(p.x - w.x, p.y - w.y); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }
+  if (S.corners) { const g = geo(); state.boxes.forEach((bx, bi) => { if (bi === excludeBox) return; const G = boxGeo(bx, g); [...G.B, ...G.T].forEach(p => { const d = len(sub(p, w)); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }); }); }
+  if (best) return best;
+  if (S.lines) {
+    bd = r * 0.7;
+    for (const L of snapData().lines) {
+      const t = dot(sub(w, L.p), L.d); if (L.fwd && t < 0) continue;
+      const q = add(L.p, mul(L.d, t)), d = len(sub(q, w));
+      if (d < bd) { bd = d; best = { pt: q, kind: "line" }; }
+    }
+  }
+  return best;
+}
+function snapOnVertical(base, w) {
+  // snap a point moving on the vertical through base to ray/horizon crossings
+  const g = geo(), r = state.snap.radius / view.z;
+  const s = dot(sub(w, base), g.n), proj = add(base, mul(g.n, s));
+  let best = null, bd = r;
+  for (const L of snapData().lines) {
+    if (L.fam === "v") continue;
+    const x = isect(base, g.n, L.p, L.d);
+    if (!x || (L.fwd && x.u < 0)) continue;
+    const d = Math.abs(x.t - s); if (d < bd) { bd = d; best = P(x.x, x.y); }
+  }
+  return best ? { pt: best, s: dot(sub(best, base), g.n) } : { pt: proj, s, free: true };
+}
+
+/* ---------- drawing ---------- */
+const canvas = document.getElementById("cv"), ctx = canvas.getContext("2d");
+let dpr = 1, cw = 0, ch = 0, dirty = true, panelDirty = true, snapMark = null, hover = null, drag = null;
+const DASHES = { solid: [], dashed: [7, 5], dotted: [0.1, 3], dashdot: [9, 4, 0.1, 4] };
+function strokeStyle(c, s, k) {
+  c.strokeStyle = s.color; c.globalAlpha = s.opacity;
+  c.lineWidth = Math.max(s.width, 0.6 / k);
+  const w = Math.max(c.lineWidth * k, 1);
+  c.setLineDash((DASHES[s.dash] || []).map(x => x * w / k));
+  c.lineCap = s.dash === "dotted" || s.dash === "dashdot" ? "round" : "butt";
+}
+function farDist(p, b) {
+  let m = 0; for (const c of [P(b.x, b.y), P(b.x + b.w, b.y), P(b.x, b.y + b.h), P(b.x + b.w, b.y + b.h)]) m = Math.max(m, len(sub(c, p)));
+  return m + 10;
+}
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function drawGuides(c, k, b, inc, g) {
+  if (inc.cone && state.cone.show) {
+    const C = state.cone, d1 = state.vps[0].dist - C.cv, d2 = state.vps[1].dist - C.cv;
+    if (d1 * d2 < 0) {
+      const f = Math.sqrt(Math.abs(d1 * d2)), r = f * Math.tan(C.angle / 2 * deg), cv = add(g.O, mul(g.u, C.cv));
+      strokeStyle(c, { color: C.color, width: 1, dash: "dashed", opacity: 0.8 }, k);
+      c.beginPath(); c.arc(cv.x, cv.y, r, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); const a = 8 / k; c.moveTo(cv.x - a, cv.y); c.lineTo(cv.x + a, cv.y); c.moveTo(cv.x, cv.y - a); c.lineTo(cv.x, cv.y + a); c.setLineDash([]); c.stroke();
+    }
+  }
+  const V = state.verticals;
+  if (inc.verticals && V.show) {
+    const L = farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
+    const p = new Path2D();
+    for (let j = -V.count; j <= V.count; j++) {
+      const q = add(g.O, mul(g.u, V.offset + j * V.spacing));
+      const a = add(q, mul(g.n, -L)), e = add(q, mul(g.n, L));
+      p.moveTo(a.x, a.y); p.lineTo(e.x, e.y);
+    }
+    strokeStyle(c, V, k); c.stroke(p);
+  }
+  if (inc.rays) state.vps.forEach((v, vi) => {
+    const R = v.rays; if (!R.show) return;
+    const VP = g.vp[vi], L = farDist(VP, b), pa = new Path2D(), pb = new Path2D();
+    for (const r of rayList(vi, g)) {
+      if (r.ch === ".") continue;
+      const p = r.ch === "B" ? pb : pa;
+      const s = R.behind ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
+      p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
+    }
+    strokeStyle(c, R.b, k); c.stroke(pb);
+    strokeStyle(c, R.a, k); c.stroke(pa);
+  });
+  const H = state.horizon;
+  if (inc.horizon && H.show) {
+    const L = farDist(g.O, b), a = add(g.O, mul(g.u, -L)), e = add(g.O, mul(g.u, L));
+    strokeStyle(c, H, k); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(e.x, e.y); c.stroke();
+  }
+  c.globalAlpha = 1; c.setLineDash([]);
+}
+// Projective map from the unit square onto a face quad (p0→p1 is u, p0→p3 is v).
+// Lines of constant u or v land on lines through the face's vanishing points,
+// so equal fractions in the square become perspective-correct divisions.
+function quadMap(p) {
+  const [a0, a1, a2, a3] = p;
+  const sx = a0.x - a1.x + a2.x - a3.x, sy = a0.y - a1.y + a2.y - a3.y;
+  const dx1 = a1.x - a2.x, dx2 = a3.x - a2.x, dy1 = a1.y - a2.y, dy2 = a3.y - a2.y;
+  const den = dx1 * dy2 - dx2 * dy1;
+  const G = Math.abs(den) < 1e-12 ? 0 : (sx * dy2 - dx2 * sy) / den;
+  const H = Math.abs(den) < 1e-12 ? 0 : (dx1 * sy - sx * dy1) / den;
+  const A = a1.x - a0.x + G * a1.x, B = a3.x - a0.x + H * a3.x, C = a0.x;
+  const D = a1.y - a0.y + G * a1.y, E = a3.y - a0.y + H * a3.y, F = a0.y;
+  return (u, v) => { const w = G * u + H * v + 1; return P((A * u + B * v + C) / w, (D * u + E * v + F) / w); };
+}
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+function drawDivisions(c, f, bx, k, alphaMul) {
+  const D = bx.div; if (!D || !D.on) return;
+  const cap = f.id === "top" || f.id === "bottom";
+  if (cap ? !D.caps : !D.sides) return;
+  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp);
+  const m = quadMap(f.pts), base = Math.max(D.width, 0.5 / k);
+  c.save(); c.setLineDash([]); c.lineCap = "butt"; c.strokeStyle = D.color; c.globalAlpha = D.opacity * alphaMul;
+  const line = (a, b, w) => { c.lineWidth = w; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
+  const weight = (i, n) => D.hier ? Math.max(0.5 / k, base * Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1)) : base;
+  for (let i = 1; i < nu; i++) { const t = i / nu; line(m(t, 0), m(t, 1), weight(i, nu)); }
+  for (let j = 1; j < nv; j++) { const t = j / nv; line(m(0, t), m(1, t), weight(j, nv)); }
+  if (D.diag === "face") { line(m(0, 0), m(1, 1), base); line(m(1, 0), m(0, 1), base); }
+  else if (D.diag === "cells" || D.diag === "cellsOne") {
+    const w = base * 0.75;
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
+      line(m(u0, v0), m(u1, v1), w);
+      if (D.diag === "cells") line(m(u1, v0), m(u0, v1), w);
+    }
+  }
+  c.restore();
+}
+function drawBox(c, bx, g, k) {
+  const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill);
+  const vis = f => bx.faces[f.id] !== false;
+  const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
+  const poly = pts => { c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)); c.closePath(); };
+  const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
+  c.lineJoin = "round"; c.lineCap = "round"; c.strokeStyle = bx.stroke; c.lineWidth = lw;
+  const solid = bx.mode === "solid", ghost = bx.mode === "ghost", wire = bx.mode === "wire";
+  for (const f of backs) {
+    poly(f.pts);
+    if (!wire) { c.globalAlpha = solid ? 1 : bx.ghost * 0.6; c.fillStyle = shade(rgb, f.shade * 0.72); c.fill(); }
+    drawDivisions(c, f, bx, k, solid ? 1 : 0.45);
+    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
+    poly(f.pts);
+    c.globalAlpha = solid ? 1 : 0.75;
+    c.setLineDash(!solid && bx.dashHidden ? dash : []);
+    c.stroke();
+  }
+  for (const f of fronts) {
+    poly(f.pts);
+    if (!wire) { c.globalAlpha = solid ? 1 : bx.ghost; c.fillStyle = shade(rgb, f.shade); c.fill(); }
+    drawDivisions(c, f, bx, k, 1);
+    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
+    poly(f.pts);
+    c.globalAlpha = 1; c.setLineDash([]); c.stroke();
+  }
+  if (solid && bx.dashHidden) {
+    c.globalAlpha = 0.45; c.setLineDash(dash); c.lineWidth = lw * 0.75;
+    for (const f of backs) { poly(f.pts); c.stroke(); }
+  }
+  c.globalAlpha = 1; c.setLineDash([]);
+}
+function drawVPs(c, k, g) {
+  state.vps.forEach((v, i) => {
+    if (!v.show) return;
+    const p = g.vp[i], r = v.size / k;
+    c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = v.color; c.fillStyle = "#ffffff";
+    c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
+    c.fillStyle = v.color; c.font = `500 ${11 / k}px "IBM Plex Mono", monospace`;
+    c.fillText("VP" + (i + 1), p.x + r + 4 / k, p.y - r - 4 / k);
+  });
+}
+function drawScene(c, k, b, inc) {
+  const g = geo(), V = state.viewport;
+  c.save();
+  if (V.clip && inc.clipToView) { c.beginPath(); c.rect(V.x, V.y, V.w, V.h); c.clip(); }
+  drawGuides(c, k, b, inc, g);
+  if (inc.dots && state.snap.dots && state.snap.points) {
+    const pts = snapData().pts;
+    if (pts.length < 25000 && k > 0.12) {
+      c.fillStyle = cssVar("--muted") || "#5b6873"; c.globalAlpha = 0.55;
+      const s = 2.2 / k;
+      for (const p of pts) c.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+      c.globalAlpha = 1;
+    }
+  }
+  c.restore();
+  if (inc.boxes) state.boxes.forEach(bx => drawBox(c, bx, g, k));
+  if (inc.vps) drawVPs(c, k, g);
+}
+
+const toS = w => P(w.x * view.z + view.x, w.y * view.z + view.y);
+const toW = s => P((s.x - view.x) / view.z, (s.y - view.y) / view.z);
+function visibleBounds() { const a = toW(P(0, 0)), b = toW(P(cw, ch)); return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y }; }
+
+function frame() {
+  requestAnimationFrame(frame);
+  if (panelDirty) { panelDirty = false; refreshPanel(); }
+  if (!dirty) return;
+  dirty = false;
+  const r = canvas.getBoundingClientRect();
+  const nd = window.devicePixelRatio || 1;
+  if (r.width !== cw || r.height !== ch || nd !== dpr) { cw = r.width; ch = r.height; dpr = nd; canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr); }
+  const desk = cssVar("--desk"), paper = cssVar("--paper"), accent = cssVar("--accent"), ink = cssVar("--ink");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalAlpha = 1;
+  const V = state.viewport;
+  ctx.fillStyle = (V.show && V.dim) ? desk : paper; ctx.fillRect(0, 0, cw, ch);
+  ctx.save(); ctx.translate(view.x, view.y); ctx.scale(view.z, view.z);
+  if (V.show && V.dim) { ctx.fillStyle = paper; ctx.fillRect(V.x, V.y, V.w, V.h); }
+  drawScene(ctx, view.z, visibleBounds(), { rays: true, verticals: true, horizon: true, cone: true, boxes: true, vps: true, dots: true, clipToView: V.show });
+  ctx.restore();
+
+  const g = geo();
+  // export area frame
+  if (V.show) {
+    const a = toS(P(V.x, V.y)), w = V.w * view.z, h = V.h * view.z;
+    ctx.setLineDash([]); ctx.lineWidth = 1.5; ctx.strokeStyle = accent; ctx.strokeRect(a.x, a.y, w, h);
+    ctx.font = '500 11px "IBM Plex Mono", monospace'; ctx.fillStyle = accent;
+    ctx.fillText(`EXPORT  ${V.w} × ${V.h}`, a.x, a.y - 7);
+    ctx.fillStyle = paper;
+    for (const [hx, hy] of VHANDLES) { const p = P(a.x + w * (hx + 1) / 2, a.y + h * (hy + 1) / 2); ctx.fillRect(p.x - 4, p.y - 4, 8, 8); ctx.strokeRect(p.x - 4, p.y - 4, 8, 8); }
+  }
+  // horizon anchor
+  if (state.horizon.show && !state.lockFrame) {
+    const o = toS(g.O); ctx.fillStyle = paper; ctx.strokeStyle = ink; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(o.x, o.y - 6); ctx.lineTo(o.x + 6, o.y); ctx.lineTo(o.x, o.y + 6); ctx.lineTo(o.x - 6, o.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  // selected box handles
+  const bx = state.boxes[state.sel];
+  if (bx) {
+    const G = boxGeo(bx, g);
+    ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); for (let i = 0; i < 4; i++) { const a = toS(G.B[i]), t = toS(G.T[i]); ctx.moveTo(a.x, a.y); ctx.lineTo(t.x, t.y); } ctx.stroke(); ctx.setLineDash([]);
+    ctx.lineWidth = 1.5;
+    G.B.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? accent : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
+    G.T.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? accent : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+  }
+  if (snapMark) {
+    const s = toS(snapMark.pt); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(s.x, s.y, snapMark.kind === "line" ? 7 : 10, 0, Math.PI * 2); ctx.stroke();
+  }
+  document.getElementById("stZoom").textContent = Math.round(view.z * 100) + "%";
+}
+const VHANDLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+const redraw = () => { dirty = true; };
+const touch = () => { dirty = true; panelDirty = true; };
+
+/* ---------- boxes ---------- */
+function makeBox(g) {
+  const bx = boxDefaults();
+  const O = g.O, below = add(O, mul(g.n, 330));
+  const b1 = add(below, mul(sub(g.vp[0], below), 0.26)), b3 = add(below, mul(sub(g.vp[1], below), 0.22));
+  const b2 = meet(b1, g.vp[1], b3, g.vp[0]) || add(below, mul(g.n, -80));
+  bx.b0 = below; bx.b2 = P(b2.x, b2.y); bx.h = 240;
+  bx.name = "Box " + (state.boxes.length + 1);
+  return bx;
+}
+function addBox() { const bx = makeBox(geo()); if (state.boxes.length) { const s = 120 * state.boxes.length; bx.b0 = add(bx.b0, P(s, 0)); bx.b2 = add(bx.b2, P(s, 0)); } state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
+function dupBox() { const bx = state.boxes[state.sel]; if (!bx) return; const c = clone(bx); const d = mul(geo().u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch(); }
+function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
+
+/* ---------- history & persistence ---------- */
+let undoStack = [], redoStack = [], lastSaved = JSON.stringify(state);
+function persist(s) { try { localStorage.setItem(STORE_KEY, s); } catch (e) { /* storage unavailable */ } }
+function commit() {
+  const s = JSON.stringify(state); if (s === lastSaved) return;
+  undoStack.push(lastSaved); if (undoStack.length > 200) undoStack.shift();
+  redoStack = []; lastSaved = s; persist(s); updateHistoryButtons();
+}
+function restore(s) { state = normalize(JSON.parse(s)); lastSaved = JSON.stringify(state); persist(lastSaved); touch(); updateHistoryButtons(); }
+function doUndo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(state)); restore(undoStack.pop()); }
+function doRedo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(state)); restore(redoStack.pop()); }
+function updateHistoryButtons() { document.getElementById("tbUndo").disabled = !undoStack.length; document.getElementById("tbRedo").disabled = !redoStack.length; }
+
+/* ---------- binding ---------- */
+const resolve = path => path.replace("$v", ui.vp).replace("$b", state.sel);
+function getP(path) { return resolve(path).split(".").reduce((o, k) => (o == null ? undefined : o[k]), state); }
+function rawSet(parts, val) { let o = state; for (let i = 0; i < parts.length - 1; i++) { o = o[parts[i]]; if (o == null) return; } o[parts[parts.length - 1]] = val; }
+function setP(path, val) {
+  const parts = resolve(path).split(".");
+  const old = getP(path);
+  rawSet(parts, val);
+  if (path.startsWith("vps.$v.rays.") && state.linkRays && !path.endsWith(".color")) { const o = parts.slice(); o[1] = String(1 - ui.vp); rawSet(o, val); }
+  if (state.symmetric && (path === "vps.0.dist" || path === "vps.1.dist")) state.vps[path === "vps.0.dist" ? 1 : 0].dist = -val;
+  const V = state.viewport;
+  if (V.lockAspect && typeof old === "number" && old > 0) {
+    if (path === "viewport.w") V.h = Math.max(1, Math.round(V.h * val / old));
+    if (path === "viewport.h") V.w = Math.max(1, Math.round(V.w * val / old));
+  }
+  touch();
+}
+
+const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"]];
+const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["custom", "Custom…"]];
+const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"]];
+const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
+const hasBox = () => state.sel >= 0 && !!state.boxes[state.sel];
+const hasDiv = () => hasBox() && state.boxes[state.sel].div.on;
+const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
+const styleRows = (pre, title) => [
+  { t: "sub", label: title },
+  { t: "color", bind: pre + ".color", label: "Color" },
+  { t: "range", bind: pre + ".width", label: "Weight", min: 0.25, max: 8, step: 0.25 },
+  { t: "select", bind: pre + ".dash", label: "Line style", options: DASH },
+  { t: "range", bind: pre + ".opacity", label: "Opacity", min: 0, max: 1, step: 0.05 }
+];
+const schema = [
+  { id: "horizon", title: "Horizon line", rows: [
+    { t: "check", bind: "horizon.show", label: "Show horizon line" },
+    { t: "range", bind: "horizon.y", label: "Eye level (Y)", min: -3000, max: 3000, step: 1 },
+    { t: "range", bind: "horizon.x", label: "Center point (X)", min: -3000, max: 3000, step: 1 },
+    { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1 },
+    { t: "color", bind: "horizon.color", label: "Color" },
+    { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25 },
+    { t: "select", bind: "horizon.dash", label: "Line style", options: DASH },
+    { t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05 },
+    { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame." }
+  ]},
+  { id: "vps", title: "Vanishing points", rows: [
+    { t: "range", bind: "vps.0.dist", label: "VP1 distance from center", min: -8000, max: 8000, step: 1 },
+    { t: "range", bind: "vps.1.dist", label: "VP2 distance from center", min: -8000, max: 8000, step: 1 },
+    { t: "check", bind: "symmetric", label: "Mirror VPs around the center point" },
+    { t: "check", bind: "lockFrame", label: "Lock horizon and VPs in place" },
+    { t: "check", bind: "vps.0.show", label: "Show VP1 marker" },
+    { t: "color", bind: "vps.0.color", label: "VP1 marker color" },
+    { t: "check", bind: "vps.1.show", label: "Show VP2 marker" },
+    { t: "color", bind: "vps.1.color", label: "VP2 marker color" },
+    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, also: "vps.1.size" },
+    { t: "sub", label: "Cone of vision" },
+    { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)" },
+    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1 },
+    { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1 },
+    { t: "color", bind: "cone.color", label: "Color" },
+    { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched." }
+  ]},
+  { id: "rays", title: "Rays", rows: [
+    { t: "seg" },
+    { t: "check", bind: "linkRays", label: "Apply edits to both VPs (colors stay separate)" },
+    { t: "check", bind: "vps.$v.rays.show", label: "Show rays from this VP" },
+    { t: "select", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing on a measuring line"], ["angle", "Even angles"]] },
+    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? "Rays above and below horizon" : "Ray count", min: 1, max: 120, step: 1 },
+    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, when: isSpacing },
+    { t: "range", bind: "vps.$v.rays.measure", label: "Measuring line position", min: -6000, max: 6000, step: 1, when: isSpacing },
+    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, when: () => !isSpacing() },
+    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, when: () => !isSpacing() },
+    { t: "check", bind: "vps.$v.rays.behind", label: "Extend rays behind the VP" },
+    { t: "sub", label: "Alternating pattern" },
+    { t: "preset" },
+    { t: "text", bind: "vps.$v.rays.pattern", label: "Sequence" },
+    { t: "patview" },
+    { t: "select", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon, mirrored outward"], ["edge", "Outermost ray"]] },
+    { t: "note", html: "<code>A</code> draws a primary ray, <code>B</code> a secondary ray, <code>.</code> skips one. The sequence repeats." },
+    ...styleRows("vps.$v.rays.a", "Style A · primary"),
+    ...styleRows("vps.$v.rays.b", "Style B · secondary")
+  ]},
+  { id: "verticals", title: "Vertical guides", open: false, rows: [
+    { t: "check", bind: "verticals.show", label: "Show verticals (perpendicular to horizon)" },
+    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1 },
+    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1 },
+    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1 },
+    { t: "color", bind: "verticals.color", label: "Color" },
+    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25 },
+    { t: "select", bind: "verticals.dash", label: "Line style", options: DASH },
+    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05 }
+  ]},
+  { id: "boxes", title: "Rectangular prisms", rows: [
+    { t: "boxlist" },
+    { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
+    { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
+    { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
+    { t: "color", bind: "boxes.$b.stroke", label: "Edge color", when: hasBox },
+    { t: "color", bind: "boxes.$b.fill", label: "Face color", when: hasBox },
+    { t: "range", bind: "boxes.$b.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, when: hasBox },
+    { t: "sub", label: "Faces", when: hasBox },
+    ...["top", "bottom", "s01", "s23", "s12", "s30"].map(id => ({ t: "check", bind: "boxes.$b.faces." + id, label: () => faceLabel(id), when: hasBox })),
+    { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
+    { t: "sub", label: "Face divisions", when: hasBox },
+    { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
+    { t: "select", bind: "boxes.$b.div.vp", label: "Lines to the VPs", num: true, options: PARTS, when: hasDiv },
+    { t: "select", bind: "boxes.$b.div.vert", label: "Vertical lines on sides", num: true, options: PARTS, when: hasDiv },
+    { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: [["none", "None"], ["face", "Corner to corner (X)"], ["cells", "Every cell (X)"], ["cellsOne", "Every cell, one way"]], when: hasDiv },
+    { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
+    { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
+    { t: "check", bind: "boxes.$b.div.hier", label: "Thinner lines at each finer split", when: hasDiv },
+    { t: "color", bind: "boxes.$b.div.color", label: "Line color", when: hasDiv },
+    { t: "range", bind: "boxes.$b.div.width", label: "Line weight", min: 0.25, max: 6, step: 0.25, when: hasDiv },
+    { t: "range", bind: "boxes.$b.div.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, when: hasDiv },
+    { t: "note", html: "Halves, quarters and eighths are measured in depth, not on screen, so each part shrinks as it recedes toward its vanishing point.", when: hasDiv },
+    { t: "btns", items: [["Use these divisions on all boxes", () => { const d = state.boxes[state.sel].div; state.boxes.forEach(b => b.div = clone(d)); commit(); touch(); toast("Divisions copied to every box"); }, ""]], when: hasDiv }
+  ]},
+  { id: "export", title: "Export area", rows: [
+    { t: "check", bind: "viewport.show", label: "Show export area" },
+    { t: "pair", items: [{ bind: "viewport.w", label: "W" }, { bind: "viewport.h", label: "H" }] },
+    { t: "pair", items: [{ bind: "viewport.x", label: "X" }, { bind: "viewport.y", label: "Y" }] },
+    { t: "sizepreset" },
+    { t: "btns", items: [["Center on horizon", () => { const g = geo(), V = state.viewport; V.x = Math.round(g.O.x - V.w / 2); V.y = Math.round(g.O.y - V.h / 2); commit(); touch(); }, ""], ["Swap W / H", () => { const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; [V.w, V.h] = [V.h, V.w]; V.x = Math.round(cx - V.w / 2); V.y = Math.round(cy - V.h / 2); commit(); touch(); }, ""]] },
+    { t: "check", bind: "viewport.lockAspect", label: "Lock aspect ratio" },
+    { t: "check", bind: "viewport.dim", label: "Shade the area outside" },
+    { t: "check", bind: "viewport.clip", label: "Clip guides to the export area" },
+    { t: "sub", label: "PNG output" },
+    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"]] },
+    { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]] },
+    { t: "check", bind: "export.rays", label: "Include rays" },
+    { t: "check", bind: "export.verticals", label: "Include vertical guides" },
+    { t: "check", bind: "export.horizon", label: "Include horizon line" },
+    { t: "check", bind: "export.vps", label: "Include VP markers" },
+    { t: "check", bind: "export.cone", label: "Include cone of vision" },
+    { t: "check", bind: "export.boxes", label: "Include boxes" },
+    { t: "btns", items: [["Export PNG", exportPNG, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
+  ]},
+  { id: "snap", title: "Snapping", open: false, rows: [
+    { t: "check", bind: "snap.on", label: "Snapping on" },
+    { t: "range", bind: "snap.radius", label: "Snap radius (screen px)", min: 4, max: 40, step: 1 },
+    { t: "check", bind: "snap.points", label: "Snap to ray intersections" },
+    { t: "check", bind: "snap.lines", label: "Slide along rays when no crossing is near" },
+    { t: "check", bind: "snap.corners", label: "Snap to other boxes' corners" },
+    { t: "check", bind: "snap.dots", label: "Mark intersections on the canvas" },
+    { t: "btns", items: [["Reset everything", resetAll, "warn"]] }
+  ]}
+];
+
+const rows = [];
+function idFor(bind) { return "f-" + bind.replace(/[$.]/g, "-"); }
+function fmt(v, step) { const d = (String(step).split(".")[1] || "").length; return (+v).toFixed(d); }
+function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v); } kids.forEach(k => e.append(k)); return e; }
+const labelText = r => typeof r.label === "function" ? r.label() : r.label;
+
+function makeRow(r) {
+  let node, update;
+  const id = r.bind ? idFor(r.bind) : "";
+  const onCommit = () => commit();
+  switch (r.t) {
+    case "range": {
+      const lab = el("label", { for: id + "-n" });
+      const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step) });
+      const rng = el("input", { type: "range", id, min: String(r.min), max: String(r.max), step: String(r.step), "aria-label": labelText(r) });
+      const set = v => { if (!Number.isFinite(v)) return; setP(r.bind, v); if (r.also) setP(r.also, v); };
+      rng.addEventListener("input", () => set(+rng.value));
+      num.addEventListener("input", () => { if (num.value !== "") set(+num.value); });
+      rng.addEventListener("change", onCommit); num.addEventListener("change", onCommit);
+      node = el("div", { class: "row range" }, lab, num, rng);
+      update = () => { lab.textContent = labelText(r); const v = getP(r.bind); if (v === undefined) return; if (document.activeElement !== num) num.value = fmt(v, r.step); rng.value = v; };
+      break;
+    }
+    case "color": {
+      const inp = el("input", { type: "color", id });
+      inp.addEventListener("input", () => setP(r.bind, inp.value)); inp.addEventListener("change", onCommit);
+      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), inp);
+      update = () => { const v = getP(r.bind); if (v) inp.value = v; };
+      break;
+    }
+    case "check": {
+      const inp = el("input", { type: "checkbox", id }); const lab = el("label", { for: id });
+      inp.addEventListener("change", () => { setP(r.bind, inp.checked); commit(); });
+      node = el("div", { class: "row check" }, inp, lab);
+      update = () => { lab.textContent = labelText(r); inp.checked = !!getP(r.bind); };
+      break;
+    }
+    case "select": {
+      const sel = el("select", { id }); r.options.forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t)));
+      sel.addEventListener("change", () => { setP(r.bind, r.num ? +sel.value : sel.value); commit(); });
+      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), sel);
+      update = () => { const v = getP(r.bind); if (v !== undefined) sel.value = String(v); };
+      break;
+    }
+    case "text": {
+      const inp = el("input", { class: "txt", type: "text", id, maxlength: "32", spellcheck: "false", autocomplete: "off" });
+      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^AB.]/g, ""); if (v) setP(r.bind, v); });
+      inp.addEventListener("change", () => { inp.value = getP(r.bind); commit(); });
+      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), inp);
+      update = () => { if (document.activeElement !== inp) inp.value = getP(r.bind) || ""; };
+      break;
+    }
+    case "preset": {
+      const sel = el("select", { id: "f-pattern-preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+      sel.addEventListener("change", () => { if (sel.value !== "custom") { setP("vps.$v.rays.pattern", sel.value); commit(); } else document.getElementById(idFor("vps.$v.rays.pattern")).focus(); });
+      node = el("div", { class: "row" }, el("label", { for: "f-pattern-preset" }, "Preset"), sel);
+      update = () => { const p = getP("vps.$v.rays.pattern"); sel.value = PATTERNS.some(x => x[0] === p) ? p : "custom"; };
+      break;
+    }
+    case "patview": {
+      const box = el("div", { class: "patview", "aria-hidden": "true" });
+      node = el("div", {}, box);
+      update = () => {
+        const R = state.vps[ui.vp].rays, p = R.pattern || "A"; box.innerHTML = "";
+        for (let i = 0; i < 24; i++) { const c = p[i % p.length]; const s = c === "." ? null : R[c === "B" ? "b" : "a"]; const b = el("i"); b.style.background = s ? s.color : "transparent"; b.style.opacity = s ? Math.max(0.25, s.opacity) : 1; b.style.transform = `scaleX(${s ? Math.min(1, 0.25 + s.width / 3) : 1})`; box.append(b); }
+      };
+      break;
+    }
+    case "seg": {
+      const b0 = el("button", { type: "button" }, "VP1 rays"), b1 = el("button", { type: "button" }, "VP2 rays");
+      [b0, b1].forEach((b, i) => b.addEventListener("click", () => { ui.vp = i; touch(); }));
+      node = el("div", { class: "seg", role: "group", "aria-label": "Choose vanishing point" }, b0, b1);
+      update = () => { b0.setAttribute("aria-pressed", ui.vp === 0); b1.setAttribute("aria-pressed", ui.vp === 1); };
+      break;
+    }
+    case "sub": node = el("div", { class: "sub" }, r.label); update = () => {}; break;
+    case "note": node = el("div", { class: "note" }); node.innerHTML = r.html; update = () => {}; break;
+    case "btns": {
+      const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, t); b.addEventListener("click", fn); return [b, en]; });
+      node = el("div", { class: "btns" }, ...btns.map(x => x[0]));
+      update = () => btns.forEach(([b, en]) => { b.disabled = en ? !en() : false; if (b.textContent.startsWith("Reset") || b.textContent.startsWith("Click again")) b.textContent = ui.resetArm ? "Click again to reset" : "Reset everything"; });
+      break;
+    }
+    case "boxlist": {
+      node = el("div", { class: "btns" }); let sig = "";
+      update = () => {
+        const s = JSON.stringify([state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
+        if (!state.boxes.length) { node.append(el("div", { class: "note" }, "No boxes yet. Add one and it lands below the horizon, ready to drag.")); return; }
+        state.boxes.forEach((b, i) => { const sw = el("span", { class: "swatch" }); sw.style.background = b.fill; sw.style.outline = "1px solid " + b.stroke; const btn = el("button", { type: "button", class: "btn" + (i === state.sel ? " on" : ""), "aria-pressed": String(i === state.sel) }, sw, b.name); btn.addEventListener("click", () => { state.sel = i; touch(); redraw(); }); node.append(btn); });
+      };
+      break;
+    }
+    case "pair": {
+      const cells = r.items.map(it => { const iid = idFor(it.bind); const inp = el("input", { class: "num", type: "number", id: iid, step: "1" }); inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) { const v = Math.round(+inp.value); if (it.bind.endsWith(".w") || it.bind.endsWith(".h")) { if (v >= 1) setP(it.bind, v); } else setP(it.bind, v); } }); inp.addEventListener("change", onCommit); return [el("div", { class: "row" }, el("label", { for: iid }, it.label), inp), inp, it]; });
+      node = el("div", { class: "pair" }, ...cells.map(c => c[0]));
+      update = () => cells.forEach(([, inp, it]) => { if (document.activeElement !== inp) inp.value = getP(it.bind); });
+      break;
+    }
+    case "sizepreset": {
+      const sel = el("select", { id: "f-size-preset" }); PRESETS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+      sel.addEventListener("change", () => { if (!sel.value) return; const [w, h] = sel.value.split("x").map(Number); const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; V.w = w; V.h = h; V.x = Math.round(cx - w / 2); V.y = Math.round(cy - h / 2); sel.value = ""; commit(); touch(); });
+      node = el("div", { class: "row" }, el("label", { for: "f-size-preset" }, "Size preset"), sel);
+      update = () => {};
+      break;
+    }
+  }
+  rows.push({ r, node, update });
+  return node;
+}
+function buildPanel() {
+  const root = document.getElementById("sections");
+  for (const sec of schema) {
+    const body = el("div", { class: "sb" });
+    sec.rows.forEach(r => body.append(makeRow(r)));
+    const det = el("details", { class: "sec" }, el("summary", {}, sec.title), body);
+    if (sec.open !== false) det.open = true;
+    root.append(det);
+  }
+}
+function refreshPanel() {
+  for (const { r, node, update } of rows) {
+    const show = r.when ? r.when() : true;
+    node.hidden = !show;
+    if (show) update();
+  }
+  document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
+}
+
+/* ---------- export ---------- */
+let downloads = null;
+(async () => { try { downloads = window.claude && window.claude.use ? await window.claude.use("downloads") : null; } catch (e) { downloads = null; } })();
+function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => t.hidden = true, 2600); }
+function showModal(title, body) { document.getElementById("mTitle").textContent = title; const b = document.getElementById("mBody"); b.innerHTML = ""; b.append(body); document.getElementById("modal").hidden = false; }
+document.getElementById("mClose").addEventListener("click", () => document.getElementById("modal").hidden = true);
+document.getElementById("modal").addEventListener("click", e => { if (e.target.id === "modal") e.target.hidden = true; });
+
+function renderExport() {
+  const V = state.viewport, E = state.export;
+  let s = E.scale; const maxPx = 64e6; if (V.w * V.h * s * s > maxPx) s = Math.sqrt(maxPx / (V.w * V.h));
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(V.w * s)); c.height = Math.max(1, Math.round(V.h * s));
+  const x = c.getContext("2d");
+  if (E.bg === "white") { x.fillStyle = "#ffffff"; x.fillRect(0, 0, c.width, c.height); }
+  x.scale(s, s); x.translate(-V.x, -V.y);
+  drawScene(x, s, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
+  return c;
+}
+async function offerFile(filename, data, fallback) {
+  if (downloads) {
+    try { await downloads.save({ filename, data }); toast("Saved " + filename); return; }
+    catch (e) { if (e && e.code === "declined") { toast("Save cancelled"); return; } if (e && e.code === "rate_limited") { toast("A save prompt is already open"); return; } }
+  }
+  if (!window.claude) {
+    // Hosted on a normal website: a plain download link works.
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], { type: "application/json" }));
+    const a = el("a", { href: url, download: filename }); document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000); toast("Saved " + filename); return;
+  }
+  fallback();
+}
+function exportPNG() {
+  const c = renderExport();
+  c.toBlob(blob => {
+    if (!blob) { toast("Export failed. Try a lower resolution."); return; }
+    offerFile("perspective-" + state.viewport.w + "x" + state.viewport.h + ".png", blob, () => {
+      const img = el("img", { alt: "Exported perspective drawing", src: c.toDataURL("image/png") });
+      showModal(`Export ${c.width} × ${c.height} px`, el("div", { style: "display:grid;gap:8px" }, el("div", { class: "note" }, "Right-click (or long-press) the image and choose Save Image."), img));
+    });
+  }, "image/png");
+}
+function saveSetup() {
+  const json = JSON.stringify(state, null, 2);
+  offerFile("perspective-setup.json", json, () => {
+    const ta = el("textarea", { readonly: "readonly", "aria-label": "Setup JSON" }); ta.value = json;
+    const copy = el("button", { class: "btn", type: "button" }, "Copy");
+    copy.addEventListener("click", () => { navigator.clipboard.writeText(json).then(() => toast("Copied setup"), () => { ta.focus(); ta.select(); }); });
+    showModal("Setup file", el("div", { style: "display:grid;gap:8px" }, el("div", { class: "note" }, "Copy this text and keep it as a .json file. Load it back with Load setup."), ta, copy));
+  });
+}
+document.getElementById("fileIn").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { try { const s = normalize(JSON.parse(rd.result)); state = s; commit(); touch(); fitView(); toast("Setup loaded"); } catch (err) { toast("That file is not a setup saved from this tool."); } };
+  rd.readAsText(f); e.target.value = "";
+});
+function resetAll() {
+  if (!ui.resetArm) { ui.resetArm = true; touch(); setTimeout(() => { ui.resetArm = false; touch(); }, 3000); return; }
+  ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
+}
+
+/* ---------- view ---------- */
+function fitView() {
+  const r = canvas.getBoundingClientRect(); cw = r.width; ch = r.height;
+  const g = geo(), V = state.viewport;
+  let xs = [V.x, V.x + V.w, g.vp[0].x, g.vp[1].x], ys = [V.y, V.y + V.h, g.vp[0].y, g.vp[1].y];
+  state.boxes.forEach(b => { const G = boxGeo(b, g); [...G.B, ...G.T].forEach(p => { xs.push(p.x); ys.push(p.y); }); });
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const z = Math.min((cw - 60) / Math.max(1, x1 - x0), (ch - 120) / Math.max(1, y1 - y0));
+  view.z = Math.max(0.02, Math.min(8, z));
+  view.x = cw / 2 - (x0 + x1) / 2 * view.z; view.y = ch / 2 - (y0 + y1) / 2 * view.z + 10;
+  redraw();
+}
+function zoomAt(s, f) { const w = toW(s); view.z = Math.max(0.02, Math.min(12, view.z * f)); view.x = s.x - w.x * view.z; view.y = s.y - w.y * view.z; redraw(); }
+
+/* ---------- pointer interaction ---------- */
+const pointers = new Map();
+let pinch = null;
+const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX - r.left, e.clientY - r.top); };
+function hitTest(s) {
+  const g = geo(), w = toW(s);
+  const bx = state.boxes[state.sel];
+  if (bx) {
+    const G = boxGeo(bx, g);
+    for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
+    for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
+  }
+  if (!state.lockFrame) {
+    for (let i = 0; i < 2; i++) if (len(sub(toS(g.vp[i]), s)) < state.vps[i].size + 7) return { type: "vp", i };
+    if (state.horizon.show && len(sub(toS(g.O), s)) < 9) return { type: "anchor" };
+  }
+  const V = state.viewport;
+  if (V.show) {
+    const a = toS(P(V.x, V.y)), W = V.w * view.z, H = V.h * view.z;
+    for (const [hx, hy] of VHANDLES) { const p = P(a.x + W * (hx + 1) / 2, a.y + H * (hy + 1) / 2); if (Math.abs(p.x - s.x) < 8 && Math.abs(p.y - s.y) < 8) return { type: "vresize", hx, hy }; }
+  }
+  for (let bi = state.boxes.length - 1; bi >= 0; bi--) {
+    const b = state.boxes[bi], G = boxGeo(b, g);
+    const faces = [...G.faces.filter(f => f.front), ...G.faces.filter(f => !f.front)].filter(f => b.faces[f.id] !== false);
+    const f = faces.find(f => inPoly(w, f.pts));
+    if (f) return { type: "body", bi, face: f.id };
+  }
+  if (V.show) {
+    const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
+    const corners = [a, P(b.x, a.y), b, P(a.x, b.y)];
+    for (let i = 0; i < 4; i++) if (segDist(s, corners[i], corners[(i + 1) % 4]) < 5) return { type: "vmove" };
+  }
+  if (state.horizon.show && !state.lockFrame) {
+    const d = Math.abs(dot(sub(w, g.O), g.n)) * view.z;
+    if (d < 6) return { type: "horizon" };
+  }
+  return { type: "pan" };
+}
+const HINTS = {
+  pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
+  top: "Drag to set the box height · snaps where rays cross this edge",
+  bottom: "Drag the base corner · snaps to ray intersections · hold Alt to place freely",
+  vp: "Drag the vanishing point along the horizon",
+  anchor: "Drag to move the horizon and both VPs together",
+  horizon: "Drag to raise or lower eye level",
+  vresize: "Drag to resize the export area",
+  vmove: "Drag the edge to move the export area",
+  body: "Drag to move the box · Shift-click a face to hide it"
+};
+const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", body: "move" };
+
+canvas.addEventListener("pointerdown", e => {
+  canvas.focus({ preventScroll: true });
+  canvas.setPointerCapture(e.pointerId);
+  const s = spos(e); pointers.set(e.pointerId, s);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinch = { d: len(sub(a, b)), mid: mul(add(a, b), 0.5), z: view.z, vx: view.x, vy: view.y };
+    drag = null; snapMark = null; return;
+  }
+  if (pointers.size > 2) return;
+  const hit = hitTest(s), w = toW(s), g = geo();
+  if (e.shiftKey && hit.type === "body") {
+    const b = state.boxes[hit.bi]; b.faces[hit.face] = false; state.sel = hit.bi; commit(); touch(); return;
+  }
+  drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
+  if (hit.type === "bottom" || hit.type === "top") {
+    const bx = state.boxes[state.sel], G = boxGeo(bx, g);
+    if (hit.type === "bottom") { const o = (hit.i + 2) % 4; bx.anchor = o; bx.h = dot(sub(G.B[o], G.T[o]), g.n); drag.fixed = G.B[o]; }
+    else { bx.anchor = hit.i; bx.h = dot(sub(G.B[hit.i], G.T[hit.i]), g.n); drag.base = G.B[hit.i]; }
+  } else if (hit.type === "body") {
+    state.sel = hit.bi; const bx = state.boxes[hit.bi];
+    drag.b0 = { ...bx.b0 }; drag.b2 = { ...bx.b2 };
+    drag.corner = len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? { ...bx.b0 } : { ...bx.b2 };
+    touch();
+  } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
+  else if (hit.type === "anchor" || hit.type === "horizon") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
+  if (hit.type === "pan") canvas.style.cursor = "grabbing";
+});
+canvas.addEventListener("pointermove", e => {
+  const s = spos(e), w = toW(s);
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, s);
+  document.getElementById("stCoord").textContent = `x ${Math.round(w.x)} · y ${Math.round(w.y)}`;
+  if (pinch && pointers.size === 2) {
+    const [a, b] = [...pointers.values()], d = len(sub(a, b)), mid = mul(add(a, b), 0.5);
+    const z = Math.max(0.02, Math.min(12, pinch.z * d / (pinch.d || 1)));
+    const wm = P((pinch.mid.x - pinch.vx) / pinch.z, (pinch.mid.y - pinch.vy) / pinch.z);
+    view.z = z; view.x = mid.x - wm.x * z; view.y = mid.y - wm.y * z; redraw(); return;
+  }
+  if (!drag) {
+    const h = hitTest(s);
+    if (!hover || h.type !== hover.type || h.i !== hover.i) { hover = h; redraw(); }
+    canvas.style.cursor = CURSORS[h.type] || "default";
+    document.getElementById("stHint").textContent = HINTS[h.type] || "";
+    return;
+  }
+  if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
+  drag.moved = true;
+  const g = geo(), useSnap = state.snap.on && !e.altKey;
+  snapMark = null;
+  switch (drag.type) {
+    case "pan": view.x = drag.view0.x + s.x - drag.s0.x; view.y = drag.view0.y + s.y - drag.s0.y; redraw(); return;
+    case "bottom": {
+      const bx = state.boxes[state.sel];
+      let m = w; if (useSnap) { const sp = snapPoint(w, state.sel); if (sp) { m = sp.pt; snapMark = sp; } }
+      const r = bottomFromDiag(drag.i, m, drag.fixed, g);
+      if (r) { bx.b0 = r[0]; bx.b2 = r[1]; }
+      break;
+    }
+    case "top": {
+      const bx = state.boxes[state.sel];
+      const r = useSnap ? snapOnVertical(drag.base, w) : { s: dot(sub(w, drag.base), g.n), free: true };
+      if (useSnap && !r.free) snapMark = { pt: r.pt, kind: "point" };
+      bx.h = Math.max(1, -r.s);
+      break;
+    }
+    case "body": {
+      const bx = state.boxes[state.sel];
+      let target = add(drag.corner, sub(w, drag.w0));
+      if (useSnap) { const sp = snapPoint(target, state.sel); if (sp) { target = sp.pt; snapMark = sp; } }
+      const d = sub(target, drag.corner);
+      bx.b0 = add(drag.b0, d); bx.b2 = add(drag.b2, d);
+      break;
+    }
+    case "vp": {
+      const dist = Math.round(dot(sub(w, g.O), g.u));
+      state.vps[drag.i].dist = dist; if (state.symmetric) state.vps[1 - drag.i].dist = -dist;
+      break;
+    }
+    case "anchor": state.horizon.x = Math.round(drag.h0.x + w.x - drag.w0.x); state.horizon.y = Math.round(drag.h0.y + w.y - drag.w0.y); break;
+    case "horizon": { const d = dot(sub(w, drag.w0), g.n); state.horizon.x = Math.round(drag.h0.x + g.n.x * d); state.horizon.y = Math.round(drag.h0.y + g.n.y * d); break; }
+    case "vmove": { const V = state.viewport; V.x = Math.round(drag.vp0.x + w.x - drag.w0.x); V.y = Math.round(drag.vp0.y + w.y - drag.w0.y); break; }
+    case "vresize": {
+      const V = state.viewport, o = drag.vp0, dx = w.x - drag.w0.x, dy = w.y - drag.w0.y;
+      let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
+      if (drag.hx < 0) x0 = Math.min(x1 - 16, x0 + dx); if (drag.hx > 0) x1 = Math.max(x0 + 16, x1 + dx);
+      if (drag.hy < 0) y0 = Math.min(y1 - 16, y0 + dy); if (drag.hy > 0) y1 = Math.max(y0 + 16, y1 + dy);
+      let nw = x1 - x0, nh = y1 - y0;
+      if (V.lockAspect) {
+        const ar = o.w / o.h;
+        if (drag.hx === 0) nw = nh * ar; else if (drag.hy === 0) nh = nw / ar; else if (nw / nh > ar) nh = nw / ar; else nw = nh * ar;
+        if (drag.hx < 0) x0 = x1 - nw; if (drag.hy < 0) y0 = y1 - nh;
+        if (drag.hx === 0) x0 = o.x + (o.w - nw) / 2; if (drag.hy === 0) y0 = o.y + (o.h - nh) / 2;
+      }
+      V.x = Math.round(x0); V.y = Math.round(y0); V.w = Math.max(16, Math.round(nw)); V.h = Math.max(16, Math.round(nh));
+      break;
+    }
+  }
+  touch();
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (!drag) return;
+  if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
+  drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const s = spos(e);
+  const mouseWheel = e.deltaMode === 1 || (Math.abs(e.deltaY) >= 40 && e.deltaX === 0 && Number.isInteger(e.deltaY));
+  if (e.ctrlKey || e.metaKey || mouseWheel) zoomAt(s, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+  else { view.x -= e.deltaX; view.y -= e.deltaY; redraw(); }
+}, { passive: false });
+
+window.addEventListener("keydown", e => {
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !typing) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !typing) { e.preventDefault(); doRedo(); return; }
+  if (typing) return;
+  if ((e.key === "Delete" || e.key === "Backspace") && state.sel >= 0) { e.preventDefault(); delBox(); }
+  else if (e.key === "Escape") { state.sel = -1; touch(); }
+  else if (e.key === "f" || e.key === "F") fitView();
+  else if (e.key === "b" || e.key === "B") addBox();
+  else if (e.key === "s" || e.key === "S") { state.snap.on = !state.snap.on; commit(); touch(); }
+});
+
+/* ---------- toolbar ---------- */
+document.getElementById("tbAdd").addEventListener("click", addBox);
+document.getElementById("tbFit").addEventListener("click", fitView);
+document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
+document.getElementById("tbUndo").addEventListener("click", doUndo);
+document.getElementById("tbRedo").addEventListener("click", doRedo);
+document.getElementById("tbExport").addEventListener("click", exportPNG);
+
+/* ---------- boot ---------- */
+if (freshStart) {
+  const g = geo();
+  const a = makeBox(g); a.name = "Box 1"; state.boxes.push(a);
+  const b = makeBox(g); b.name = "Box 2"; b.mode = "ghost"; b.fill = "#b9d4e4"; b.faces.top = false; b.h = 150;
+  const shift = P(-520, 40); b.b0 = add(b.b0, shift); b.b2 = add(b.b2, shift); state.boxes.push(b);
+  state.sel = 0; lastSaved = JSON.stringify(state); persist(lastSaved);
+}
+buildPanel();
+updateHistoryButtons();
+new ResizeObserver(() => redraw()).observe(canvas);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw);
+requestAnimationFrame(() => { fitView(); frame(); });
+})();
+</script>
+
+</body>
+</html>
