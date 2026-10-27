@@ -58,6 +58,11 @@ body { background: var(--chrome); color: var(--ink); font-family: var(--f-ui); f
 .tb[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
 .tb.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 .tb:disabled { opacity: .45; cursor: default; }
+.tbmodes { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.tbmodes button { font: 500 12px/1 var(--f-ui); letter-spacing: .02em; color: var(--ink); background: transparent; border: 0; padding: 8px 9px; cursor: pointer; }
+.tbmodes button + button { border-left: 1px solid var(--rule); }
+.tbmodes button:hover { background: var(--accent-soft); }
+.tbmodes button[aria-pressed="true"] { background: var(--accent); color: var(--panel); }
 .status {
   position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 10px; right: 12px;
   display: flex; gap: 14px; flex-wrap: wrap; pointer-events: none;
@@ -150,8 +155,8 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
       <button class="tb primary" id="tbAdd" type="button">Add box</button>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
-      <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z)">Undo</button>
-      <button class="tb" id="tbRedo" type="button" title="Redo (Ctrl/⌘ Shift Z)">Redo</button>
+      <div class="tbmodes" id="tbModes" role="group" aria-label="Perspective type"></div>
+      <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
       <button class="tb" id="tbExport" type="button">Export PNG</button>
     </div>
     <div class="status" aria-live="polite"><span id="stCoord">x 0 · y 0</span><span id="stZoom">100%</span><span class="hint" id="stHint">Drag empty space to pan · scroll or pinch to zoom</span></div>
@@ -235,7 +240,7 @@ function defaultState() {
       // the center (5-point) or front/back (6-point) VP: its rays fan out evenly all the way around
       { dist: 0, drop: 0, color: "#6d4aa8", size: 8, show: true, rays: Object.assign(raysDefault("#8a63c4", "#c9b6e8"), { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
-    curvi: { bend: 80, coverage: 180, circle: true, radius: 400, pano: 400, turn: 0, style4: "fish" },
+    curvi: { bend: 80, coverage: 180, circle: true, radius: 400, radius6: 430, pano: 400, turn: 0, style4: "fish" },
     linkRays: true, symmetric: false, lockFrame: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
@@ -344,6 +349,16 @@ function lensProjector(C, f, L, u, n, thCap, unprojCap) {
     }
   };
 }
+// Does the ray from the camera along direction D pass through the parallelogram q0 q1 q2 q3 (3D)?
+function rayHitsQuad(D, q) {
+  const e1 = s3(q[1], q[0]), e2 = s3(q[3], q[0]), nrm = c3(e1, e2), den = d3(nrm, D);
+  if (Math.abs(den) < 1e-12) return false;
+  const t = d3(nrm, q[0]) / den; if (t <= 0) return false;
+  const w = s3(m3(D, t), q[0]), a = d3(e1, e1), b = d3(e1, e2), c = d3(e2, e2), det = a * c - b * b;
+  if (Math.abs(det) < 1e-18) return false;
+  const p = d3(w, e1), r = d3(w, e2), s = (c * p - b * r) / det, v = (a * r - b * p) / det;
+  return s >= 0 && s <= 1 && v >= 0 && v <= 1;
+}
 // Pull screen point S to within distance r of c
 const pullIn = (S, c, r) => { const v = sub(S, c), L = len(v); return L > r ? add(c, mul(v, r / L)) : S; };
 const offAxis = p => Math.atan2(Math.hypot(p.x, p.y), p.z);
@@ -418,42 +433,43 @@ function fisheyeCam(g, withCenter) {
     cone: { center: C, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
   });
 }
-// 6-point: the whole sphere as two fisheye circles side by side, the front on the left and the back on
-// the right. They touch at the right VP; the left VP shows at both outer ends, up and down on both circles.
+// 6-point: the whole sphere in one continuous circle. The front VP is the center; left, right, up and
+// down sit on the 90° ring; the back VP is the outer rim, where every line heading behind you ends up.
+// It needs 60–150% curvature so the full 360° stays finite (equidistant at 100%, equisolid at 150%).
 function sphereCam(g) {
-  const { c, L, R, f } = radiusLens(), u = g.u, n = g.n;
-  const C = add(g.O, mul(u, state.cone.cv)), Cf = add(C, mul(u, -R)), Cb = add(C, mul(u, R));
-  const front = lensProjector(Cf, f, L, u, n, Math.PI / 2, Math.PI / 2), back = lensProjector(Cb, f, L, u, n, Math.PI / 2, Math.PI / 2);
-  const flip = D => V3(-D.x, D.y, -D.z); // turning around swaps left and right
-  const chartOf = D => (D.z >= 0 ? 0 : 1);
-  const projChart = (D, ch) => (ch === 0 ? front.proj(D) : back.proj(flip(D)));
-  const proj = D => projChart(D, chartOf(D));
-  const at = (c0, dx, dy) => add(c0, add(mul(u, dx), mul(n, dy)));
-  const across = w => Math.abs(dot(sub(w, C), u)) / 2, upDown = w => Math.abs(dot(sub(w, C), n));
+  const c = Math.min(1.5, Math.max(0.6, state.curvi.bend / 100)), L = lensFn(c);
+  const rim = Math.max(20, state.curvi.radius6), f = rim / L.tk(Math.PI), R = f * L.tk(Math.PI / 2);
+  const u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv));
+  const thMax = Math.min(Math.PI * 0.999, L.thLimit);
+  const lens = lensProjector(C, f, L, u, n, thMax);
+  const at = (dx, dy) => add(C, add(mul(u, dx), mul(n, dy)));
+  const azi = p => Math.atan2(p.y, p.x);
+  const rimAt = a => at(rim * Math.cos(a), -rim * Math.sin(a));
+  // Straight behind you, the picture wraps around the rim: a line passing through the back VP leaves the
+  // rim on one side and comes back on the opposite side, so it is broken there instead of cutting across.
+  const nearBack = p => offAxis(p) > Math.PI * 0.85;
+  const crosses = (p, q) => nearBack(p) && nearBack(q) && Math.abs(Math.atan2(Math.sin(azi(p) - azi(q)), Math.cos(azi(p) - azi(q)))) > Math.PI / 2;
+  const scale = rim / R, across = w => Math.abs(dot(sub(w, C), u)) * scale, upDown = w => Math.abs(dot(sub(w, C), n)) * scale, outer = w => len(sub(w, C));
   const X = V3(1, 0, 0), Z = V3(0, 0, 1);
+  // A face that covers the point straight behind you would wrap all the way around the rim when filled
+  const hitsBack = q => rayHitsQuad(V3(0, 0, -1), q);
   return {
-    kind: "dual", C, Cf, Cb, f, R, c, tk: L.tk, thMax: Math.PI / 2, thValid: L.thValid, mc: Cf,
+    kind: "sphere", C, f, R, rim, c, tk: L.tk, thMax, thValid: L.thValid, mc: C,
     axes: [X, Z], fam: { 0: X, 2: UP3, 3: Z },
-    proj, projG: proj, projChart, chartOf,
-    unproj: S => (len(sub(S, Cf)) <= len(sub(S, Cb)) ? front.unproj(S) : flip(back.unproj(S))),
-    crosses: (p, q) => (p.z >= 0) !== (q.z >= 0),
-    seamPoint: (p, q) => lerp3(p, q, p.z / (p.z - q.z)),
-    clip: pts => (pts.some(p => chartOf(p) === 0) && pts.some(p => chartOf(p) === 1) ? splitPoly(pts, p => p.z) : null),
-    // a carried-over box stays inside one circle
-    fits: (p, q) => chartOf(p) === chartOf(q),
-    keepIn: S => {
-      const dF = len(sub(S, Cf)), dB = len(sub(S, Cb));
-      return pullIn(S, dF <= R ? Cf : dB <= R ? Cb : dF <= dB ? Cf : Cb, 0.88 * R);
-    },
+    proj: lens.proj, projG: lens.projG, unproj: lens.unproj,
+    crosses, chartOf: azi, projChart: (D, a) => rimAt(a), seamPoint: () => V3(0, 0, -1),
+    clip: (ring, quad) => (quad && hitsBack(quad) ? [] : null), // leave such a face unfilled; its edges still draw
+    // a carried-over box stays clear of the point behind you and of the squeezed zone around it
+    fits: p => offAxis(p) <= Math.PI * 0.88, keepIn: S => pullIn(S, C, f * L.tk(Math.PI * 0.62)),
+    boxOk: (B, T) => !FACES.some(fc => hitsBack(fc.v.map(s => (s[0] === "b" ? B : T)[+s[1]]))),
     markers: [
-      marker(Cf, "Front", 3, "center", { cvShift: R }), marker(Cb, "Back", 3, "center", { cvShift: -R, primary: false }),
-      marker(at(Cf, -R, 0), "Left", 0, "radius", { rf: across }), marker(C, "Right", 0, null, { primary: false }),
-      marker(at(Cb, R, 0), "Left", 0, "radius", { rf: across, primary: false }),
-      marker(at(Cf, 0, -R), "Up", 2, "radius", { rf: upDown }), marker(at(Cb, 0, -R), "Up", 2, "radius", { rf: upDown, primary: false }),
-      marker(at(Cf, 0, R), "Down", 2, "radius", { rf: upDown, primary: false }), marker(at(Cb, 0, R), "Down", 2, "radius", { rf: upDown, primary: false })
+      marker(C, "Front", 3, "center", { cvShift: 0 }),
+      marker(at(-R, 0), "Left", 0, "radius", { rf: across, key: "radius6" }), marker(at(R, 0), "Right", 0, "radius", { rf: across, key: "radius6", primary: false }),
+      marker(at(0, -R), "Up", 2, "radius", { rf: upDown, key: "radius6" }), marker(at(0, R), "Down", 2, "radius", { rf: upDown, key: "radius6", primary: false }),
+      marker(at(-rim, 0), "Back", 3, "radius", { rf: outer, key: "radius6", primary: false }), marker(at(rim, 0), "Back", 3, "radius", { rf: outer, key: "radius6", primary: false })
     ],
-    edges: [{ circle: Cf, r: R }, { circle: Cb, r: R }],
-    cone: { center: Cf, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
+    edges: [{ circle: C, r: R }, { circle: C, r: rim }],
+    cone: { center: C, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
   };
 }
 // 4-point panorama: a 360° cylinder. Verticals stay straight, and each horizontal direction has a VP on
@@ -652,7 +668,7 @@ function boxGeoCam(bx, g) {
   const faces = FACES.map(f => {
     const q = f.v.map(corner), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4), ring = [];
     for (let e = 0; e < 4; e++) { const s = samples(q[e], q[(e + 1) % 4], EDGE_N); s.pop(); ring.push(...s); }
-    const pieces = cam.clip ? cam.clip(ring) : null;
+    const pieces = cam.clip ? cam.clip(ring, q) : null;
     const fills = pieces ? pieces.map(pc => pc.pts.map(p => cam.projChart(p, pc.chart))) : [ring.map(pr)];
     const at = (uu, vv) => a3(q[0], a3(m3(s3(q[1], q[0]), uu), m3(s3(q[3], q[0]), vv)));
     return {
@@ -730,7 +746,7 @@ function makeArc(cam, A, D, full, extra) {
 }
 function camGuides(g) {
   const cam = g.cam, arcs = [], push = a => { if (a) arcs.push(a); };
-  const around = cam.kind === "pano" || cam.kind === "dual"; // views that see all the way around need whole circles
+  const around = cam.kind === "pano" || cam.kind === "sphere"; // views that see all the way around need whole circles
   fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
     rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), R.behind || around, { fam: "r" + vi, ch: r.ch })); });
@@ -1011,9 +1027,11 @@ function frame() {
   if (panelDirty) { panelDirty = false; refreshPanel(); }
   if (!dirty) return;
   dirty = false;
+  // Size the drawing surface from the element itself (Fit view also updates cw/ch, so they can't be the test)
   const r = canvas.getBoundingClientRect();
-  const nd = window.devicePixelRatio || 1;
-  if (r.width !== cw || r.height !== ch || nd !== dpr) { cw = r.width; ch = r.height; dpr = nd; canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr); }
+  cw = r.width; ch = r.height; dpr = window.devicePixelRatio || 1;
+  const bw = Math.max(1, Math.round(cw * dpr)), bh = Math.max(1, Math.round(ch * dpr));
+  if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
   const desk = cssVar("--desk"), paper = cssVar("--paper"), accent = cssVar("--accent"), ink = cssVar("--ink");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = 1;
@@ -1095,7 +1113,7 @@ function keepBoxes(mutate, turn = 0) {
     captureFit(bx, g1); // the boxes moved with the scene on purpose, so this is their new look
   });
 }
-const LENS_PATHS = ["curvi.radius", "curvi.bend", "curvi.pano", "curvi.turn", "curvi.style4", "cone.cv"];
+const LENS_PATHS = ["curvi.radius", "curvi.radius6", "curvi.bend", "curvi.pano", "curvi.turn", "curvi.style4", "cone.cv"];
 // Where the camera ray through screen point S meets the horizontal plane at height y0 (3D, or null)
 function planeHit(cam, S, y0) {
   const D = cam.unproj(S);
@@ -1125,8 +1143,6 @@ function convCam(g) {
   if (g.cam) return g.cam;
   return (state.mode === "3pt" && pinhole3(g)) || curviCam(g, 0);
 }
-// 6-point draws the front view in the left circle, so the "same place" there is relative to that circle
-const frontShift = g => (g.cam && g.cam.kind === "dual" ? sub(g.cam.Cf, g.cam.C) : P(0, 0));
 // A box's real proportions (side along the first axis, side along the second, height), largest = 1
 function boxDims(bx, g) {
   const cam = convCam(g), gc = g.cam ? g : Object.assign({}, g, { cam });
@@ -1155,7 +1171,10 @@ function fitBox(bx, dims, target0, size, g) {
     return { B, T: B.map(p => a3(p, sh)) };
   };
   // A size is usable when every corner stays well away from the camera and inside what the view can show
-  const ok = (q, k) => { const { B, T } = build(q, k); return [...B, ...T].every(p => l3(p) > 0.3 && (!cam.fits || cam.fits(p, q))); };
+  const ok = (q, k) => {
+    const { B, T } = build(q, k);
+    return [...B, ...T].every(p => l3(p) > 0.3 && (!cam.fits || cam.fits(p, q))) && (!cam.boxOk || cam.boxOk(B, T));
+  };
   const look = (q, k) => { const { B, T } = build(q, k); return screenBox([...B, ...T].map(p => cam.proj(p))); };
   // At size k, aim the box so its outline is centered on the target; null if it can't be placed there
   const centered = k => {
@@ -1193,7 +1212,7 @@ function fitBox(bx, dims, target0, size, g) {
 // Record where a box sits on screen and how big it looks, as the target for later perspective switches
 function captureFit(bx, g) {
   try {
-    const G = boxGeo(bx, g), sb = screenBox([...G.B, ...G.T]), c = sub(sb.c, frontShift(g));
+    const G = boxGeo(bx, g), sb = screenBox([...G.B, ...G.T]), c = sb.c;
     if (Number.isFinite(c.x) && Number.isFinite(c.y) && sb.s > 0) bx.fit = { x: c.x, y: c.y, s: sb.s };
   } catch (e) { /* leave the old target */ }
 }
@@ -1205,7 +1224,7 @@ function reshape(mutate) {
   const plan = state.boxes.map(bx => { try { return bx.fit ? boxDims(bx, g0) : null; } catch (e) { return null; } });
   mutate();
   const g1 = geo();
-  state.boxes.forEach((bx, i) => { if (plan[i]) fitBox(bx, plan[i], add(P(bx.fit.x, bx.fit.y), frontShift(g1)), bx.fit.s, g1); });
+  state.boxes.forEach((bx, i) => { if (plan[i]) fitBox(bx, plan[i], P(bx.fit.x, bx.fit.y), bx.fit.s, g1); });
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch();
   return g1;
@@ -1242,7 +1261,7 @@ function commit() {
 function restore(s) { state = normalize(JSON.parse(s)); lastSaved = JSON.stringify(state); persist(lastSaved); touch(); updateHistoryButtons(); }
 function doUndo() { if (!undoStack.length) return; redoStack.push(JSON.stringify(state)); restore(undoStack.pop()); }
 function doRedo() { if (!redoStack.length) return; undoStack.push(JSON.stringify(state)); restore(redoStack.pop()); }
-function updateHistoryButtons() { document.getElementById("tbUndo").disabled = !undoStack.length; document.getElementById("tbRedo").disabled = !redoStack.length; }
+function updateHistoryButtons() { document.getElementById("tbUndo").disabled = !undoStack.length; }
 
 /* ---------- binding ---------- */
 const resolve = path => path.replace("$v", ui.vp).replace("$b", state.sel);
@@ -1298,9 +1317,10 @@ function lensInfo() {
   const b = state.curvi.bend;
   if (cam.kind === "pano") return `Panorama: the full 360° is ${Math.round(cam.s * 4)} px wide, so neighboring VPs sit 90° (${Math.round(cam.s)} px) apart. VP3 is 180° from VP1, and VP4 is 180° from VP2.`;
   if (state.mode !== "curvi") {
-    const used = Math.round(cam.c * 100);
-    return `Lens type: ${lensName(used)}. The 90° circle has a ${Math.round(cam.R)} px radius, and the focal length is about ${Math.round(cam.f)} px.` +
-      (used !== Math.round(b) ? ` This mode needs 5–200% curvature, so ${Math.round(b)}% is drawn as ${used}%.` : "");
+    const used = Math.round(cam.c * 100), range = cam.kind === "sphere" ? "60–150%" : "5–200%";
+    const size = cam.kind === "sphere" ? `The 90° ring has a ${Math.round(cam.R)} px radius and the back rim ${Math.round(cam.rim)} px` : `The 90° circle has a ${Math.round(cam.R)} px radius`;
+    return `Lens type: ${lensName(used)}. ${size}, and the focal length is about ${Math.round(cam.f)} px.` +
+      (used !== Math.round(b) ? ` This mode needs ${range} curvature, so ${Math.round(b)}% is drawn as ${used}%.` : "");
   }
   const side = p => `${Math.abs(Math.round(p / deg))}° ${p < 0 ? "left" : "right"}`;
   const maxCov = Math.round(2 * cam.thValid / deg);
@@ -1328,16 +1348,17 @@ const schema = [
     { t: "select", bind: "curvi.style4", label: "4-point style", options: [["fish", "Fisheye: left, right, up, down"], ["pano", "Panorama: 4 VPs on the horizon"]], apply: v => reshape(() => { state.curvi.style4 = v; }), when: is4 },
     { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 0, max: 200, step: 1, hi: 295, when: lensMode },
     { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: () => isC() || is5() },
-    { t: "range", bind: "curvi.radius", label: () => (is6() ? "Radius of each circle (180° each)" : "Lens radius (the 90° circle)"), min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: radiusMode },
+    { t: "range", bind: "curvi.radius", label: "Lens radius (the 90° circle)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: () => isFish4() || is5() },
+    { t: "range", bind: "curvi.radius6", label: "Radius of the whole view (the back rim)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: is6 },
     { t: "range", bind: "curvi.pano", label: "Distance between neighboring VPs (90°)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
     { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: isPano },
-    { t: "range", bind: "cone.cv", uid: "lens", label: () => (is6() ? "Where the circles meet, along horizon" : isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
-    { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the lens edges" : "Show the lens edge"), when: camMode },
+    { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
+    { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
     { t: "note", html: "Straight edges bend like a fisheye lens around the lens center. 0% is plain 2-point, 100% is an equidistant fisheye and 200% is the strongest full-circle fisheye. Past 200% (type it in, up to 295%) the bending keeps growing but the lens shows less than 180°. Pulling the VPs toward the center also strengthens the bend. Vertical lines curve toward points at the top and bottom of the lens.", when: isC },
     { t: "note", html: "Four vanishing points on a fisheye circle: left and right on the horizon, up and down straight above and below. Lines across the picture curve between left and right, and vertical lines curve between up and down. Drag any of the four to resize the circle. Box depth edges head for the lens center, which 5-point adds as a fifth point.", when: isFish4 },
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight. Drag any VP to turn the view; lines that run off one end of the strip continue from the other.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, while lines across or up and down curve to the left/right and up/down points on the 90° circle. Drag the center to move the lens, or an outer point to resize it.", when: is5 },
-    { t: "note", html: "The whole sphere as two circles: the front on the left and what's behind you on the right. They share the right VP where they touch, and the left VP shows at both outer ends. Lines that leave one circle carry on in the other.", when: is6 },
+    { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag the center to move the view, or the side or back points to resize it.", when: is6 },
     { t: "readout", text: lensInfo, when: camMode }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
@@ -1641,6 +1662,7 @@ function refreshPanel() {
     if (show) update();
   }
   document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
+  document.querySelectorAll("#tbModes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
 }
 
 /* ---------- export ---------- */
@@ -1891,7 +1913,7 @@ canvas.addEventListener("pointermove", e => {
         let drop = Math.round(dot(v, g.n)); if (Math.abs(drop) < 40) drop = drop < 0 ? -40 : 40;
         state.vps[2].dist = dist; state.vps[2].drop = drop;
       } else if (mk.drag === "dist") { state.vps[drag.i].dist = dist; if (state.symmetric) state.vps[1 - drag.i].dist = -dist; }
-      else if (mk.drag === "radius") keepBoxes(() => { state.curvi.radius = Math.max(20, Math.round(mk.rf(w))); });
+      else if (mk.drag === "radius") keepBoxes(() => { state.curvi[mk.key || "radius"] = Math.max(20, Math.round(mk.rf(w))); });
       else if (mk.drag === "center") keepBoxes(() => { state.cone.cv = Math.round(dist + mk.cvShift); });
       else if (mk.drag === "turn") {
         const t = Math.round((drag.turn0 + dot(sub(w, drag.w0), g.u) / drag.Rp / deg) * 10) / 10;
@@ -1957,7 +1979,13 @@ document.getElementById("tbAdd").addEventListener("click", addBox);
 document.getElementById("tbFit").addEventListener("click", fitView);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
-document.getElementById("tbRedo").addEventListener("click", doRedo);
+// Perspective switch on the toolbar (the same choice as the panel's Perspective section)
+const MODES = [["2pt", "2-pt", "2-point"], ["3pt", "3-pt", "3-point"], ["4pt", "4-pt", "4-point"], ["5pt", "5-pt", "5-point"], ["6pt", "6-pt", "6-point"], ["curvi", "Curvilinear", "Curvilinear"]];
+MODES.forEach(([m, short, full]) => {
+  const b = el("button", { type: "button", title: full + " perspective", "aria-label": full + " perspective", "data-mode": m }, short);
+  b.addEventListener("click", () => setMode(m));
+  document.getElementById("tbModes").append(b);
+});
 document.getElementById("tbExport").addEventListener("click", exportPNG);
 
 /* ---------- boot ---------- */
