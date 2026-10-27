@@ -164,7 +164,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
   <aside class="panel" id="panel">
     <div class="ph">
       <h1>Two-Point Perspective Studio</h1>
-      <p>Choose 2-point, 3-point or curvilinear perspective, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
+      <p>Choose 1- to 6-point perspective, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
       <p class="tip">Number boxes take values past the end of their sliders, and the slider stretches to fit. Let go of a slider at its end to double its range.</p>
     </div>
     <div id="sections"></div>
@@ -243,6 +243,7 @@ function defaultState() {
     curvi: { bend: 80, coverage: 180, circle: true, radius: 400, radius6: 430, pano: 400, turn: 0, style4: "fish" },
     linkRays: true, symmetric: false, lockFrame: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
+    horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
@@ -268,7 +269,8 @@ function normalize(s) {
   const d = defaultState();
   const out = deepMerge(d, s || {});
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
-  if (!["2pt", "3pt", "4pt", "5pt", "6pt", "curvi"].includes(out.mode)) out.mode = "2pt";
+  if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
+  if (!["1pt", "2pt", "3pt", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
   if (!["fish", "pano"].includes(out.curvi.style4)) out.curvi.style4 = "fish";
   out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).map(b => deepMerge(boxDefaults(), b));
   if (out.sel >= out.boxes.length) out.sel = out.boxes.length - 1;
@@ -286,9 +288,9 @@ const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
 // Screen-space frame: O is the horizon's center point, u runs along the horizon, n points down from it.
-// 2- and 3-point work directly on screen. Curvilinear, 4-, 5- and 6-point go through a camera: box edges
-// and guides are straight lines in 3D, projected through a lens (or onto a panorama strip).
-const CAM_MODES = ["curvi", "4pt", "5pt", "6pt"];
+// 1-, 2- and 3-point work directly on screen. 4-, 5- and 6-point go through a camera: box edges and
+// guides are straight lines in 3D, projected through a lens (or onto a panorama strip).
+const CAM_MODES = ["4pt", "5pt", "6pt"];
 const isPanoMode = () => state.mode === "4pt" && state.curvi.style4 === "pano";
 function geo() {
   const h = state.horizon, a = h.tilt * deg;
@@ -300,6 +302,10 @@ function geo() {
   g.up = state.mode === "3pt"
     ? B => { const t = sub(vp[2], B); if (len(t) < 1e-6) return mul(n, -1); const d = norm(t); return dot(d, n) > 0 ? mul(d, -1) : d; }
     : () => mul(n, -1);
+  // Box axes on screen: 2- and 3-point boxes run toward VP1 and VP2. In 1-point, widths run along the
+  // horizon (their VP is at infinity) and depths run to the one VP.
+  g.axisVP = state.mode === "1pt" ? [null, vp[3]] : [vp[0], vp[1]];
+  g.inf = state.mode === "1pt" ? [u, null] : [null, null];
   if (CAM_MODES.includes(state.mode)) {
     g.cam = makeCam(g);
     g.mc = g.cam.mc; // where measuring lines are anchored
@@ -310,6 +316,7 @@ function geo() {
 // The ray families (indexes into state.vps) the current mode draws
 function fams() {
   switch (state.mode) {
+    case "1pt": return [3];
     case "3pt": return [0, 1, 2];
     case "4pt": return isPanoMode() ? [0, 1] : [0, 2];
     case "5pt": case "6pt": return [0, 3, 2];
@@ -317,6 +324,7 @@ function fams() {
   }
 }
 function famName(vi) {
+  if (state.mode === "1pt") return "VP";
   if (isPanoMode()) return vi === 0 ? "VP1 and VP3" : "VP2 and VP4";
   if (["4pt", "5pt", "6pt"].includes(state.mode)) return vi === 0 ? "left and right" : vi === 2 ? "up and down" : state.mode === "6pt" ? "front and back" : "center";
   return "VP" + (vi + 1);
@@ -366,45 +374,36 @@ const offAxis = p => Math.atan2(Math.hypot(p.x, p.y), p.z);
 const oneChart = L => ({ proj: L.proj, projG: L.projG, unproj: L.unproj, crosses: () => false, chartOf: () => 0, projChart: D => L.proj(D), seamPoint: null, clip: null });
 const marker = (p, label, vi, drag, extra) => Object.assign({ p, label, vi, drag, primary: true }, extra);
 function makeCam(g) {
-  if (state.mode === "curvi") return curviCam(g);
   if (isPanoMode()) return panoCam(g);
   return state.mode === "6pt" ? sphereCam(g) : fisheyeCam(g, state.mode === "5pt");
 }
-// Curvilinear: VP1 and VP2 are perpendicular horizontal directions, so their positions fix the focal length.
-function curviCam(g, bendPct = state.curvi.bend) {
-  const L = lensFn(Math.max(0, bendPct) / 100), tk = L.tk;
-  // VP1 and VP2 are 90° apart, so their angles off center add to 90° and both must stay inside the lens.
-  const lo = Math.max(1e-6, Math.PI / 2 - L.thLimit), hi = Math.min(Math.PI / 2 - 1e-6, L.thLimit);
-  const ratio = m => tk(m) / tk(Math.PI / 2 - m);
+// A level pinhole camera centered on screen point C (x right, y up, z ahead). 1- and 2-point are exactly
+// such cameras; they are used to read boxes as 3D shapes when switching perspective.
+function levelPinhole(C, f, u, n, axes) {
+  const proj = W => { const z = Math.max(W.z, 1e-6); return add(C, add(mul(u, f * W.x / z), mul(n, -f * W.y / z))); };
+  return {
+    kind: "pinhole", proj, projG: proj, unproj: S => n3(V3(dot(sub(S, C), u), -dot(sub(S, C), n), f)),
+    crosses: () => false, chartOf: () => 0, projChart: D => proj(D), seamPoint: null, clip: null,
+    axes, fits: p => p.z > 0.25 * l3(p)
+  };
+}
+// 2-point: VP1 and VP2 are perpendicular horizontal directions, so with the center of vision on the
+// horizon between them the focal length is √(d1·d2).
+function pinhole2(g) {
   const p1 = state.vps[0].dist, p2 = state.vps[1].dist;
-  let off = state.cone.cv, moved = false;
-  if (!((p1 - off) * (p2 - off) < 0)) { off = (p1 + p2) / 2; moved = true; }
+  let off = state.cone.cv;
+  if (!((p1 - off) * (p2 - off) < 0)) off = (p1 + p2) / 2;
   let d1 = p1 - off, d2 = p2 - off;
   if (Math.abs(d1) < 1) { d1 = -400; d2 = 400; }
-  let want = Math.abs(d1) / Math.abs(d2);
-  const rMin = ratio(lo), rMax = ratio(hi);
-  if (want < rMin || want > rMax) {
-    // This lens can't reach the VPs as placed: slide the lens center until it can, keeping the VPs put.
-    want = Math.min(rMax, Math.max(rMin, want));
-    off = (p1 + want * p2) / (1 + want); moved = true;
-    d1 = p1 - off; d2 = p2 - off;
-  }
-  let a = lo, b = hi;
-  for (let i = 0; i < 60; i++) { const mid = (a + b) / 2; if (ratio(mid) < want) a = mid; else b = mid; }
-  const th1 = (a + b) / 2, f = Math.abs(d1) / tk(th1);
-  const psi = [Math.sign(d1) * th1, Math.sign(d2) * (Math.PI / 2 - th1)];
-  const X = psi.map(p => V3(Math.sin(p), 0, Math.cos(p)));
-  const thMax = Math.min(state.curvi.coverage / 2 * deg, L.thLimit);
-  const C = add(g.O, mul(g.u, off));
-  return Object.assign(oneChart(lensProjector(C, f, L, g.u, g.n, thMax)), {
-    kind: "lens", C, f, tk, thMax, thValid: L.thValid, psi, off, moved, mc: g.O,
-    axes: X, fam: { 0: X[0], 1: X[1] },
-    // for carrying boxes between modes: where a box sits comfortably, and which points it can reach
-    fits: p => offAxis(p) <= thMax * 0.97, keepIn: S => pullIn(S, C, 0.9 * f * tk(thMax)),
-    markers: [marker(g.vp[0], "VP1", 0, "dist"), marker(g.vp[1], "VP2", 1, "dist")],
-    edges: [{ circle: C, r: f * tk(thMax) }],
-    cone: { center: C, radius: ang => f * tk(Math.min(ang, L.thLimit)) }
-  });
+  const f = Math.sqrt(Math.abs(d1 * d2));
+  const axes = [d1, d2].map(d => { const psi = Math.atan2(d, f); return V3(Math.sin(psi), 0, Math.cos(psi)); });
+  return levelPinhole(add(g.O, mul(g.u, off)), f, g.u, g.n, axes);
+}
+// 1-point: looking straight at its VP. One VP doesn't fix the focal length, so it borrows the 2-point
+// setup's, which keeps box proportions steady when switching between the two.
+function pinhole1(g) {
+  const f = Math.max(200, Math.sqrt(Math.abs(state.vps[0].dist * state.vps[1].dist)) || 1000);
+  return levelPinhole(g.vp[3], f, g.u, g.n, [V3(1, 0, 0), V3(0, 0, 1)]);
 }
 // 4-, 5- and 6-point share a lens sized by the radius of its 90° circle. They need 5–200% curvature so
 // the 90° points stay on the circle.
@@ -589,6 +588,10 @@ function rayList(vi, g) {
 // Box faces: corners 0..3 on a face; edges 0-1 & 2-3 run along the first axis (VP1), 1-2 & 3-0 the second.
 const edgeVP = (i, j) => ((i + j) === 3 ? 1 : 0);
 function meet(p, vpA, q, vpB) { return isect(p, sub(vpA, p), q, sub(vpB, q)); }
+// Direction of a box edge leaving p along box axis a: toward that axis's VP, or along a fixed direction
+// when the VP is at infinity (widths in 1-point)
+const edgeDir = (g, a, p) => g.inf[a] || sub(g.axisVP[a], p);
+const meetAx = (g, p, a1, q, a2) => isect(p, edgeDir(g, a1, p), q, edgeDir(g, a2, q));
 function bottomFromDiag(i, Pi, Po, g) {
   // returns [b0,b2] given corner i at Pi and its opposite corner at Po
   if (i % 2 === 0) return i === 0 ? [Pi, Po] : [Po, Pi];
@@ -601,21 +604,21 @@ function bottomFromDiag(i, Pi, Po, g) {
     const p0 = cam.proj(s3(D1, m3(A1, a))), p2 = cam.proj(a3(D1, m3(A2, c)));
     return [P(p0.x, p0.y), P(p2.x, p2.y)];
   }
-  const b0 = meet(P1, g.vp[0], P3, g.vp[1]), b2 = meet(P1, g.vp[1], P3, g.vp[0]);
+  const b0 = meetAx(g, P1, 0, P3, 1), b2 = meetAx(g, P1, 1, P3, 0);
   if (!b0 || !b2) return null;
   return [P(b0.x, b0.y), P(b2.x, b2.y)];
 }
 function bottomQuad(bx, g) {
   const b0 = bx.b0, b2 = bx.b2;
   const mid = mul(add(b0, b2), 0.5);
-  const b1 = meet(b0, g.vp[0], b2, g.vp[1]) || mid;
-  const b3 = meet(b0, g.vp[1], b2, g.vp[0]) || mid;
+  const b1 = meetAx(g, b0, 0, b2, 1) || mid;
+  const b3 = meetAx(g, b0, 1, b2, 0) || mid;
   return [b0, P(b1.x, b1.y), b2, P(b3.x, b3.y)];
 }
 function topQuad(B, bx, g) {
   const a = bx.anchor, T = [];
-  const vert = (from, vpIdx, j) => {
-    const dir = g.up(B[j]), r = isect(from, sub(g.vp[vpIdx], from), B[j], dir);
+  const vert = (from, ax, j) => {
+    const dir = g.up(B[j]), r = isect(from, edgeDir(g, ax, from), B[j], dir);
     return r && len(sub(r, B[j])) < 1e6 ? P(r.x, r.y) : add(B[j], mul(dir, bx.h));
   };
   T[a] = add(B[a], mul(g.up(B[a]), bx.h));
@@ -639,9 +642,11 @@ function boxGeo(bx, g) { return g.cam ? boxGeoCam(bx, g) : boxGeoLinear(bx, g); 
 function boxGeoLinear(bx, g) {
   const B = bottomQuad(bx, g), T = topQuad(B, bx, g);
   const pt = s => (s[0] === "b" ? B : T)[+s[1]];
-  const sg1 = Math.sign(dot(sub(B[1], B[0]), sub(g.vp[0], B[0]))) || 1;
-  const sg3 = Math.sign(dot(sub(B[3], B[0]), sub(g.vp[1], B[0]))) || 1;
-  const sg0 = Math.sign(dot(sub(g.vp[1], g.vp[0]), g.u)) || 1;
+  // Which faces point at the viewer follows from the box's handedness; a VP at infinity counts as far left
+  const toward = (a, p) => (g.inf[a] ? mul(g.u, -1) : sub(g.axisVP[a], p));
+  const sg1 = Math.sign(dot(sub(B[1], B[0]), toward(0, B[0]))) || 1;
+  const sg3 = Math.sign(dot(sub(B[3], B[0]), toward(1, B[0]))) || 1;
+  const sg0 = g.inf[0] ? 1 : Math.sign(dot(sub(g.axisVP[1], g.axisVP[0]), g.u)) || 1;
   const H = sg1 * sg3 * sg0;
   const faces = FACES.map(f => {
     const pts = f.v.map(pt), m = quadMap(pts);
@@ -699,6 +704,7 @@ function faceLabel(id) {
   if (!bx) return id;
   const G = boxGeo(bx, geo());
   const f = G.faces.find(x => x.id === id);
+  if (state.mode === "1pt") return id === "s01" || id === "s23" ? (f.front ? "Front (faces you)" : "Back") : `${f.front ? "Near" : "Far"} side, running to the VP`;
   return `${f.front ? "Near" : "Far"} side, running to ${axisName(id === "s01" || id === "s23" ? 0 : 1)}`;
 }
 
@@ -708,7 +714,7 @@ function faceLabel(id) {
 let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
-  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0]);
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0]);
   if (key === snapCache.key) return snapCache;
   const g = geo();
   snapCache = g.cam ? camGuides(g) : linearGuides(g);
@@ -721,6 +727,8 @@ function linearGuides(g) {
   if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
   const V = state.verticals;
   if (V.show && state.mode !== "3pt") for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
+  const Hz = state.horizontals;
+  if (Hz.show && state.mode === "1pt") for (let j = -Hz.count; j <= Hz.count; j++) if (Hz.offset + j * Hz.spacing !== 0) lines.push({ p: add(g.O, mul(g.n, Hz.offset + j * Hz.spacing)), d: g.u, fwd: false, fam: "x" });
   const pts = [], LIM = 4e4;
   // With thousands of guides the crossings get too dense to use, so snapping falls back to sliding along lines.
   if (lines.length <= MAX_CROSSING_GUIDES) for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
@@ -876,7 +884,7 @@ function drawGuides(c, k, b, inc, g) {
   }
   if (inc.cone && C.show) {
     if (state.mode === "3pt") { const o = ortho3(g); if (o) drawCone(c, k, o.H, o.f * Math.tan(C.angle / 2 * deg)); }
-    else {
+    else if (state.mode === "2pt") {
       const d1 = state.vps[0].dist - C.cv, d2 = state.vps[1].dist - C.cv;
       if (d1 * d2 < 0) drawCone(c, k, add(g.O, mul(g.u, C.cv)), Math.sqrt(Math.abs(d1 * d2)) * Math.tan(C.angle / 2 * deg));
     }
@@ -890,6 +898,15 @@ function drawGuides(c, k, b, inc, g) {
       p.moveTo(a.x, a.y); p.lineTo(e.x, e.y);
     }
     strokeStyle(c, V, k); c.stroke(p);
+  }
+  const Hz = state.horizontals;
+  if (inc.verticals && Hz.show && state.mode === "1pt") {
+    const L = farDist(g.O, b) + Math.abs(Hz.offset) + Hz.count * Hz.spacing, p = new Path2D();
+    for (let j = -Hz.count; j <= Hz.count; j++) {
+      const q = add(g.O, mul(g.n, Hz.offset + j * Hz.spacing)), a = add(q, mul(g.u, -L)), e = add(q, mul(g.u, L));
+      p.moveTo(a.x, a.y); p.lineTo(e.x, e.y);
+    }
+    strokeStyle(c, Hz, k); c.stroke(p);
   }
   if (inc.rays) fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
@@ -986,7 +1003,7 @@ function drawBox(c, bx, g, k) {
 }
 // Every VP marker on screen: plain VPs in 2- and 3-point, the camera's points (some shown twice) otherwise
 function vpMarkers(g) {
-  return g.cam ? g.cam.markers : fams().map(i => marker(g.vp[i], "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
+  return g.cam ? g.cam.markers : fams().map(i => marker(g.vp[i], state.mode === "1pt" ? "VP" : "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
 }
 function drawVPs(c, k, g) {
   for (const mk of vpMarkers(g)) {
@@ -1091,10 +1108,17 @@ function makeBox(g, slot = 0) {
     bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y); bx.h = 240; bx.H = 0.3 / (l3(B0) || 1);
     return bx;
   }
-  const O = g.O, below = add(O, mul(g.n, 330));
-  const b1 = add(below, mul(sub(g.vp[0], below), 0.26)), b3 = add(below, mul(sub(g.vp[1], below), 0.22));
-  const b2 = meet(b1, g.vp[1], b3, g.vp[0]) || add(below, mul(g.n, -80));
-  bx.b0 = below; bx.b2 = P(b2.x, b2.y); bx.h = 240;
+  if (state.mode === "1pt") {
+    const V = g.vp[3], b0 = add(V, add(mul(g.n, 300), mul(g.u, -260)));
+    const b1 = add(b0, mul(g.u, 240)), b3 = add(b0, mul(sub(V, b0), 0.28));
+    const b2 = meetAx(g, b1, 1, b3, 0) || add(b0, mul(g.u, 120));
+    bx.b0 = b0; bx.b2 = P(b2.x, b2.y); bx.h = 200;
+  } else {
+    const O = g.O, below = add(O, mul(g.n, 330));
+    const b1 = add(below, mul(sub(g.vp[0], below), 0.26)), b3 = add(below, mul(sub(g.vp[1], below), 0.22));
+    const b2 = meet(b1, g.vp[1], b3, g.vp[0]) || add(below, mul(g.n, -80));
+    bx.b0 = below; bx.b2 = P(b2.x, b2.y); bx.h = 240;
+  }
   if (slot) { const s = P(120 * slot, 0); bx.b0 = add(bx.b0, s); bx.b2 = add(bx.b2, s); }
   return bx;
 }
@@ -1141,7 +1165,8 @@ function pinhole3(g) {
 }
 function convCam(g) {
   if (g.cam) return g.cam;
-  return (state.mode === "3pt" && pinhole3(g)) || curviCam(g, 0);
+  if (state.mode === "1pt") return pinhole1(g);
+  return (state.mode === "3pt" && pinhole3(g)) || pinhole2(g);
 }
 // A box's real proportions (side along the first axis, side along the second, height), largest = 1
 function boxDims(bx, g) {
@@ -1292,14 +1317,14 @@ const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
 const hasBox = () => state.sel >= 0 && !!state.boxes[state.sel];
 const hasDiv = () => hasBox() && state.boxes[state.sel].div.on;
-const is2 = () => state.mode === "2pt", is3 = () => state.mode === "3pt", isC = () => state.mode === "curvi";
+const is1 = () => state.mode === "1pt", is2 = () => state.mode === "2pt", is3 = () => state.mode === "3pt";
 const is4 = () => state.mode === "4pt", is5 = () => state.mode === "5pt", is6 = () => state.mode === "6pt";
 const isPano = isPanoMode, isFish4 = () => is4() && !isPano();
 const camMode = () => CAM_MODES.includes(state.mode);
 const lensMode = () => camMode() && !isPano();        // modes with a curvature setting
 const radiusMode = () => isFish4() || is5() || is6(); // lenses sized by their 90° circle
-const usesVerticals = () => is2() || isC() || isPano();
-const usesVPDist = () => is2() || is3() || isC();
+const usesVerticals = () => is1() || is2() || isPano();
+const usesVPDist = () => is2() || is3();
 const markerShowLabel = vi => { const nm = famName(vi); return nm.includes(" and ") ? `Show the ${nm} markers` : nm === "center" ? "Show the center marker" : `Show ${nm} marker`; };
 const markerColorLabel = vi => { const nm = famName(vi); return nm.charAt(0).toUpperCase() + nm.slice(1) + " marker color"; };
 function camCheck3() {
@@ -1316,17 +1341,10 @@ function lensInfo() {
   const cam = geo().cam; if (!cam) return "";
   const b = state.curvi.bend;
   if (cam.kind === "pano") return `Panorama: the full 360° is ${Math.round(cam.s * 4)} px wide, so neighboring VPs sit 90° (${Math.round(cam.s)} px) apart. VP3 is 180° from VP1, and VP4 is 180° from VP2.`;
-  if (state.mode !== "curvi") {
-    const used = Math.round(cam.c * 100), range = cam.kind === "sphere" ? "60–150%" : "5–200%";
-    const size = cam.kind === "sphere" ? `The 90° ring has a ${Math.round(cam.R)} px radius and the back rim ${Math.round(cam.rim)} px` : `The 90° circle has a ${Math.round(cam.R)} px radius`;
-    return `Lens type: ${lensName(used)}. ${size}, and the focal length is about ${Math.round(cam.f)} px.` +
-      (used !== Math.round(b) ? ` This mode needs ${range} curvature, so ${Math.round(b)}% is drawn as ${used}%.` : "");
-  }
-  const side = p => `${Math.abs(Math.round(p / deg))}° ${p < 0 ? "left" : "right"}`;
-  const maxCov = Math.round(2 * cam.thValid / deg);
-  return `Lens type: ${lensName(b)}. Focal length about ${Math.round(cam.f)} px. VP1 is ${side(cam.psi[0])} and VP2 is ${side(cam.psi[1])} of the lens center.` +
-    (state.curvi.coverage > maxCov ? ` At this curvature the lens shows at most ${maxCov}°.` : "") +
-    (cam.moved ? ` To keep both VPs where you put them, the lens center moved to ${Math.round(cam.off)}.` : "");
+  const used = Math.round(cam.c * 100), range = cam.kind === "sphere" ? "60–150%" : "5–200%";
+  const size = cam.kind === "sphere" ? `The 90° ring has a ${Math.round(cam.R)} px radius and the back rim ${Math.round(cam.rim)} px` : `The 90° circle has a ${Math.round(cam.R)} px radius`;
+  return `Lens type: ${lensName(used)}. ${size}, and the focal length is about ${Math.round(cam.f)} px.` +
+    (used !== Math.round(b) ? ` This mode needs ${range} curvature, so ${Math.round(b)}% is drawn as ${used}%.` : "");
 }
 const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [64, "1/64"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
 const styleRows = (pre, title) => [
@@ -1339,6 +1357,8 @@ const styleRows = (pre, title) => [
 const schema = [
   { id: "mode", title: "Perspective", rows: [
     { t: "modeseg" },
+    { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
+    { t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP along the horizon, and set its rays under Rays.", when: is1 },
     { t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
     { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
     { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
@@ -1346,15 +1366,14 @@ const schema = [
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
     { t: "select", bind: "curvi.style4", label: "4-point style", options: [["fish", "Fisheye: left, right, up, down"], ["pano", "Panorama: 4 VPs on the horizon"]], apply: v => reshape(() => { state.curvi.style4 = v; }), when: is4 },
-    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 0, max: 200, step: 1, hi: 295, when: lensMode },
-    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: () => isC() || is5() },
+    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 5, max: 200, step: 1, lo: 5, hi: 200, when: lensMode },
+    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: is5 },
     { t: "range", bind: "curvi.radius", label: "Lens radius (the 90° circle)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: () => isFish4() || is5() },
     { t: "range", bind: "curvi.radius6", label: "Radius of the whole view (the back rim)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: is6 },
     { t: "range", bind: "curvi.pano", label: "Distance between neighboring VPs (90°)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
     { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: isPano },
     { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
     { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
-    { t: "note", html: "Straight edges bend like a fisheye lens around the lens center. 0% is plain 2-point, 100% is an equidistant fisheye and 200% is the strongest full-circle fisheye. Past 200% (type it in, up to 295%) the bending keeps growing but the lens shows less than 180°. Pulling the VPs toward the center also strengthens the bend. Vertical lines curve toward points at the top and bottom of the lens.", when: isC },
     { t: "note", html: "Four vanishing points on a fisheye circle: left and right on the horizon, up and down straight above and below. Lines across the picture curve between left and right, and vertical lines curve between up and down. Drag any of the four to resize the circle. Box depth edges head for the lens center, which 5-point adds as a fifth point.", when: isFish4 },
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight. Drag any VP to turn the view; lines that run off one end of the strip continue from the other.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, while lines across or up and down curve to the left/right and up/down points on the 90° circle. Drag the center to move the lens, or an outer point to resize it.", when: is5 },
@@ -1383,14 +1402,15 @@ const schema = [
     ]),
     { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, lo: 1, hi: 200, also: ["vps.1.size", "vps.2.size", "vps.3.size"] },
     { t: "sub", label: "Cone of vision" },
-    { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() },
-    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179, when: () => !isPano() },
+    { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() && !is1() },
+    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179, when: () => !isPano() && !is1() },
     { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1, when: is2 },
     { t: "color", bind: "cone.color", label: "Color" },
     { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched.", when: is2 },
     { t: "note", html: "In 3-point the cone centers itself on the camera's true center of vision.", when: is3 },
     { t: "note", html: "Here the cone centers on the lens center, set under Perspective. The color above also draws the lens edge.", when: lensMode },
-    { t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano }
+    { t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano },
+    { t: "note", html: "One vanishing point doesn't fix how far you stand from the picture, so 1-point has no cone of vision.", when: is1 }
   ]},
   { id: "rays", title: "Rays", rows: [
     { t: "seg" },
@@ -1415,7 +1435,7 @@ const schema = [
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
     { t: "note", html: "Here vertical lines curve to the up and down points. Set them under Rays → Up &amp; down.", when: radiusMode },
-    { t: "check", bind: "verticals.show", label: () => (isC() ? "Show verticals (they bow outward through the lens)" : isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
+    { t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
     { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
     { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: usesVerticals },
     { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: usesVerticals },
@@ -1423,6 +1443,16 @@ const schema = [
     { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: usesVerticals },
     { t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: usesVerticals },
     { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: usesVerticals }
+  ]},
+  { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
+    { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
+    { t: "range", bind: "horizontals.count", label: "Lines above and below", min: 0, max: 80, step: 1, hi: 400 },
+    { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000 },
+    { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1 },
+    { t: "color", bind: "horizontals.color", label: "Color" },
+    { t: "range", bind: "horizontals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500 },
+    { t: "select", bind: "horizontals.dash", label: "Line style", options: DASH },
+    { t: "range", bind: "horizontals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 }
   ]},
   { id: "boxes", title: "Rectangular prisms", rows: [
     { t: "boxlist" },
@@ -1439,7 +1469,7 @@ const schema = [
     { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
     { t: "sub", label: "Face divisions", when: hasBox },
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
-    { t: "parts", bind: "boxes.$b.div.vp", label: "Lines to the VPs", hi: 128, when: hasDiv },
+    { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
     { t: "parts", bind: "boxes.$b.div.vert", label: () => (is3() ? "Lines to VP3 on sides" : radiusMode() ? "Lines to the up and down VPs on sides" : "Vertical lines on sides"), hi: 128, when: hasDiv },
     { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: [["none", "None"], ["face", "Corner to corner (X)"], ["cells", "Every cell (X)"], ["cellsOne", "Every cell, one way"]], when: hasDiv },
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
@@ -1464,7 +1494,7 @@ const schema = [
     { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]] },
     { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]] },
     { t: "check", bind: "export.rays", label: "Include rays" },
-    { t: "check", bind: "export.verticals", label: "Include vertical guides" },
+    { t: "check", bind: "export.verticals", label: () => (is1() ? "Include vertical and horizontal guides" : "Include vertical guides") },
     { t: "check", bind: "export.horizon", label: "Include horizon line" },
     { t: "check", bind: "export.vps", label: "Include VP markers" },
     { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge" },
@@ -1599,7 +1629,7 @@ function makeRow(r) {
       break;
     }
     case "modeseg": {
-      const bs = [["2pt", "2-point"], ["3pt", "3-point"], ["4pt", "4-point"], ["5pt", "5-point"], ["6pt", "6-point"], ["curvi", "Curvilinear"]].map(([m, t]) => { const b = el("button", { type: "button" }, t); b.addEventListener("click", () => setMode(m)); return [b, m]; });
+      const bs = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["4pt", "4-point"], ["5pt", "5-point"], ["6pt", "6-point"]].map(([m, t]) => { const b = el("button", { type: "button" }, t); b.addEventListener("click", () => setMode(m)); return [b, m]; });
       node = el("div", { class: "seg modes", role: "group", "aria-label": "Perspective type" }, ...bs.map(x => x[0]));
       update = () => bs.forEach(([b, m]) => b.setAttribute("aria-pressed", String(state.mode === m)));
       break;
@@ -1639,6 +1669,7 @@ function makeRow(r) {
   rows.push({ r, node, update });
   return node;
 }
+const sections = []; // sections that only show in some modes
 function buildPanel() {
   const root = document.getElementById("sections");
   for (const sec of schema) {
@@ -1647,15 +1678,18 @@ function buildPanel() {
     const det = el("details", { class: "sec" }, el("summary", {}, sec.title), body);
     if (sec.open !== false) det.open = true;
     root.append(det);
+    if (sec.when) sections.push([sec, det]);
   }
 }
 function rayTabs() {
+  if (is1()) return [[3, "VP rays"]];
   if (isPano()) return [[0, "VP1 & VP3"], [1, "VP2 & VP4"]];
   if (radiusMode()) return [[0, "Left & right"], ...(isFish4() ? [] : [[3, is6() ? "Front & back" : "Center"]]), [2, "Up & down"]];
   return fams().map(vi => [vi, `VP${vi + 1} rays`]);
 }
 function refreshPanel() {
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
+  for (const [sec, det] of sections) det.hidden = !sec.when();
   for (const { r, node, update } of rows) {
     const show = r.when ? r.when() : true;
     node.hidden = !show;
@@ -1912,7 +1946,7 @@ canvas.addEventListener("pointermove", e => {
         // VP3 moves freely but never onto the horizon itself
         let drop = Math.round(dot(v, g.n)); if (Math.abs(drop) < 40) drop = drop < 0 ? -40 : 40;
         state.vps[2].dist = dist; state.vps[2].drop = drop;
-      } else if (mk.drag === "dist") { state.vps[drag.i].dist = dist; if (state.symmetric) state.vps[1 - drag.i].dist = -dist; }
+      } else if (mk.drag === "dist") { state.vps[drag.i].dist = dist; if (state.symmetric && drag.i < 2) state.vps[1 - drag.i].dist = -dist; }
       else if (mk.drag === "radius") keepBoxes(() => { state.curvi[mk.key || "radius"] = Math.max(20, Math.round(mk.rf(w))); });
       else if (mk.drag === "center") keepBoxes(() => { state.cone.cv = Math.round(dist + mk.cvShift); });
       else if (mk.drag === "turn") {
@@ -1980,7 +2014,7 @@ document.getElementById("tbFit").addEventListener("click", fitView);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
 // Perspective switch on the toolbar (the same choice as the panel's Perspective section)
-const MODES = [["2pt", "2-pt", "2-point"], ["3pt", "3-pt", "3-point"], ["4pt", "4-pt", "4-point"], ["5pt", "5-pt", "5-point"], ["6pt", "6-pt", "6-point"], ["curvi", "Curvilinear", "Curvilinear"]];
+const MODES = [["1pt", "1-pt", "1-point"], ["2pt", "2-pt", "2-point"], ["3pt", "3-pt", "3-point"], ["4pt", "4-pt", "4-point"], ["5pt", "5-pt", "5-point"], ["6pt", "6-pt", "6-point"]];
 MODES.forEach(([m, short, full]) => {
   const b = el("button", { type: "button", title: full + " perspective", "aria-label": full + " perspective", "data-mode": m }, short);
   b.addEventListener("click", () => setMode(m));

@@ -2,16 +2,16 @@
 
 A browser-based perspective drafting tool with six modes:
 
+- **1-point:** one vanishing point on the horizon; depth edges run to it while widths stay horizontal and heights vertical, so box fronts are true rectangles. Comes with a starburst of rays plus horizontal and vertical guides
 - **2-point:** two vanishing points on the horizon, vertical edges stay vertical
 - **3-point:** a third vanishing point above or below the horizon that vertical edges run to, with a check that the setup matches a real camera
 - **4-point:** two styles. *Fisheye* puts left, right, up and down vanishing points on a lens circle, with lines curving between each pair. *Panorama* is a 360° strip with four vanishing points on the horizon, each horizontal direction vanishing at two points 180° apart, and straight verticals
 - **5-point:** a fisheye looking straight ahead: depth lines run to a center vanishing point, and lines across or up and down curve to the four points on the 90° circle
 - **6-point:** the whole sphere in one continuous circle: the front vanishing point at the center, left, right, up and down on the 90° ring, and the back vanishing point stretched around the outer rim, where every line heading behind you meets
-- **Curvilinear:** a 2-point fisheye where straight edges bend around the lens center. Curvature runs from 0% (matches 2-point exactly) through stereographic (50%), equidistant (100%) and equisolid (150%) to orthographic (200%), and up to 295% for even stronger bending with a narrower view
 
-The curved modes all project true 3D lines through the same camera, so boxes, snapping and face divisions work the same way everywhere. Turning a panorama or resizing a lens keeps boxes where they stand in the scene.
+The curved modes (4-, 5- and 6-point) all project true 3D lines through the same camera, with curvature from stereographic (50%) through equidistant (100%) and equisolid (150%) to orthographic (200%), so boxes, snapping and face divisions work the same way everywhere. Turning a panorama or resizing a lens keeps boxes where they stand in the scene.
 
-Switching perspective keeps every box at the same place and size on screen, with the same real proportions: 2- and 3-point boxes are read as 3D through their equivalent pinhole cameras and rebuilt in the new mode. Where a view can't show a box that large or that far out (outside a fisheye circle, say), it gets as close as it can, and switching back restores the box exactly.
+Switching perspective keeps every box at the same place and size on screen, with the same real proportions: 1-, 2- and 3-point boxes are read as 3D through their equivalent pinhole cameras and rebuilt in the new mode. Where a view can't show a box that large or that far out (outside a fisheye circle, say), it gets as close as it can, and switching back restores the box exactly.
 
 In every mode:
 
