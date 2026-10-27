@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Two-point perspective drafting tool: horizon, vanishing points, patterned rays, snapping boxes with perspective-correct face divisions, PNG export.">
+<meta name="description" content="Perspective drafting tool: 2-point, 3-point and curvilinear perspective with patterned rays, snapping boxes, perspective-correct face divisions and PNG export.">
 <style>*,*::before,*::after{box-sizing:border-box}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}[hidden]{display:none!important}</style>
 <title>Two-Point Perspective Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -152,7 +152,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
   <aside class="panel" id="panel">
     <div class="ph">
       <h1>Two-Point Perspective Studio</h1>
-      <p>Set the eye level, place two vanishing points, fan rays from each, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
+      <p>Choose 2-point, 3-point or curvilinear perspective, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
     </div>
     <div id="sections"></div>
   </aside>
@@ -196,7 +196,19 @@ function inPoly(pt, poly) {
   return c;
 }
 function polyArea(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a.x * b.y - b.x * a.y; } return s / 2; }
-function segDist(p, a, b) { const ab = sub(b, a); const t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / (dot(ab, ab) || 1))); return len(sub(p, add(a, mul(ab, t)))); }
+function segClosest(p, a, b) { const ab = sub(b, a); const t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / (dot(ab, ab) || 1))); return add(a, mul(ab, t)); }
+function segDist(p, a, b) { return len(sub(p, segClosest(p, a, b))); }
+// 3D helpers for the curvilinear camera (x right, y up, z forward)
+const V3 = (x, y, z) => ({ x, y, z });
+const a3 = (a, b) => V3(a.x + b.x, a.y + b.y, a.z + b.z);
+const s3 = (a, b) => V3(a.x - b.x, a.y - b.y, a.z - b.z);
+const m3 = (a, k) => V3(a.x * k, a.y * k, a.z * k);
+const d3 = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+const c3 = (a, b) => V3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+const l3 = a => Math.hypot(a.x, a.y, a.z);
+const n3 = a => m3(a, 1 / (l3(a) || 1));
+const lerp3 = (a, b, t) => V3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
+const UP3 = V3(0, 1, 0);
 const hex2rgb = h => { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
 const shade = (rgb, k) => `rgb(${rgb.map(c => Math.round(Math.min(255, c * k))).join(",")})`;
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -206,11 +218,14 @@ const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 const raysDefault = (ca, cb) => ({ show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center", a: st(ca, 1, "solid", 0.9), b: st(cb, 0.6, "solid", 0.55) });
 function defaultState() {
   return {
+    mode: "2pt",
     horizon: { show: true, x: 0, y: -60, tilt: 0, color: "#1b252d", width: 1.5, dash: "solid", opacity: 1 },
     vps: [
-      { dist: -1300, color: "#1d6fa5", size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
-      { dist: 1300, color: "#b8463a", size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") }
+      { dist: -1300, drop: 0, color: "#1d6fa5", size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
+      { dist: 1300, drop: 0, color: "#b8463a", size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") },
+      { dist: 0, drop: 2600, color: "#2e7d50", size: 8, show: true, rays: Object.assign(raysDefault("#3f9a63", "#a3d4b4"), { count: 12, spacing: 120, pattern: "AB" }) }
     ],
+    curvi: { bend: 80, coverage: 180, circle: true },
     linkRays: true, symmetric: false, lockFrame: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
@@ -221,7 +236,7 @@ function defaultState() {
   };
 }
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 function deepMerge(base, over) {
   if (Array.isArray(base)) return Array.isArray(over) ? over : base;
@@ -235,7 +250,8 @@ function deepMerge(base, over) {
 function normalize(s) {
   const d = defaultState();
   const out = deepMerge(d, s || {});
-  out.vps = [0, 1].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
+  out.vps = [0, 1, 2].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
+  if (!["2pt", "3pt", "curvi"].includes(out.mode)) out.mode = "2pt";
   out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).map(b => deepMerge(boxDefaults(), b));
   if (out.sel >= out.boxes.length) out.sel = out.boxes.length - 1;
   return out;
@@ -251,22 +267,80 @@ const ui = { vp: 0, resetArm: false };
 const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
+// Screen-space frame: O is the horizon's center point, u runs along the horizon, n points down from it.
+// VP1 and VP2 sit on the horizon; VP3 (3-point mode) sits off it at `drop` (positive = below).
 function geo() {
   const h = state.horizon, a = h.tilt * deg;
   const u = P(Math.cos(a), Math.sin(a)), n = P(-u.y, u.x);
   const O = P(h.x, h.y);
-  return { O, u, n, vp: state.vps.map(v => add(O, mul(u, v.dist))) };
+  const vp = state.vps.map((v, i) => add(add(O, mul(u, v.dist)), mul(n, i === 2 ? v.drop : 0)));
+  const g = { O, u, n, vp, mode: state.mode };
+  // "Up" along a vertical edge standing at B: straight up in 2-point, toward or away from VP3 in 3-point.
+  g.up = state.mode === "3pt"
+    ? B => { const t = sub(vp[2], B); if (len(t) < 1e-6) return mul(n, -1); const d = norm(t); return dot(d, n) > 0 ? mul(d, -1) : d; }
+    : () => mul(n, -1);
+  if (state.mode === "curvi") g.cam = makeCam(g);
+  return g;
+}
+const activeVPs = () => (state.mode === "3pt" ? [0, 1, 2] : [0, 1]);
+
+// Curvilinear camera: a lens centered on the center of vision with r = f·tan(kθ)/k.
+// k = 1 is an ordinary pinhole (straight lines), k → 0 is an equidistant fisheye (r = f·θ).
+// VP1 and VP2 are perpendicular horizontal directions, so their positions fix the focal length.
+function makeCam(g) {
+  const Cv = state.curvi, k = Math.max(0, 1 - Cv.bend / 100);
+  const tk = t => (k > 1e-4 ? Math.tan(k * t) / k : t);
+  const itk = r => (k > 1e-4 ? Math.atan(r * k) / k : r);
+  let off = state.cone.cv, moved = false;
+  let d1 = state.vps[0].dist - off, d2 = state.vps[1].dist - off;
+  if (!(d1 * d2 < 0)) {
+    off = (state.vps[0].dist + state.vps[1].dist) / 2; moved = true;
+    d1 = state.vps[0].dist - off; d2 = state.vps[1].dist - off;
+    if (Math.abs(d1) < 1) { d1 = -400; d2 = 400; }
+  }
+  const A1 = Math.abs(d1), A2 = Math.abs(d2), want = A1 / A2;
+  let lo = 1e-6, hi = Math.PI / 2 - 1e-6;
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (tk(mid) / tk(Math.PI / 2 - mid) < want) lo = mid; else hi = mid; }
+  const th1 = (lo + hi) / 2, f = A1 / tk(th1);
+  const psi = [Math.sign(d1) * th1, Math.sign(d2) * (Math.PI / 2 - th1)];
+  const X = psi.map(p => V3(Math.sin(p), 0, Math.cos(p)));
+  const thLimit = (k > 1e-4 ? Math.min(Math.PI, Math.PI / (2 * k)) : Math.PI) * 0.995;
+  const thMax = Math.min(Cv.coverage / 2 * deg, thLimit);
+  const C = add(g.O, mul(g.u, off)), u = g.u, n = g.n;
+  const projT = (D, clampIt) => {
+    let th = Math.atan2(Math.hypot(D.x, D.y), D.z); // angle off the lens axis; D need not be unit length
+    if (th > thLimit) { if (!clampIt) return null; th = thLimit; }
+    const r = f * tk(th), ph = Math.atan2(D.y, D.x), dx = r * Math.cos(ph), dy = -r * Math.sin(ph);
+    return { x: C.x + u.x * dx + n.x * dy, y: C.y + u.y * dx + n.y * dy, th };
+  };
+  const unproj = S => {
+    const v = sub(S, C), dx = dot(v, u), dy = dot(v, n);
+    const th = Math.min(itk(Math.hypot(dx, dy) / f), Math.PI * 0.999), ph = Math.atan2(-dy, dx), s = Math.sin(th);
+    return V3(s * Math.cos(ph), s * Math.sin(ph), Math.cos(th));
+  };
+  return { C, f, k, tk, X, psi, thMax, projT, proj: D => projT(D, true), unproj, moved };
+}
+// Orthocenter of the three VPs: where a real 3-point camera's center of vision must be.
+function ortho3(g) {
+  const A = g.vp[0], B = g.vp[1], C = g.vp[2];
+  const e1 = sub(B, C), e2 = sub(A, C), r1 = dot(A, e1), r2 = dot(B, e2);
+  const det = e1.x * e2.y - e1.y * e2.x; if (Math.abs(det) < 1e-9) return null;
+  const H = P((r1 * e2.y - e1.y * r2) / det, (e1.x * r2 - r1 * e2.x) / det);
+  const f2 = -dot(sub(A, H), sub(B, H));
+  return f2 > 0 ? { H, f: Math.sqrt(f2) } : null;
 }
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [];
   const pat = R.pattern || "A";
   if (R.mode === "spacing") {
-    const M = add(g.O, mul(g.u, R.measure)), c = Math.max(0, Math.round(R.count));
+    // VP1/VP2 measure along a vertical line; VP3 measures along a line parallel to the horizon.
+    const third = vi === 2;
+    const M = add(g.O, mul(third ? g.n : g.u, R.measure)), step = third ? g.u : g.n, c = Math.max(0, Math.round(R.count));
     for (let k = -c; k <= c; k++) {
-      const d = sub(add(M, mul(g.n, k * R.spacing)), V);
+      const q = add(M, mul(step, k * R.spacing)), d = sub(q, V);
       if (len(d) < 1e-6) continue;
       const idx = R.from === "edge" ? k + c : Math.abs(k);
-      out.push({ d: norm(d), ch: pat[idx % pat.length] });
+      out.push({ d: norm(d), q, ch: pat[idx % pat.length] });
     }
   } else {
     const toward = sub(g.O, V);
@@ -276,7 +350,8 @@ function rayList(vi, g) {
       const a = ((c === 1 ? 0 : -R.spread / 2 + R.spread * i / (c - 1)) + R.rotate) * deg;
       const cs = Math.cos(a), sn = Math.sin(a);
       const idx = R.from === "edge" ? i : Math.floor(Math.abs(i - (c - 1) / 2));
-      out.push({ d: P(base.x * cs - base.y * sn, base.x * sn + base.y * cs), ch: pat[idx % pat.length] });
+      const d = P(base.x * cs - base.y * sn, base.x * sn + base.y * cs);
+      out.push({ d, q: add(V, mul(d, 60)), ch: pat[idx % pat.length] });
     }
   }
   return out;
@@ -288,6 +363,14 @@ function bottomFromDiag(i, Pi, Po, g) {
   // returns [b0,b2] given corner i at Pi and its opposite corner at Po
   if (i % 2 === 0) return i === 0 ? [Pi, Po] : [Po, Pi];
   const P1 = i === 1 ? Pi : Po, P3 = i === 1 ? Po : Pi;
+  if (g.cam) {
+    // Rebuild the base rectangle in 3D: both corners share one height, sides run along VP1 and VP2.
+    const cam = g.cam, [X1, X2] = cam.X, D1 = cam.unproj(P1), D3 = cam.unproj(P3);
+    const l = D1.y / D3.y; if (!(Number.isFinite(l) && l > 0)) return null;
+    const Vd = s3(m3(D3, l), D1), a = -d3(Vd, X1), c = d3(Vd, X2);
+    const p0 = cam.proj(s3(D1, m3(X1, a))), p2 = cam.proj(a3(D1, m3(X2, c)));
+    return [P(p0.x, p0.y), P(p2.x, p2.y)];
+  }
   const b0 = meet(P1, g.vp[0], P3, g.vp[1]), b2 = meet(P1, g.vp[1], P3, g.vp[0]);
   if (!b0 || !b2) return null;
   return [P(b0.x, b0.y), P(b2.x, b2.y)];
@@ -302,10 +385,10 @@ function bottomQuad(bx, g) {
 function topQuad(B, bx, g) {
   const a = bx.anchor, T = [];
   const vert = (from, vpIdx, j) => {
-    const r = isect(from, sub(g.vp[vpIdx], from), B[j], g.n);
-    return r && len(sub(r, B[j])) < 1e6 ? P(r.x, r.y) : add(B[j], mul(g.n, -bx.h));
+    const dir = g.up(B[j]), r = isect(from, sub(g.vp[vpIdx], from), B[j], dir);
+    return r && len(sub(r, B[j])) < 1e6 ? P(r.x, r.y) : add(B[j], mul(dir, bx.h));
   };
-  T[a] = add(B[a], mul(g.n, -bx.h));
+  T[a] = add(B[a], mul(g.up(B[a]), bx.h));
   const j1 = (a + 1) % 4, j3 = (a + 3) % 4, o = (a + 2) % 4;
   T[j1] = vert(T[a], edgeVP(a, j1), j1);
   T[j3] = vert(T[a], edgeVP(a, j3), j3);
@@ -320,15 +403,57 @@ const FACES = [
   { id: "s23", v: ["b2", "b3", "t3", "t2"], shade: 0.88 },
   { id: "s30", v: ["b3", "b0", "t0", "t3"], shade: 0.75 }
 ];
-function boxGeo(bx, g) {
+// Every box geometry returns screen corners B/T, faces (polygon, front flag, and line(u0,v0,u1,v1)
+// for drawing on the face in its own perspective), and the four vertical edges as polylines.
+function boxGeo(bx, g) { return g.cam ? boxGeoCurvi(bx, g) : boxGeoLinear(bx, g); }
+function boxGeoLinear(bx, g) {
   const B = bottomQuad(bx, g), T = topQuad(B, bx, g);
   const pt = s => (s[0] === "b" ? B : T)[+s[1]];
-  const s1 = Math.sign(dot(sub(B[1], B[0]), sub(g.vp[0], B[0]))) || 1;
-  const s3 = Math.sign(dot(sub(B[3], B[0]), sub(g.vp[1], B[0]))) || 1;
-  const s0 = Math.sign(dot(sub(g.vp[1], g.vp[0]), g.u)) || 1;
-  const H = s1 * s3 * s0;
-  const faces = FACES.map(f => { const pts = f.v.map(pt); return { id: f.id, shade: f.shade, pts, front: polyArea(pts) * H > 0 }; });
-  return { B, T, faces };
+  const sg1 = Math.sign(dot(sub(B[1], B[0]), sub(g.vp[0], B[0]))) || 1;
+  const sg3 = Math.sign(dot(sub(B[3], B[0]), sub(g.vp[1], B[0]))) || 1;
+  const sg0 = Math.sign(dot(sub(g.vp[1], g.vp[0]), g.u)) || 1;
+  const H = sg1 * sg3 * sg0;
+  const faces = FACES.map(f => {
+    const pts = f.v.map(pt), m = quadMap(pts);
+    return { id: f.id, shade: f.shade, pts, front: polyArea(pts) * H > 0, line: (u0, v0, u1, v1) => [m(u0, v0), m(u1, v1)] };
+  });
+  return { B, T, faces, verts: B.map((b, i) => [b, T[i]]) };
+}
+// Curvilinear boxes live in 3D: the base corners' directions plus "same height" fix the base
+// rectangle up to scale, so the anchor corner is put at distance 1 and H is the height at that scale.
+const EDGE_N = 20;
+function boxGeoCurvi(bx, g) {
+  const cam = g.cam, [X1, X2] = cam.X;
+  const D0 = cam.unproj(bx.b0), D2 = cam.unproj(bx.b2), l2 = D0.y / D2.y;
+  const B2 = Number.isFinite(l2) && l2 > 0 ? m3(D2, l2) : V3(D2.x, D0.y, D2.z);
+  const Vd = s3(B2, D0), a = d3(Vd, X1), c = d3(Vd, X2);
+  let B = [D0, a3(D0, m3(X1, a)), a3(D0, a3(m3(X1, a), m3(X2, c))), a3(D0, m3(X2, c))];
+  const sc = 1 / (l3(B[bx.anchor]) || 1);
+  B = B.map(p => m3(p, sc));
+  const T = B.map(p => a3(p, m3(UP3, bx.H)));
+  const pr = p => cam.proj(p);
+  const seg = (p, q, n) => { const out = []; for (let i = 0; i <= n; i++) out.push(pr(lerp3(p, q, i / n))); return out; };
+  const corner = s => (s[0] === "b" ? B : T)[+s[1]];
+  const bc = m3([...B, ...T].reduce(a3, V3(0, 0, 0)), 1 / 8);
+  const faces = FACES.map(f => {
+    const q = f.v.map(corner), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4), pts = [];
+    for (let e = 0; e < 4; e++) { const s = seg(q[e], q[(e + 1) % 4], EDGE_N); s.pop(); pts.push(...s); }
+    const at = (uu, vv) => a3(q[0], a3(m3(s3(q[1], q[0]), uu), m3(s3(q[3], q[0]), vv)));
+    return {
+      id: f.id, shade: f.shade, pts, front: d3(s3(fc, bc), fc) < 0,
+      line: (u0, v0, u1, v1) => seg(at(u0, v0), at(u1, v1), Math.max(2, Math.ceil(EDGE_N * Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0)))))
+    };
+  });
+  return { B: B.map(pr), T: T.map(pr), faces, verts: B.map((b, i) => seg(b, T[i], 12)), B3: B };
+}
+// Height for a curvilinear box whose anchor corner sits at unit direction Bu, so that the anchor's
+// top corner lands on screen point S (S's direction is projected onto that corner's vertical plane).
+function topFromScreen(Bu, S, g) {
+  const Dm = g.cam.unproj(S), hl = Math.hypot(Bu.x, Bu.z);
+  if (hl < 1e-9) return 0.3;
+  const dmx = (Dm.x * Bu.x + Dm.z * Bu.z) / hl;
+  if (dmx < 1e-6) return 50;
+  return Math.max(1e-3, Math.min(50, hl * Dm.y / dmx - Bu.y));
 }
 function faceLabel(id) {
   const bx = state.boxes[state.sel];
@@ -342,15 +467,23 @@ function faceLabel(id) {
 }
 
 /* ---------- snapping ---------- */
-let snapCache = { key: "", lines: [], pts: [] };
+// Guides are cached together with their crossings: straight lines in 2- and 3-point,
+// great circles (each one a straight 3D line seen through the lens) in curvilinear.
+let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 function snapData() {
-  const key = JSON.stringify([state.horizon, state.vps, state.verticals]);
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "curvi" ? [state.curvi, state.cone.cv] : 0]);
   if (key === snapCache.key) return snapCache;
-  const g = geo(), lines = [];
-  state.vps.forEach((v, vi) => { if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: !v.rays.behind, fam: "r" + vi }); }); });
+  const g = geo();
+  snapCache = g.cam ? curviGuides(g) : linearGuides(g);
+  snapCache.key = key;
+  return snapCache;
+}
+function linearGuides(g) {
+  const lines = [];
+  activeVPs().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: !v.rays.behind, fam: "r" + vi }); }); });
   if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
   const V = state.verticals;
-  if (V.show) for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
+  if (V.show && state.mode !== "3pt") for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
   const pts = [], LIM = 4e4;
   for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
     const A = lines[i], Bl = lines[j];
@@ -360,20 +493,65 @@ function snapData() {
     if (Math.abs(r.x - g.O.x) > LIM || Math.abs(r.y - g.O.y) > LIM) continue;
     pts.push(P(r.x, r.y));
   }
-  snapCache = { key, lines, pts };
-  return snapCache;
+  return { lines, arcs: [], pts };
+}
+const ARC_N = 180;
+const onArc = (a, s) => a.full || d3(s, a.W) >= -1e-9;
+// Half great circle from direction A through D to -A (or the full circle), clipped to the lens coverage.
+function makeArc(cam, A, D, full, extra) {
+  let W = s3(D, m3(A, d3(D, A)));
+  const wl = l3(W); if (wl < 1e-9) return null;
+  W = m3(W, 1 / wl);
+  const polys = [], N = full ? ARC_N * 2 : ARC_N, span = full ? Math.PI * 2 : Math.PI;
+  let cur = null;
+  for (let i = 0; i <= N; i++) {
+    const t = span * i / N, s = cam.projT(a3(m3(A, Math.cos(t)), m3(W, Math.sin(t))), false);
+    if (!s || s.th > cam.thMax) { cur = null; continue; }
+    if (!cur) { cur = []; polys.push(cur); }
+    cur.push(P(s.x, s.y));
+  }
+  return Object.assign({ A, W, N: c3(A, W), full, polys }, extra);
+}
+function curviGuides(g) {
+  const cam = g.cam, arcs = [], push = a => { if (a) arcs.push(a); };
+  [0, 1].forEach(vi => {
+    const R = state.vps[vi].rays; if (!R.show) return;
+    rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.X[vi], cam.unproj(r.q), R.behind, { fam: "r" + vi, ch: r.ch })); });
+  });
+  if (state.horizon.show) push(makeArc(cam, V3(0, 0, 1), V3(1, 0, 0), true, { fam: "h" }));
+  const V = state.verticals;
+  if (V.show) for (let j = -V.count; j <= V.count; j++) {
+    const D = cam.unproj(add(g.O, mul(g.u, V.offset + j * V.spacing)));
+    push(makeArc(cam, UP3, V3(D.x, 0, D.z), false, { fam: "v" }));
+  }
+  const pts = [];
+  for (let i = 0; i < arcs.length; i++) for (let j = i + 1; j < arcs.length; j++) {
+    const A = arcs[i], B = arcs[j]; if (A.fam === B.fam) continue;
+    const x = c3(A.N, B.N), xl = l3(x); if (xl < 1e-9) continue;
+    const p = m3(x, 1 / xl);
+    for (const s of [p, m3(p, -1)]) {
+      if (!onArc(A, s) || !onArc(B, s)) continue;
+      const pr = cam.projT(s, false); if (!pr || pr.th > cam.thMax) continue;
+      pts.push(P(pr.x, pr.y));
+    }
+  }
+  return { lines: [], arcs, pts };
 }
 function snapPoint(w, excludeBox) {
-  const S = state.snap, r = S.radius / view.z;
+  const S = state.snap, r = S.radius / view.z, data = snapData();
   let best = null, bd = r;
-  if (S.points) for (const p of snapData().pts) { const d = Math.hypot(p.x - w.x, p.y - w.y); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }
-  if (S.corners) { const g = geo(); state.boxes.forEach((bx, bi) => { if (bi === excludeBox) return; const G = boxGeo(bx, g); [...G.B, ...G.T].forEach(p => { const d = len(sub(p, w)); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }); }); }
+  if (S.points) for (const p of data.pts) { const d = Math.hypot(p.x - w.x, p.y - w.y); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }
+  if (S.corners) { const g = geo(); state.boxes.forEach((bx, bi) => { if (bi === excludeBox) return; const G = boxGeo(bx, g); [...G.B, ...G.T].forEach(p => { const d = len(sub(p, w)); if (d < bd) { bd = d; best = { pt: P(p.x, p.y), kind: "point" }; } }); }); }
   if (best) return best;
   if (S.lines) {
     bd = r * 0.7;
-    for (const L of snapData().lines) {
+    for (const L of data.lines) {
       const t = dot(sub(w, L.p), L.d); if (L.fwd && t < 0) continue;
       const q = add(L.p, mul(L.d, t)), d = len(sub(q, w));
+      if (d < bd) { bd = d; best = { pt: q, kind: "line" }; }
+    }
+    for (const a of data.arcs) for (const pl of a.polys) for (let i = 1; i < pl.length; i++) {
+      const q = segClosest(w, pl[i - 1], pl[i]), d = len(sub(q, w));
       if (d < bd) { bd = d; best = { pt: q, kind: "line" }; }
     }
   }
@@ -381,16 +559,34 @@ function snapPoint(w, excludeBox) {
 }
 function snapOnVertical(base, w) {
   // snap a point moving on the vertical through base to ray/horizon crossings
-  const g = geo(), r = state.snap.radius / view.z;
-  const s = dot(sub(w, base), g.n), proj = add(base, mul(g.n, s));
+  const g = geo(), r = state.snap.radius / view.z, up = g.up(base);
+  const s = dot(sub(w, base), up), proj = add(base, mul(up, s));
   let best = null, bd = r;
   for (const L of snapData().lines) {
-    if (L.fam === "v") continue;
-    const x = isect(base, g.n, L.p, L.d);
+    if (L.fam === "v" || L.fam === "r2") continue;
+    const x = isect(base, up, L.p, L.d);
     if (!x || (L.fwd && x.u < 0)) continue;
     const d = Math.abs(x.t - s); if (d < bd) { bd = d; best = P(x.x, x.y); }
   }
-  return best ? { pt: best, s: dot(sub(best, base), g.n) } : { pt: proj, s, free: true };
+  return best ? { pt: best, s: dot(sub(best, base), up) } : { pt: proj, s, free: true };
+}
+// Curvilinear version: the vertical through a corner is a great circle; snap to where guides cross it.
+function snapTopCurvi(Bu, w, g) {
+  const cam = g.cam, r = state.snap.radius / view.z, hl = Math.hypot(Bu.x, Bu.z);
+  if (hl < 1e-9) return null;
+  const e1 = V3(Bu.x / hl, 0, Bu.z / hl), Nv = c3(UP3, e1);
+  let best = null, bd = r;
+  for (const a of snapData().arcs) {
+    if (a.fam === "v") continue;
+    const x = c3(Nv, a.N), xl = l3(x); if (xl < 1e-9) continue;
+    const p = m3(x, 1 / xl);
+    for (const s of [p, m3(p, -1)]) {
+      if (d3(s, e1) < 0 || !onArc(a, s)) continue;
+      const pr = cam.projT(s, false); if (!pr || pr.th > cam.thMax) continue;
+      const d = Math.hypot(pr.x - w.x, pr.y - w.y); if (d < bd) { bd = d; best = P(pr.x, pr.y); }
+    }
+  }
+  return best;
 }
 
 /* ---------- drawing ---------- */
@@ -410,18 +606,44 @@ function farDist(p, b) {
 }
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
+function drawCone(c, k, cv, r) {
+  strokeStyle(c, { color: state.cone.color, width: 1, dash: "dashed", opacity: 0.8 }, k);
+  c.beginPath(); c.arc(cv.x, cv.y, r, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); const a = 8 / k; c.moveTo(cv.x - a, cv.y); c.lineTo(cv.x + a, cv.y); c.moveTo(cv.x, cv.y - a); c.lineTo(cv.x, cv.y + a); c.setLineDash([]); c.stroke();
+}
 function drawGuides(c, k, b, inc, g) {
-  if (inc.cone && state.cone.show) {
-    const C = state.cone, d1 = state.vps[0].dist - C.cv, d2 = state.vps[1].dist - C.cv;
-    if (d1 * d2 < 0) {
-      const f = Math.sqrt(Math.abs(d1 * d2)), r = f * Math.tan(C.angle / 2 * deg), cv = add(g.O, mul(g.u, C.cv));
-      strokeStyle(c, { color: C.color, width: 1, dash: "dashed", opacity: 0.8 }, k);
-      c.beginPath(); c.arc(cv.x, cv.y, r, 0, Math.PI * 2); c.stroke();
-      c.beginPath(); const a = 8 / k; c.moveTo(cv.x - a, cv.y); c.lineTo(cv.x + a, cv.y); c.moveTo(cv.x, cv.y - a); c.lineTo(cv.x, cv.y + a); c.setLineDash([]); c.stroke();
+  const C = state.cone, V = state.verticals, H = state.horizon;
+  if (g.cam) {
+    const cam = g.cam, arcs = snapData().arcs;
+    if (inc.cone && C.show) drawCone(c, k, cam.C, cam.f * cam.tk(C.angle / 2 * deg));
+    if (inc.cone && state.curvi.circle) {
+      strokeStyle(c, { color: C.color, width: 1.25, dash: "dotted", opacity: 0.9 }, k);
+      c.beginPath(); c.arc(cam.C.x, cam.C.y, cam.f * cam.tk(cam.thMax), 0, Math.PI * 2); c.stroke();
+    }
+    const strokeArcs = (list, style) => {
+      if (!list.length) return;
+      const p = new Path2D();
+      list.forEach(a => a.polys.forEach(pl => pl.forEach((q, i) => (i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y)))));
+      strokeStyle(c, style, k); c.stroke(p);
+    };
+    if (inc.verticals && V.show) strokeArcs(arcs.filter(a => a.fam === "v"), V);
+    if (inc.rays) [0, 1].forEach(vi => {
+      const R = state.vps[vi].rays; if (!R.show) return;
+      const mine = arcs.filter(a => a.fam === "r" + vi);
+      strokeArcs(mine.filter(a => a.ch === "B"), R.b); strokeArcs(mine.filter(a => a.ch !== "B"), R.a);
+    });
+    if (inc.horizon && H.show) strokeArcs(arcs.filter(a => a.fam === "h"), H);
+    c.globalAlpha = 1; c.setLineDash([]);
+    return;
+  }
+  if (inc.cone && C.show) {
+    if (state.mode === "3pt") { const o = ortho3(g); if (o) drawCone(c, k, o.H, o.f * Math.tan(C.angle / 2 * deg)); }
+    else {
+      const d1 = state.vps[0].dist - C.cv, d2 = state.vps[1].dist - C.cv;
+      if (d1 * d2 < 0) drawCone(c, k, add(g.O, mul(g.u, C.cv)), Math.sqrt(Math.abs(d1 * d2)) * Math.tan(C.angle / 2 * deg));
     }
   }
-  const V = state.verticals;
-  if (inc.verticals && V.show) {
+  if (inc.verticals && V.show && state.mode !== "3pt") {
     const L = farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
     const p = new Path2D();
     for (let j = -V.count; j <= V.count; j++) {
@@ -431,8 +653,8 @@ function drawGuides(c, k, b, inc, g) {
     }
     strokeStyle(c, V, k); c.stroke(p);
   }
-  if (inc.rays) state.vps.forEach((v, vi) => {
-    const R = v.rays; if (!R.show) return;
+  if (inc.rays) activeVPs().forEach(vi => {
+    const R = state.vps[vi].rays; if (!R.show) return;
     const VP = g.vp[vi], L = farDist(VP, b), pa = new Path2D(), pb = new Path2D();
     for (const r of rayList(vi, g)) {
       if (r.ch === ".") continue;
@@ -443,7 +665,6 @@ function drawGuides(c, k, b, inc, g) {
     strokeStyle(c, R.b, k); c.stroke(pb);
     strokeStyle(c, R.a, k); c.stroke(pa);
   });
-  const H = state.horizon;
   if (inc.horizon && H.show) {
     const L = farDist(g.O, b), a = add(g.O, mul(g.u, -L)), e = add(g.O, mul(g.u, L));
     strokeStyle(c, H, k); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(e.x, e.y); c.stroke();
@@ -470,19 +691,20 @@ function drawDivisions(c, f, bx, k, alphaMul) {
   const cap = f.id === "top" || f.id === "bottom";
   if (cap ? !D.caps : !D.sides) return;
   const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp);
-  const m = quadMap(f.pts), base = Math.max(D.width, 0.5 / k);
-  c.save(); c.setLineDash([]); c.lineCap = "butt"; c.strokeStyle = D.color; c.globalAlpha = D.opacity * alphaMul;
-  const line = (a, b, w) => { c.lineWidth = w; c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
+  const base = Math.max(D.width, 0.5 / k);
+  c.save(); c.setLineDash([]); c.lineCap = "butt"; c.lineJoin = "round"; c.strokeStyle = D.color; c.globalAlpha = D.opacity * alphaMul;
+  // f.line maps face coordinates (0..1 along each edge, measured in depth) to a screen polyline
+  const line = (u0, v0, u1, v1, w) => { const pts = f.line(u0, v0, u1, v1); c.lineWidth = w; c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.stroke(); };
   const weight = (i, n) => D.hier ? Math.max(0.5 / k, base * Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1)) : base;
-  for (let i = 1; i < nu; i++) { const t = i / nu; line(m(t, 0), m(t, 1), weight(i, nu)); }
-  for (let j = 1; j < nv; j++) { const t = j / nv; line(m(0, t), m(1, t), weight(j, nv)); }
-  if (D.diag === "face") { line(m(0, 0), m(1, 1), base); line(m(1, 0), m(0, 1), base); }
+  for (let i = 1; i < nu; i++) { const t = i / nu; line(t, 0, t, 1, weight(i, nu)); }
+  for (let j = 1; j < nv; j++) { const t = j / nv; line(0, t, 1, t, weight(j, nv)); }
+  if (D.diag === "face") { line(0, 0, 1, 1, base); line(1, 0, 0, 1, base); }
   else if (D.diag === "cells" || D.diag === "cellsOne") {
     const w = base * 0.75;
     for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
       const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
-      line(m(u0, v0), m(u1, v1), w);
-      if (D.diag === "cells") line(m(u1, v0), m(u0, v1), w);
+      line(u0, v0, u1, v1, w);
+      if (D.diag === "cells") line(u1, v0, u0, v1, w);
     }
   }
   c.restore();
@@ -520,8 +742,8 @@ function drawBox(c, bx, g, k) {
   c.globalAlpha = 1; c.setLineDash([]);
 }
 function drawVPs(c, k, g) {
-  state.vps.forEach((v, i) => {
-    if (!v.show) return;
+  activeVPs().forEach(i => {
+    const v = state.vps[i]; if (!v.show) return;
     const p = g.vp[i], r = v.size / k;
     c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = v.color; c.fillStyle = "#ffffff";
     c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
@@ -591,7 +813,7 @@ function frame() {
   if (bx) {
     const G = boxGeo(bx, g);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
-    ctx.beginPath(); for (let i = 0; i < 4; i++) { const a = toS(G.B[i]), t = toS(G.T[i]); ctx.moveTo(a.x, a.y); ctx.lineTo(t.x, t.y); } ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); G.verts.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); })); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
     G.B.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? accent : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
     G.T.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? accent : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
@@ -613,9 +835,27 @@ function makeBox(g) {
   const b1 = add(below, mul(sub(g.vp[0], below), 0.26)), b3 = add(below, mul(sub(g.vp[1], below), 0.22));
   const b2 = meet(b1, g.vp[1], b3, g.vp[0]) || add(below, mul(g.n, -80));
   bx.b0 = below; bx.b2 = P(b2.x, b2.y); bx.h = 240;
+  if (g.cam) bx.H = topFromScreen(g.cam.unproj(below), add(below, mul(g.n, -240)), g);
   bx.name = "Box " + (state.boxes.length + 1);
   return bx;
 }
+// Switching modes keeps each box's base corners and the screen position of its anchored top corner,
+// then rebuilds the rest of the box with the new mode's rules.
+function setMode(m) {
+  if (m === state.mode) return;
+  const g0 = geo(), tops = state.boxes.map(bx => boxGeo(bx, g0).T[bx.anchor]);
+  state.mode = m;
+  const g1 = geo();
+  state.boxes.forEach((bx, i) => {
+    const Ta = tops[i]; if (!Ta || !Number.isFinite(Ta.x) || !Number.isFinite(Ta.y)) return;
+    if (g1.cam) bx.H = topFromScreen(n3(boxGeoCurvi(bx, g1).B3[bx.anchor]), Ta, g1);
+    else { const Ba = boxGeoLinear(bx, g1).B[bx.anchor]; bx.h = Math.max(1, dot(sub(Ta, Ba), g1.up(Ba))); }
+  });
+  if (m !== "3pt" && ui.vp === 2) ui.vp = 0;
+  commit(); touch();
+  if (m === "3pt") { const b = visibleBounds(), p = g1.vp[2]; if (p.x < b.x || p.y < b.y || p.x > b.x + b.w || p.y > b.y + b.h) fitView(); }
+}
+function flipVP3(sign) { state.vps[2].drop = sign * Math.max(40, Math.abs(state.vps[2].drop)); commit(); touch(); }
 function addBox() { const bx = makeBox(geo()); if (state.boxes.length) { const s = 120 * state.boxes.length; bx.b0 = add(bx.b0, P(s, 0)); bx.b2 = add(bx.b2, P(s, 0)); } state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
 function dupBox() { const bx = state.boxes[state.sel]; if (!bx) return; const c = clone(bx); const d = mul(geo().u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch(); }
 function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
@@ -641,7 +881,7 @@ function setP(path, val) {
   const parts = resolve(path).split(".");
   const old = getP(path);
   rawSet(parts, val);
-  if (path.startsWith("vps.$v.rays.") && state.linkRays && !path.endsWith(".color")) { const o = parts.slice(); o[1] = String(1 - ui.vp); rawSet(o, val); }
+  if (path.startsWith("vps.$v.rays.") && state.linkRays && ui.vp < 2 && !path.endsWith(".color")) { const o = parts.slice(); o[1] = String(1 - ui.vp); rawSet(o, val); }
   if (state.symmetric && (path === "vps.0.dist" || path === "vps.1.dist")) state.vps[path === "vps.0.dist" ? 1 : 0].dist = -val;
   const V = state.viewport;
   if (V.lockAspect && typeof old === "number" && old > 0) {
@@ -657,6 +897,18 @@ const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
 const hasBox = () => state.sel >= 0 && !!state.boxes[state.sel];
 const hasDiv = () => hasBox() && state.boxes[state.sel].div.on;
+const is2 = () => state.mode === "2pt", is3 = () => state.mode === "3pt", isC = () => state.mode === "curvi";
+function camCheck3() {
+  const o = ortho3(geo());
+  return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
+    : "Camera check: VP3 is too close to the horizon for a real camera, so boxes will look stretched and the cone of vision is hidden. Move VP3 farther away.";
+}
+function lensInfo() {
+  const cam = geo().cam; if (!cam) return "";
+  const side = p => `${Math.abs(Math.round(p / deg))}° ${p < 0 ? "left" : "right"}`;
+  return `Lens: focal length about ${Math.round(cam.f)} px. VP1 is ${side(cam.psi[0])} and VP2 is ${side(cam.psi[1])} of the lens center.` +
+    (cam.moved ? " Both VPs were on one side of the lens center, so the lens is centered between them instead." : "");
+}
 const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
 const styleRows = (pre, title) => [
   { t: "sub", label: title },
@@ -666,6 +918,23 @@ const styleRows = (pre, title) => [
   { t: "range", bind: pre + ".opacity", label: "Opacity", min: 0, max: 1, step: 0.05 }
 ];
 const schema = [
+  { id: "mode", title: "Perspective", rows: [
+    { t: "modeseg" },
+    { t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
+    { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
+    { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
+    { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
+    { t: "check", bind: "vps.2.show", label: "Show VP3 marker", when: is3 },
+    { t: "color", bind: "vps.2.color", label: "VP3 marker color", when: is3 },
+    { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
+    { t: "readout", text: camCheck3, when: is3 },
+    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 0, max: 100, step: 1, when: isC },
+    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, when: isC },
+    { t: "range", bind: "cone.cv", uid: "lens", label: "Lens center along horizon", min: -4000, max: 4000, step: 1, when: isC },
+    { t: "check", bind: "curvi.circle", label: "Show the lens edge", when: isC },
+    { t: "note", html: "Straight edges bend like a fisheye lens around the lens center. At 0% curvature this is plain 2-point. Pull the VPs toward the center for stronger bending. Vertical lines curve toward points at the top and bottom of the lens.", when: isC },
+    { t: "readout", text: lensInfo, when: isC }
+  ]},
   { id: "horizon", title: "Horizon line", rows: [
     { t: "check", bind: "horizon.show", label: "Show horizon line" },
     { t: "range", bind: "horizon.y", label: "Eye level (Y)", min: -3000, max: 3000, step: 1 },
@@ -686,22 +955,24 @@ const schema = [
     { t: "color", bind: "vps.0.color", label: "VP1 marker color" },
     { t: "check", bind: "vps.1.show", label: "Show VP2 marker" },
     { t: "color", bind: "vps.1.color", label: "VP2 marker color" },
-    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, also: "vps.1.size" },
+    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, also: ["vps.1.size", "vps.2.size"] },
     { t: "sub", label: "Cone of vision" },
     { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)" },
     { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1 },
-    { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1 },
+    { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1, when: is2 },
     { t: "color", bind: "cone.color", label: "Color" },
-    { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched." }
+    { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched.", when: is2 },
+    { t: "note", html: "In 3-point the cone centers itself on the camera's true center of vision.", when: is3 },
+    { t: "note", html: "In curvilinear the cone centers on the lens center, set under Perspective.", when: isC }
   ]},
   { id: "rays", title: "Rays", rows: [
     { t: "seg" },
-    { t: "check", bind: "linkRays", label: "Apply edits to both VPs (colors stay separate)" },
+    { t: "check", bind: "linkRays", label: "Edit VP1 and VP2 rays together (colors stay separate)", when: () => ui.vp < 2 },
     { t: "check", bind: "vps.$v.rays.show", label: "Show rays from this VP" },
     { t: "select", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing on a measuring line"], ["angle", "Even angles"]] },
-    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? "Rays above and below horizon" : "Ray count", min: 1, max: 120, step: 1 },
+    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? (ui.vp === 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1 },
     { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, when: isSpacing },
-    { t: "range", bind: "vps.$v.rays.measure", label: "Measuring line position", min: -6000, max: 6000, step: 1, when: isSpacing },
+    { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp === 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: isSpacing },
     { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, when: () => !isSpacing() },
     { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, when: () => !isSpacing() },
     { t: "check", bind: "vps.$v.rays.behind", label: "Extend rays behind the VP" },
@@ -715,14 +986,15 @@ const schema = [
     ...styleRows("vps.$v.rays.b", "Style B · secondary")
   ]},
   { id: "verticals", title: "Vertical guides", open: false, rows: [
-    { t: "check", bind: "verticals.show", label: "Show verticals (perpendicular to horizon)" },
-    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1 },
-    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1 },
-    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1 },
-    { t: "color", bind: "verticals.color", label: "Color" },
-    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25 },
-    { t: "select", bind: "verticals.dash", label: "Line style", options: DASH },
-    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05 }
+    { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
+    { t: "check", bind: "verticals.show", label: () => (isC() ? "Show verticals (they bow outward through the lens)" : "Show verticals (perpendicular to horizon)"), when: () => !is3() },
+    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1, when: () => !is3() },
+    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, when: () => !is3() },
+    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !is3() },
+    { t: "color", bind: "verticals.color", label: "Color", when: () => !is3() },
+    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, when: () => !is3() },
+    { t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: () => !is3() },
+    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, when: () => !is3() }
   ]},
   { id: "boxes", title: "Rectangular prisms", rows: [
     { t: "boxlist" },
@@ -767,7 +1039,7 @@ const schema = [
     { t: "check", bind: "export.verticals", label: "Include vertical guides" },
     { t: "check", bind: "export.horizon", label: "Include horizon line" },
     { t: "check", bind: "export.vps", label: "Include VP markers" },
-    { t: "check", bind: "export.cone", label: "Include cone of vision" },
+    { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge" },
     { t: "check", bind: "export.boxes", label: "Include boxes" },
     { t: "btns", items: [["Export PNG", exportPNG, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
   ]},
@@ -790,14 +1062,14 @@ const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
 function makeRow(r) {
   let node, update;
-  const id = r.bind ? idFor(r.bind) : "";
+  const id = r.bind ? idFor(r.bind) + (r.uid ? "-" + r.uid : "") : "";
   const onCommit = () => commit();
   switch (r.t) {
     case "range": {
       const lab = el("label", { for: id + "-n" });
       const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step) });
       const rng = el("input", { type: "range", id, min: String(r.min), max: String(r.max), step: String(r.step), "aria-label": labelText(r) });
-      const set = v => { if (!Number.isFinite(v)) return; setP(r.bind, v); if (r.also) setP(r.also, v); };
+      const set = v => { if (!Number.isFinite(v)) return; setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
       rng.addEventListener("input", () => set(+rng.value));
       num.addEventListener("input", () => { if (num.value !== "") set(+num.value); });
       rng.addEventListener("change", onCommit); num.addEventListener("change", onCommit);
@@ -851,12 +1123,18 @@ function makeRow(r) {
       break;
     }
     case "seg": {
-      const b0 = el("button", { type: "button" }, "VP1 rays"), b1 = el("button", { type: "button" }, "VP2 rays");
-      [b0, b1].forEach((b, i) => b.addEventListener("click", () => { ui.vp = i; touch(); }));
-      node = el("div", { class: "seg", role: "group", "aria-label": "Choose vanishing point" }, b0, b1);
-      update = () => { b0.setAttribute("aria-pressed", ui.vp === 0); b1.setAttribute("aria-pressed", ui.vp === 1); };
+      const bs = ["VP1 rays", "VP2 rays", "VP3 rays"].map((t, i) => { const b = el("button", { type: "button" }, t); b.addEventListener("click", () => { ui.vp = i; touch(); }); return b; });
+      node = el("div", { class: "seg", role: "group", "aria-label": "Choose vanishing point" }, ...bs);
+      update = () => { bs[2].hidden = !is3(); bs.forEach((b, i) => b.setAttribute("aria-pressed", String(ui.vp === i))); };
       break;
     }
+    case "modeseg": {
+      const bs = [["2pt", "2-point"], ["3pt", "3-point"], ["curvi", "Curvilinear"]].map(([m, t]) => { const b = el("button", { type: "button" }, t); b.addEventListener("click", () => setMode(m)); return [b, m]; });
+      node = el("div", { class: "seg", role: "group", "aria-label": "Perspective type" }, ...bs.map(x => x[0]));
+      update = () => bs.forEach(([b, m]) => b.setAttribute("aria-pressed", String(state.mode === m)));
+      break;
+    }
+    case "readout": node = el("div", { class: "note readout" }); update = () => { const t = r.text(); if (node.textContent !== t) node.textContent = t; }; break;
     case "sub": node = el("div", { class: "sub" }, r.label); update = () => {}; break;
     case "note": node = el("div", { class: "note" }); node.innerHTML = r.html; update = () => {}; break;
     case "btns": {
@@ -902,6 +1180,7 @@ function buildPanel() {
   }
 }
 function refreshPanel() {
+  if (ui.vp === 2 && !is3()) ui.vp = 0;
   for (const { r, node, update } of rows) {
     const show = r.when ? r.when() : true;
     node.hidden = !show;
@@ -975,7 +1254,8 @@ function resetAll() {
 function fitView() {
   const r = canvas.getBoundingClientRect(); cw = r.width; ch = r.height;
   const g = geo(), V = state.viewport;
-  let xs = [V.x, V.x + V.w, g.vp[0].x, g.vp[1].x], ys = [V.y, V.y + V.h, g.vp[0].y, g.vp[1].y];
+  const xs = [V.x, V.x + V.w], ys = [V.y, V.y + V.h];
+  activeVPs().forEach(i => { xs.push(g.vp[i].x); ys.push(g.vp[i].y); });
   state.boxes.forEach(b => { const G = boxGeo(b, g); [...G.B, ...G.T].forEach(p => { xs.push(p.x); ys.push(p.y); }); });
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const z = Math.min((cw - 60) / Math.max(1, x1 - x0), (ch - 120) / Math.max(1, y1 - y0));
@@ -998,7 +1278,7 @@ function hitTest(s) {
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
   }
   if (!state.lockFrame) {
-    for (let i = 0; i < 2; i++) if (len(sub(toS(g.vp[i]), s)) < state.vps[i].size + 7) return { type: "vp", i };
+    for (const i of activeVPs()) if (len(sub(toS(g.vp[i]), s)) < state.vps[i].size + 7) return { type: "vp", i };
     if (state.horizon.show && len(sub(toS(g.O), s)) < 9) return { type: "anchor" };
   }
   const V = state.viewport;
@@ -1028,7 +1308,7 @@ const HINTS = {
   top: "Drag to set the box height · snaps where rays cross this edge",
   bottom: "Drag the base corner · snaps to ray intersections · hold Alt to place freely",
   vp: "Drag the vanishing point along the horizon",
-  anchor: "Drag to move the horizon and both VPs together",
+  anchor: "Drag to move the horizon and the VPs together",
   horizon: "Drag to raise or lower eye level",
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
@@ -1052,9 +1332,13 @@ canvas.addEventListener("pointerdown", e => {
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
   if (hit.type === "bottom" || hit.type === "top") {
+    // Re-anchor the height at the corner that stays put (the opposite base corner, or the dragged top's own base).
     const bx = state.boxes[state.sel], G = boxGeo(bx, g);
-    if (hit.type === "bottom") { const o = (hit.i + 2) % 4; bx.anchor = o; bx.h = dot(sub(G.B[o], G.T[o]), g.n); drag.fixed = G.B[o]; }
-    else { bx.anchor = hit.i; bx.h = dot(sub(G.B[hit.i], G.T[hit.i]), g.n); drag.base = G.B[hit.i]; }
+    const j = hit.type === "bottom" ? (hit.i + 2) % 4 : hit.i;
+    if (g.cam) { bx.H /= l3(G.B3[j]) || 1; drag.base3 = n3(G.B3[j]); }
+    else bx.h = dot(sub(G.T[j], G.B[j]), g.up(G.B[j]));
+    bx.anchor = j;
+    if (hit.type === "bottom") drag.fixed = P(G.B[j].x, G.B[j].y); else drag.base = P(G.B[j].x, G.B[j].y);
   } else if (hit.type === "body") {
     state.sel = hit.bi; const bx = state.boxes[hit.bi];
     drag.b0 = { ...bx.b0 }; drag.b2 = { ...bx.b2 };
@@ -1077,8 +1361,9 @@ canvas.addEventListener("pointermove", e => {
   if (!drag) {
     const h = hitTest(s);
     if (!hover || h.type !== hover.type || h.i !== hover.i) { hover = h; redraw(); }
-    canvas.style.cursor = CURSORS[h.type] || "default";
-    document.getElementById("stHint").textContent = HINTS[h.type] || "";
+    const vp3 = h.type === "vp" && h.i === 2;
+    canvas.style.cursor = vp3 ? "move" : CURSORS[h.type] || "default";
+    document.getElementById("stHint").textContent = vp3 ? "Drag VP3 anywhere off the horizon" : HINTS[h.type] || "";
     return;
   }
   if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
@@ -1096,9 +1381,15 @@ canvas.addEventListener("pointermove", e => {
     }
     case "top": {
       const bx = state.boxes[state.sel];
-      const r = useSnap ? snapOnVertical(drag.base, w) : { s: dot(sub(w, drag.base), g.n), free: true };
-      if (useSnap && !r.free) snapMark = { pt: r.pt, kind: "point" };
-      bx.h = Math.max(1, -r.s);
+      if (g.cam) {
+        let S = w;
+        if (useSnap) { const sp = snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
+        bx.H = topFromScreen(drag.base3, S, g);
+      } else {
+        const r = useSnap ? snapOnVertical(drag.base, w) : { s: dot(sub(w, drag.base), g.up(drag.base)), free: true };
+        if (useSnap && !r.free) snapMark = { pt: r.pt, kind: "point" };
+        bx.h = Math.max(1, r.s);
+      }
       break;
     }
     case "body": {
@@ -1110,8 +1401,12 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "vp": {
-      const dist = Math.round(dot(sub(w, g.O), g.u));
-      state.vps[drag.i].dist = dist; if (state.symmetric) state.vps[1 - drag.i].dist = -dist;
+      const v = sub(w, g.O), dist = Math.round(dot(v, g.u));
+      if (drag.i === 2) {
+        // VP3 moves freely but never onto the horizon itself
+        let drop = Math.round(dot(v, g.n)); if (Math.abs(drop) < 40) drop = drop < 0 ? -40 : 40;
+        state.vps[2].dist = dist; state.vps[2].drop = drop;
+      } else { state.vps[drag.i].dist = dist; if (state.symmetric) state.vps[1 - drag.i].dist = -dist; }
       break;
     }
     case "anchor": state.horizon.x = Math.round(drag.h0.x + w.x - drag.w0.x); state.horizon.y = Math.round(drag.h0.y + w.y - drag.w0.y); break;
