@@ -1,4 +1,4 @@
-# Two-Point Perspective Studio
+# Perspective Studio
 
 A browser-based perspective drafting tool, from 1-point perspective up to a full 360° 6-point view. Build boxes that snap to the grid, divide their faces in perspective and export the drawing as a PNG.
 
@@ -6,7 +6,7 @@ Live at https://landonsw21.github.io/perspective-studio/
 
 ## Perspective modes
 
-Switch modes from the toolbar or the Perspective panel.
+Switch modes from the toolbar.
 
 - **1-point:** one vanishing point on the horizon; depth edges run to it while widths stay horizontal and heights vertical, so box fronts are true rectangles. Comes with a starburst of rays plus horizontal and vertical guides
 - **2-point:** two vanishing points on the horizon, vertical edges stay vertical
