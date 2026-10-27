@@ -246,7 +246,9 @@ function defaultState() {
   };
 }
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+// `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
+// switching perspective can rebuild it at that size even after a mode that had to shrink it.
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 function deepMerge(base, over) {
   if (Array.isArray(base)) return Array.isArray(over) ? over : base;
@@ -342,6 +344,9 @@ function lensProjector(C, f, L, u, n, thCap, unprojCap) {
     }
   };
 }
+// Pull screen point S to within distance r of c
+const pullIn = (S, c, r) => { const v = sub(S, c), L = len(v); return L > r ? add(c, mul(v, r / L)) : S; };
+const offAxis = p => Math.atan2(Math.hypot(p.x, p.y), p.z);
 // Lenses without seams use a single chart everywhere
 const oneChart = L => ({ proj: L.proj, projG: L.projG, unproj: L.unproj, crosses: () => false, chartOf: () => 0, projChart: D => L.proj(D), seamPoint: null, clip: null });
 const marker = (p, label, vi, drag, extra) => Object.assign({ p, label, vi, drag, primary: true }, extra);
@@ -351,8 +356,8 @@ function makeCam(g) {
   return state.mode === "6pt" ? sphereCam(g) : fisheyeCam(g, state.mode === "5pt");
 }
 // Curvilinear: VP1 and VP2 are perpendicular horizontal directions, so their positions fix the focal length.
-function curviCam(g) {
-  const L = lensFn(Math.max(0, state.curvi.bend) / 100), tk = L.tk;
+function curviCam(g, bendPct = state.curvi.bend) {
+  const L = lensFn(Math.max(0, bendPct) / 100), tk = L.tk;
   // VP1 and VP2 are 90° apart, so their angles off center add to 90° and both must stay inside the lens.
   const lo = Math.max(1e-6, Math.PI / 2 - L.thLimit), hi = Math.min(Math.PI / 2 - 1e-6, L.thLimit);
   const ratio = m => tk(m) / tk(Math.PI / 2 - m);
@@ -379,6 +384,8 @@ function curviCam(g) {
   return Object.assign(oneChart(lensProjector(C, f, L, g.u, g.n, thMax)), {
     kind: "lens", C, f, tk, thMax, thValid: L.thValid, psi, off, moved, mc: g.O,
     axes: X, fam: { 0: X[0], 1: X[1] },
+    // for carrying boxes between modes: where a box sits comfortably, and which points it can reach
+    fits: p => offAxis(p) <= thMax * 0.97, keepIn: S => pullIn(S, C, 0.9 * f * tk(thMax)),
     markers: [marker(g.vp[0], "VP1", 0, "dist"), marker(g.vp[1], "VP2", 1, "dist")],
     edges: [{ circle: C, r: f * tk(thMax) }],
     cone: { center: C, radius: ang => f * tk(Math.min(ang, L.thLimit)) }
@@ -406,6 +413,7 @@ function fisheyeCam(g, withCenter) {
   return Object.assign(oneChart(lensProjector(C, f, L, u, n, thMax)), {
     kind: "lens", C, f, R, c, tk: L.tk, thMax, thValid: L.thValid, mc: C,
     axes: [X, Z], fam: { 0: X, 2: UP3, 3: Z }, markers,
+    fits: p => offAxis(p) <= thMax * 0.97, keepIn: S => pullIn(S, C, 0.9 * f * L.tk(thMax)),
     edges: [{ circle: C, r: f * L.tk(thMax) }],
     cone: { center: C, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
   });
@@ -431,6 +439,12 @@ function sphereCam(g) {
     crosses: (p, q) => (p.z >= 0) !== (q.z >= 0),
     seamPoint: (p, q) => lerp3(p, q, p.z / (p.z - q.z)),
     clip: pts => (pts.some(p => chartOf(p) === 0) && pts.some(p => chartOf(p) === 1) ? splitPoly(pts, p => p.z) : null),
+    // a carried-over box stays inside one circle
+    fits: (p, q) => chartOf(p) === chartOf(q),
+    keepIn: S => {
+      const dF = len(sub(S, Cf)), dB = len(sub(S, Cb));
+      return pullIn(S, dF <= R ? Cf : dB <= R ? Cb : dF <= dB ? Cf : Cb, 0.88 * R);
+    },
     markers: [
       marker(Cf, "Front", 3, "center", { cvShift: R }), marker(Cb, "Back", 3, "center", { cvShift: -R, primary: false }),
       marker(at(Cf, -R, 0), "Left", 0, "radius", { rf: across }), marker(C, "Right", 0, null, { primary: false }),
@@ -467,6 +481,12 @@ function panoCam(g) {
     },
     seamPoint: (p, q) => lerp3(p, q, p.x / (p.x - q.x)),
     clip: pts => (pts.some((p, i) => crosses(p, pts[(i + 1) % pts.length])) ? splitPoly(pts, p => p.x) : null),
+    // a carried-over box stays clear of the strip's ends and of the steep top and bottom
+    fits: (p, q) => Math.abs(elevOf(p)) <= elevMax * 0.95 && Math.abs(Math.atan2(p.x, p.z) - Math.atan2(q.x, q.z)) < Math.PI * 0.8,
+    keepIn: S => {
+      const v = sub(S, C), xl = 0.9 * Math.PI * Rp, yl = 0.8 * Rp * Math.tan(elevMax);
+      return add(C, add(mul(u, Math.max(-xl, Math.min(xl, dot(v, u)))), mul(n, Math.max(-yl, Math.min(yl, dot(v, n))))));
+    },
     markers: [
       marker(at(psi[0], 0), "VP1", 0, "turn"), marker(at(psi[1], 0), "VP2", 1, "turn"),
       marker(at(wrap(psi[0] + Math.PI), 0), "VP3", 0, "turn", { primary: false }),
@@ -1072,6 +1092,7 @@ function keepBoxes(mutate, turn = 0) {
     const B = turn ? saved[i].map(p => V3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c)) : saved[i];
     const p0 = g1.cam.proj(B[0]), p2 = g1.cam.proj(B[2]);
     bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y);
+    captureFit(bx, g1); // the boxes moved with the scene on purpose, so this is their new look
   });
 }
 const LENS_PATHS = ["curvi.radius", "curvi.bend", "curvi.pano", "curvi.turn", "curvi.style4", "cone.cv"];
@@ -1080,28 +1101,121 @@ function planeHit(cam, S, y0) {
   const D = cam.unproj(S);
   return D.y * y0 > 1e-12 ? m3(D, y0 / D.y) : null;
 }
-// Changing the perspective keeps each box's base corners and the screen position of its anchored top
-// corner, then rebuilds the rest of the box with the new rules.
+// ---- Carrying boxes across a change of perspective ----
+// Every mode can be read as a camera: the curved modes have one, 2-point is exactly a level pinhole, and
+// 3-point is a tilted pinhole whenever VP3 matches a real camera. That lets a box be read out as a 3D
+// shape in one mode and rebuilt in another.
+function pinhole3(g) {
+  const o = ortho3(g); if (!o) return null;
+  const pp = o.H, f = o.f, u = g.u, n = g.n;
+  const ray = S => n3(V3(dot(sub(S, pp), u), -dot(sub(S, pp), n), f)); // camera coords: x right, y up, z ahead
+  const r1 = ray(g.vp[0]), r3 = ray(g.vp[2]);
+  const wy = state.vps[2].drop > 0 ? m3(r3, -1) : r3;                // world up, in camera coordinates
+  const wx = n3(s3(r1, m3(wy, d3(r1, wy)))), wz = c3(wx, wy);
+  const toCam = W => a3(a3(m3(wx, W.x), m3(wy, W.y)), m3(wz, W.z));
+  const toWorld = c => V3(d3(c, wx), d3(c, wy), d3(c, wz));
+  const proj = W => { const c = toCam(W), z = Math.max(c.z, 1e-6); return add(pp, add(mul(u, f * c.x / z), mul(n, -f * c.y / z))); };
+  const r2 = toWorld(ray(g.vp[1]));
+  return {
+    kind: "pinhole", proj, projG: proj, unproj: S => toWorld(ray(S)), crosses: () => false, chartOf: () => 0, projChart: D => proj(D), seamPoint: null, clip: null,
+    axes: [V3(1, 0, 0), n3(V3(r2.x, 0, r2.z))], fits: p => { const c = toCam(p); return c.z > 0.25 * l3(c); }
+  };
+}
+function convCam(g) {
+  if (g.cam) return g.cam;
+  return (state.mode === "3pt" && pinhole3(g)) || curviCam(g, 0);
+}
+// 6-point draws the front view in the left circle, so the "same place" there is relative to that circle
+const frontShift = g => (g.cam && g.cam.kind === "dual" ? sub(g.cam.Cf, g.cam.C) : P(0, 0));
+// A box's real proportions (side along the first axis, side along the second, height), largest = 1
+function boxDims(bx, g) {
+  const cam = convCam(g), gc = g.cam ? g : Object.assign({}, g, { cam });
+  const B = boxGeoCam(bx, gc).B3, [A1, A2] = cam.axes;
+  const H = g.cam ? bx.H : topFromScreen(n3(B[bx.anchor]), boxGeoLinear(bx, g).T[bx.anchor], gc);
+  let a = d3(s3(B[1], B[0]), A1), c = d3(s3(B[3], B[0]), A2), h = Math.abs(H);
+  const m = Math.max(Math.abs(a), Math.abs(c), h) || 1;
+  a /= m; c /= m; h /= m;
+  const keep = v => (Math.abs(v) < 0.03 ? (v < 0 ? -0.03 : 0.03) : v); // don't let a side collapse to nothing
+  return { a: keep(a), c: keep(c), h: Math.max(0.03, h) };
+}
+function screenBox(pts) {
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  return { c: P((x0 + x1) / 2, (y0 + y1) / 2), s: Math.hypot(x1 - x0, y1 - y0) };
+}
+// Rebuild a box with the given proportions so its outline on screen is centered on `target` with
+// diagonal `size`. The box's distance and direction are adjusted until its projection lands there.
+function fitBox(bx, dims, target0, size, g) {
+  const cam = convCam(g), [A1, A2] = cam.axes;
+  const target = cam.keepIn ? cam.keepIn(target0) : target0; // a spot outside the view moves just inside it
+  const build = (q, k) => {
+    const sa = m3(A1, k * dims.a), sc = m3(A2, k * dims.c), sh = m3(UP3, k * dims.h);
+    const B0 = s3(q, m3(a3(a3(sa, sc), sh), 0.5));
+    const B = [B0, a3(B0, sa), a3(a3(B0, sa), sc), a3(B0, sc)];
+    return { B, T: B.map(p => a3(p, sh)) };
+  };
+  // A size is usable when every corner stays well away from the camera and inside what the view can show
+  const ok = (q, k) => { const { B, T } = build(q, k); return [...B, ...T].every(p => l3(p) > 0.3 && (!cam.fits || cam.fits(p, q))); };
+  const look = (q, k) => { const { B, T } = build(q, k); return screenBox([...B, ...T].map(p => cam.proj(p))); };
+  // At size k, aim the box so its outline is centered on the target; null if it can't be placed there
+  const centered = k => {
+    let q = cam.unproj(target);
+    if (!ok(q, k)) return null;
+    for (let i = 0; i < 12; i++) {
+      const miss = sub(target, look(q, k).c);
+      if (len(miss) < 0.5) break;
+      const q2 = cam.unproj(add(cam.proj(q), miss));
+      if (!ok(q2, k)) break;
+      q = q2;
+    }
+    const m = look(q, k);
+    return Number.isFinite(m.s) && len(sub(m.c, target)) <= 2 + 0.02 * size ? { q, s: m.s } : null;
+  };
+  // Then find the largest size that is still centered, fits the view and isn't bigger than before: the
+  // box keeps its place for sure, and its size as far as this view allows.
+  let lo = 0.002, best = centered(lo);
+  if (!best) return;
+  let hi = lo;
+  for (let i = 0; i < 24; i++) {
+    hi *= 2;
+    const r = hi > 4 ? null : centered(hi);
+    if (!r || r.s >= size) break;
+    lo = hi; best = r;
+  }
+  for (let i = 0; i < 24; i++) { const mid = (lo + hi) / 2, r = centered(mid); if (r && r.s <= size) { lo = mid; best = r; } else hi = mid; }
+  const k = lo, q = best.q;
+  const { B, T } = build(q, k), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
+  if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite)) return;
+  bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y);
+  if (g.cam) bx.H = k * dims.h / (l3(B[bx.anchor]) || 1);
+  else { const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); bx.h = Math.max(1, dot(sub(Ta, Ba), g.up(Ba))); }
+}
+// Record where a box sits on screen and how big it looks, as the target for later perspective switches
+function captureFit(bx, g) {
+  try {
+    const G = boxGeo(bx, g), sb = screenBox([...G.B, ...G.T]), c = sub(sb.c, frontShift(g));
+    if (Number.isFinite(c.x) && Number.isFinite(c.y) && sb.s > 0) bx.fit = { x: c.x, y: c.y, s: sb.s };
+  } catch (e) { /* leave the old target */ }
+}
+// Changing the perspective keeps each box's size and place on screen and its real proportions, then
+// rebuilds it under the new rules, so nothing needs re-zooming or re-placing after a switch.
 function reshape(mutate) {
-  const g0 = geo(), tops = state.boxes.map(bx => boxGeo(bx, g0).T[bx.anchor]);
+  const g0 = geo();
+  state.boxes.forEach(bx => { if (!bx.fit) captureFit(bx, g0); });
+  const plan = state.boxes.map(bx => { try { return bx.fit ? boxDims(bx, g0) : null; } catch (e) { return null; } });
   mutate();
   const g1 = geo();
-  state.boxes.forEach((bx, i) => {
-    const Ta = tops[i]; if (!Ta || !Number.isFinite(Ta.x) || !Number.isFinite(Ta.y)) return;
-    if (g1.cam) bx.H = topFromScreen(n3(boxGeoCam(bx, g1).B3[bx.anchor]), Ta, g1);
-    else { const Ba = boxGeoLinear(bx, g1).B[bx.anchor]; bx.h = Math.max(1, dot(sub(Ta, Ba), g1.up(Ba))); }
-  });
+  state.boxes.forEach((bx, i) => { if (plan[i]) fitBox(bx, plan[i], add(P(bx.fit.x, bx.fit.y), frontShift(g1)), bx.fit.s, g1); });
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch();
   return g1;
 }
 function setMode(m) {
   if (m === state.mode) return;
-  const g1 = reshape(() => { state.mode = m; });
-  if (m === "3pt") { const b = visibleBounds(), p = g1.vp[2]; if (p.x < b.x || p.y < b.y || p.x > b.x + b.w || p.y > b.y + b.h) fitView(); }
+  reshape(() => { state.mode = m; });
 }
 function flipVP3(sign) { state.vps[2].drop = sign * Math.max(40, Math.abs(state.vps[2].drop)); commit(); touch(); }
-function addBox() { const bx = makeBox(geo(), state.boxes.length); state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
+function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captureFit(bx, g); state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
 function dupBox() {
   const bx = state.boxes[state.sel]; if (!bx) return;
   const c = clone(bx), g = geo();
@@ -1112,6 +1226,7 @@ function dupBox() {
     const p0 = g.cam.proj(B[0]), p2 = g.cam.proj(B[2]);
     c.b0 = P(p0.x, p0.y); c.b2 = P(p2.x, p2.y); c.H = bx.H / (l3(B[bx.anchor]) || 1);
   } else { const d = mul(g.u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); }
+  captureFit(c, g);
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
 function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
@@ -1810,6 +1925,8 @@ function endPointer(e) {
   if (pointers.size < 2) pinch = null;
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
+  // a box you just reshaped or moved keeps this look when you switch perspective
+  if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
 }
 canvas.addEventListener("pointerup", endPointer);

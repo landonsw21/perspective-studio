@@ -11,6 +11,8 @@ A browser-based perspective drafting tool with six modes:
 
 The curved modes all project true 3D lines through the same camera, so boxes, snapping and face divisions work the same way everywhere. Turning a panorama or resizing a lens keeps boxes where they stand in the scene.
 
+Switching perspective keeps every box at the same place and size on screen, with the same real proportions: 2- and 3-point boxes are read as 3D through their equivalent pinhole cameras and rebuilt in the new mode. Where a view can't show a box that large or that far out (outside a fisheye circle, say), it gets as close as it can, and switching back restores the box exactly.
+
 In every mode:
 
 - Editable horizon line: eye level, center, tilt, color, weight, line style
