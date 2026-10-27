@@ -226,6 +226,70 @@ const hex2rgb = h => { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255
 const shade = (rgb, k) => `rgb(${rgb.map(c => Math.round(Math.min(255, c * k))).join(",")})`;
 const clone = o => JSON.parse(JSON.stringify(o));
 
+/* ---------- lens settings ---------- */
+// (Defined ahead of the state, which loading a saved setup needs them for.)
+const PI2 = Math.PI / 2;
+// Curvature in percent to a side's stretch: 100% is 1, an even fisheye; 0% is a straight view
+const stretchOf = pct => 100 / Math.max(0.01, pct);
+const clampStretch = s => Math.min(1e4, Math.max(1e-3, s));
+// One curved view's lens: its size (the 90° ring's radius at 100%), horizontal and vertical curvature,
+// each side's own share of the stretch (set by dragging that side's VP), and in 6-point the back rim's
+// distance as a multiple of the 90° ring, with each side's own share of that (BL, BR, BU, BD)
+function lensDefaults(size) { return { size, hc: 100, vc: 100, L: 1, R: 1, U: 1, D: 1, back: 2, BL: 1, BR: 1, BU: 1, BD: 1 }; }
+function lensSides(rec) {
+  const h = stretchOf(rec.hc), v = stretchOf(rec.vc);
+  return { L: clampStretch(h * rec.L), R: clampStretch(h * rec.R), U: clampStretch(v * rec.U), D: clampStretch(v * rec.D) };
+}
+// Equidistant (angle in, distance out) up to 90° off the lens axis. Past 90° the rear half follows
+// g(s) = (1 − e^(−κs))/κ, measured in 90° rings, with κ set so the back rim sits `back` times as far out as
+// the 90° ring (κ = 0 stays equidistant, putting it at 2). g starts at the same slope, so lines pass the 90°
+// ring without a kink, and it keeps rising, so the view never folds back on itself.
+const BACK_MIN = 1.05, BACK_MAX = 50;
+function rearKappa(back) {
+  const m = Math.min(BACK_MAX, Math.max(BACK_MIN, back)) - 1, f = k => (Math.abs(k) < 1e-9 ? 1 : -Math.expm1(-k) / k);
+  let lo = -60, hi = 60;
+  for (let i = 0; i < 64; i++) { const mid = (lo + hi) / 2; if (f(mid) > m) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+// `backs` gives the rim's distance on each side ({ L, R, U, D }, in 90° rings); κ blends smoothly between
+// the sides, like the stretch. Left out, the lens stays equidistant all the way round.
+function lensProfile(backs) {
+  const k = backs ? { L: rearKappa(backs.L), R: rearKappa(backs.R), U: rearKappa(backs.U), D: rearKappa(backs.D) } : null;
+  const kap = (cx, sy) => (k ? (cx >= 0 ? k.R : k.L) * cx * cx + (sy >= 0 ? k.U : k.D) * sy * sy : 0);
+  const g = (v, q) => (Math.abs(q) < 1e-9 ? v : -Math.expm1(-q * v) / q);
+  const ig = (v, q) => (Math.abs(q) < 1e-9 ? v : -Math.log1p(-q * Math.min(v, q > 0 ? (1 - 1e-12) / q : Infinity)) / q);
+  return {
+    tk: (t, cx, sy) => (t <= PI2 ? t : PI2 * (1 + g((t - PI2) / PI2, kap(cx, sy)))),
+    itk: (r, cx, sy) => (r <= PI2 ? r : PI2 * (1 + ig(r / PI2 - 1, kap(cx, sy))))
+  };
+}
+// The panorama spreads yaw across the strip as base(yaw) = a·atan2(sin yaw, a·cos yaw), in units of its
+// px-per-radian scale: a stretch a of 1 is an even panorama, a large one flattens it toward a straight
+// view. Each VP's own shift along the strip (panoK, in radians of yaw, set by dragging the VP) bends that
+// smoothly: yaw is first moved by w(yaw), a curve through the four shifts, 90° apart, that repeats all the
+// way around. As long as yaw + w(yaw) keeps rising, the strip runs left to right at any curvature.
+function panoWarp(c) {
+  const a = Math.min(1e4, stretchOf(c.panoHc)), psi0 = -Math.PI / 4 + c.turn * deg, K = c.panoK, TWO = 2 * Math.PI;
+  const c0 = (K[0] + K[1] + K[2] + K[3]) / 4, c1 = (K[0] - K[2]) / 2, s1 = (K[1] - K[3]) / 2, c2 = (K[0] - K[1] + K[2] - K[3]) / 4;
+  const shifted = K.some(k => k !== 0), even = a === 1; // (the usual case skips the arithmetic that does nothing)
+  const w = shifted ? y => { const t = y - psi0; return c0 + c1 * Math.cos(t) + s1 * Math.sin(t) + c2 * Math.cos(2 * t); } : () => 0;
+  const dw = shifted ? y => { const t = y - psi0; return -c1 * Math.sin(t) + s1 * Math.cos(t) - 2 * c2 * Math.sin(2 * t); } : () => 0;
+  // base, carried on past ±180° so it keeps rising, and its inverse
+  const base = even ? y => y : y => { const k = Math.round(y / TWO), r = y - k * TWO; return a * Math.atan2(Math.sin(r), a * Math.cos(r)) + k * TWO * a; };
+  const dbase = even ? () => 1 : y => { const cs = Math.cos(y), sn = Math.sin(y); return a * a / (a * a * cs * cs + sn * sn); };
+  const unbase = even ? t => t : t => { const k = Math.round(t / (TWO * a)), r = (t - k * TWO * a) / a; return Math.atan2(a * Math.sin(r), Math.cos(r)) + k * TWO; };
+  return {
+    a, psi0, base, unbase, w, dw, reach: Math.abs(c0) + Math.abs(c1) + Math.abs(s1) + Math.abs(c2),
+    h: shifted ? y => base(y + w(y)) : base, dh: shifted ? y => dbase(y + w(y)) * (1 + dw(y)) : dbase
+  };
+}
+// The yaw shifts can't make the strip fold back over itself
+function panoOk(c) {
+  const w = panoWarp(c);
+  for (let i = 0; i < 360; i++) if (!(1 + w.dw(-Math.PI + i * Math.PI / 180) > 0.05)) return false;
+  return true;
+}
+
 /* ---------- state ---------- */
 const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 const raysDefault = (ca, cb) => ({ show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center", a: st(ca, 1, "solid", 0.9), b: st(cb, 0.6, "solid", 0.55) });
@@ -240,7 +304,8 @@ function defaultState() {
       // the center (5-point) or front/back (6-point) VP: its rays fan out evenly all the way around
       { dist: 0, drop: 0, color: "#6d4aa8", size: 8, show: true, rays: Object.assign(raysDefault("#8a63c4", "#c9b6e8"), { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
-    curvi: { bend: 80, coverage: 180, circle: true, radius: 400, radius6: 430, pano: 400, turn: 0, style4: "fish" },
+    // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
+    curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
     linkRays: true, symmetric: false, lockFrame: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
@@ -270,14 +335,38 @@ function deepMerge(base, over) {
 }
 // A saved setup is an object with at least some of the tool's settings in it
 const looksLikeSetup = o => !!o && typeof o === "object" && !Array.isArray(o) && ["mode", "horizon", "vps", "boxes"].some(k => k in o);
-const okPt = p => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x) < 1e7 && Math.abs(p.y) < 1e7;
+// (a lens set close to straight can put a box legitimately far out, so the limit is generous)
+const okPt = p => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x) < 1e12 && Math.abs(p.y) < 1e12;
+// Setups saved before each side of the lens could be set on its own have one curvature and a radius. They
+// become lenses with the same rings and the same scale at the center.
+function migrateLens(s) {
+  const c = s && s.curvi;
+  if (!c || typeof c !== "object" || "f5" in c) return;
+  const bend = Number.isFinite(c.bend) ? c.bend : 80, R = c.radius > 0 ? c.radius : 400, rim = c.radius6 > 0 ? c.radius6 : 430;
+  const L = lensFn(Math.min(2, Math.max(0.05, bend / 100))), pct = 100 * PI2 / L.tk(PI2);
+  c.f4 = { size: R * pct / 100, hc: pct, vc: pct };
+  c.f5 = { size: R * pct / 100, hc: pct, vc: pct };
+  const L6 = lensFn(Math.min(1.5, Math.max(0.6, bend / 100))), pct6 = 100 * PI2 / L6.tk(PI2);
+  c.f6 = { size: rim / L6.tk(Math.PI) * PI2, hc: pct6, vc: pct6, back: L6.tk(Math.PI) / L6.tk(PI2) };
+}
 function normalize(s) {
   const d = defaultState();
+  migrateLens(s);
   const out = deepMerge(d, s || {});
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
   if (!["1pt", "2pt", "3pt", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
   if (!["fish", "pano"].includes(out.curvi.style4)) out.curvi.style4 = "fish";
+  const cv = out.curvi;
+  ["f4", "f5", "f6"].forEach(k => {
+    const r = cv[k];
+    if (!(r.size > 0)) r.size = d.curvi[k].size;
+    r.hc = Math.max(0, r.hc); r.vc = Math.max(0, r.vc);
+    ["L", "R", "U", "D", "BL", "BR", "BU", "BD"].forEach(sd => { if (!(r[sd] > 0)) r[sd] = 1; });
+    r.back = Math.min(BACK_MAX, Math.max(BACK_MIN, r.back));
+  });
+  cv.panoHc = Math.max(0, cv.panoHc);
+  if (!(cv.panoK.length === 4 && cv.panoK.every(Number.isFinite) && panoOk(cv))) cv.panoK = [0, 0, 0, 0];
   // boxes without two usable corners are dropped rather than drawn wrong
   out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).filter(b => b && okPt(b.b0) && okPt(b.b2)).map(b => deepMerge(boxDefaults(), b));
   out.boxes.forEach(b => {
@@ -333,7 +422,7 @@ function fams() {
   switch (state.mode) {
     case "1pt": return [3];
     case "3pt": return [0, 1, 2];
-    case "4pt": return isPanoMode() ? [0, 1] : [0, 2];
+    case "4pt": return isPanoMode() ? [0, 1] : [0, 1, 2];
     case "5pt": case "6pt": return [0, 3, 2];
     default: return [0, 1];
   }
@@ -341,34 +430,58 @@ function fams() {
 function famName(vi) {
   if (state.mode === "1pt") return "VP";
   if (isPanoMode()) return vi === 0 ? "VP1 and VP3" : "VP2 and VP4";
-  if (["4pt", "5pt", "6pt"].includes(state.mode)) return vi === 0 ? "left and right" : vi === 2 ? "up and down" : state.mode === "6pt" ? "front and back" : "center";
+  if (state.mode === "4pt") return vi === 2 ? "up and down" : "VP" + (vi + 1);
+  if (["5pt", "6pt"].includes(state.mode)) return vi === 0 ? "left and right" : vi === 2 ? "up and down" : state.mode === "6pt" ? "front and back" : "center";
   return "VP" + (vi + 1);
 }
 
-// Lens family by curvature c (a fraction): 0–1 is r = f·tan(kθ)/k with k = 1 − c (pinhole → equidistant),
-// 1–2 is r = f·sin(kθ)/k with k = c − 1 (equidistant → equisolid → orthographic). Past 2 the sine lens
-// keeps squeezing the edges, but it can only show angles below 90°/k.
+// The single-curvature lens family that older setups were saved with, used to bring them in: by curvature
+// c (a fraction), 0–1 is r = f·tan(kθ)/k with k = 1 − c (pinhole → equidistant), and 1–2 is
+// r = f·sin(kθ)/k with k = c − 1 (equidistant → equisolid → orthographic).
 function lensFn(c) {
   const sine = c > 1, k = sine ? Math.min(c - 1, 1.98) : 1 - c;
   const tk = sine ? (t => (k > 1e-4 ? Math.sin(k * t) / k : t)) : (t => (k > 1e-4 ? Math.tan(k * t) / k : t));
   const itk = sine ? (r => (k > 1e-4 ? Math.asin(Math.min(1, r * k)) / k : r)) : (r => (k > 1e-4 ? Math.atan(r * k) / k : r));
-  const thValid = k > 1e-4 ? Math.min(Math.PI, Math.PI / (2 * k)) : Math.PI;
-  return { tk, itk, thValid, thLimit: thValid * 0.995 };
+  return { tk, itk };
 }
-// A fisheye centered on screen point C (camera x right, y up, z into the picture). projG gives up past thCap.
-function lensProjector(C, f, L, u, n, thCap, unprojCap) {
-  const map = (D, th) => {
-    const r = f * L.tk(th), ph = Math.atan2(D.y, D.x), dx = r * Math.cos(ph), dy = -r * Math.sin(ph);
-    return P(C.x + u.x * dx + n.x * dy, C.y + u.y * dx + n.y * dy);
+// The lens of 4-point (fisheye), 5- and 6-point, around screen point C (camera x right, y up, z into the
+// picture). A direction θ off the lens axis, at angle φ around it, lands r = F·A·t(θ′) from C at the same
+// angle φ on screen. A(φ) is how far the lens reaches that way, blended from its stretch to the left,
+// right, up and down (`sides`), and θ′ = atan2(sin θ, A·cos θ) straightens the view as the stretch grows.
+// So a side's stretch is that side's curvature: 1 is an even equidistant fisheye, and a huge stretch is a
+// straight (rectilinear) view, where lines running that way stop curving. The blend is smooth across the
+// axes, so lines stay smooth even when every side is stretched differently. projG gives up past thCap.
+function twoAxisLens(C, F, sides, u, n, prof, thCap) {
+  const reach = (cx, sy) => 1 / Math.hypot(cx / (cx >= 0 ? sides.R : sides.L), sy / (sy >= 0 ? sides.U : sides.D));
+  const at = (x, y) => P(C.x + u.x * x - n.x * y, C.y + u.y * x - n.y * y); // y measured upward
+  // screen point for angle th off the axis, at the angle around it given by its cosine and sine
+  const place = (th, cx, sy) => { const A = reach(cx, sy), r = F * A * prof.tk(Math.atan2(Math.sin(th), A * Math.cos(th)), cx, sy); return at(r * cx, r * sy); };
+  const map = (D, thLim) => {
+    const rho = Math.hypot(D.x, D.y);
+    if (rho === 0 && D.z > 0) return P(C.x, C.y);
+    return place(Math.min(Math.atan2(rho, D.z), thLim), rho > 0 ? D.x / rho : 1, rho > 0 ? D.y / rho : 0);
   };
-  const angle = D => Math.atan2(Math.hypot(D.x, D.y), D.z); // angle off the lens axis; D need not be unit length
   return {
-    proj: D => map(D, Math.min(angle(D), L.thLimit)),
-    projG: D => { const th = angle(D); return th > thCap ? null : map(D, th); },
+    reach, at, place,
+    proj: D => map(D, Math.PI * 0.999),
+    projG: D => (Math.atan2(Math.hypot(D.x, D.y), D.z) > thCap ? null : map(D, Math.PI)),
     unproj: S => {
-      const v = sub(S, C), dx = dot(v, u), dy = dot(v, n);
-      const th = Math.min(L.itk(Math.hypot(dx, dy) / f), unprojCap || Math.PI * 0.999), ph = Math.atan2(-dy, dx), s = Math.sin(th);
-      return V3(s * Math.cos(ph), s * Math.sin(ph), Math.cos(th));
+      const v = sub(S, C), x = dot(v, u), y = -dot(v, n), r = Math.hypot(x, y);
+      if (r < 1e-9) return V3(0, 0, 1);
+      // (a strongly stretched side squeezes the eased angle right up against 180°, so only the true angle
+      // is capped)
+      const cx = x / r, sy = y / r, A = reach(cx, sy), t = Math.min(prof.itk(r / (F * A), cx, sy), Math.PI);
+      const th = Math.min(Math.atan2(A * Math.sin(t), Math.cos(t)), Math.PI * 0.999), s = Math.sin(th);
+      return V3(s * cx, s * sy, Math.cos(th));
+    },
+    // the closed curve where everything th off the axis lands: the 90° ring, the lens edge, the cone
+    ring: th => { const pts = []; for (let i = 0; i < 180; i++) { const a = i * Math.PI / 90; pts.push(place(th, Math.cos(a), Math.sin(a))); } return pts; },
+    // a screen point pulled in toward the center until it is no more than lim off the axis
+    keepIn: lim => S => {
+      const v = sub(S, C), x = dot(v, u), y = -dot(v, n), r = Math.hypot(x, y);
+      if (r < 1e-9) return S;
+      const cx = x / r, sy = y / r, edge = place(lim, cx, sy);
+      return len(sub(edge, C)) < r ? edge : S;
     }
   };
 }
@@ -427,108 +540,139 @@ function pinhole1(g) {
   const f = Math.max(200, Math.sqrt(Math.abs(state.vps[0].dist * state.vps[1].dist)) || 1000);
   return levelPinhole(g.vp[3], f, g.u, g.n, [V3(1, 0, 0), V3(0, 0, 1)]);
 }
-// 4-, 5- and 6-point share a lens sized by the radius of its 90° circle. They need 5–200% curvature so
-// the 90° points stay on the circle.
-function radiusLens() {
-  const c = Math.min(2, Math.max(0.05, state.curvi.bend / 100)), L = lensFn(c), R = Math.max(10, state.curvi.radius);
-  return { c, L, R, f: R / L.tk(Math.PI / 2) };
-}
-// 4- and 5-point: a fisheye looking straight down the depth axis. The left/right and up/down VPs sit on
-// the 90° circle; 5-point adds the center VP that depth lines run to.
-function fisheyeCam(g, withCenter) {
-  const { c, L, R, f } = radiusLens(), u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv));
-  const thMax = Math.min(withCenter ? state.curvi.coverage / 2 * deg : Math.PI / 2, L.thLimit);
-  const at = (dx, dy) => add(C, add(mul(u, dx), mul(n, dy)));
-  const across = w => Math.abs(dot(sub(w, C), u)), upDown = w => Math.abs(dot(sub(w, C), n));
-  const X = V3(1, 0, 0), Z = V3(0, 0, 1);
-  const markers = [
-    marker(at(-R, 0), "Left", 0, "radius", { rf: across }), marker(at(R, 0), "Right", 0, "radius", { rf: across, primary: false }),
-    marker(at(0, -R), "Up", 2, "radius", { rf: upDown }), marker(at(0, R), "Down", 2, "radius", { rf: upDown, primary: false })
+const lensKey = () => (state.mode === "6pt" ? "f6" : state.mode === "5pt" ? "f5" : "f4");
+// A side's VP counts as gone off to infinity once that side is all but straight
+const farOff = s => s > 50;
+// 4-point (fisheye) and 5-point show the front half of the lens (5-point can widen it). 5-point looks
+// straight down the depth axis: depth lines run to the center VP, and the left/right and up/down VPs sit
+// on the 90° ring. 4-point looks at a corner, like 2-point: the box's two horizontal directions vanish at
+// VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs.
+function fisheyeCam(g, front) {
+  const rec = state.curvi[front ? "f5" : "f4"], F = Math.max(5, rec.size) / PI2, sides = lensSides(rec);
+  const u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv));
+  const thMax = front ? Math.min(state.curvi.coverage / 2 * deg, Math.PI * 0.999) : PI2;
+  const lens = twoAxisLens(C, F, sides, u, n, lensProfile(), thMax);
+  const vert = [
+    marker(lens.proj(UP3), "Up", 2, "sideV", { side: "U", far: farOff(sides.U) }),
+    marker(lens.proj(V3(0, -1, 0)), "Down", 2, "sideV", { side: "D", far: farOff(sides.D), primary: false })
   ];
-  if (withCenter) markers.push(marker(C, "Center", 3, "center", { cvShift: 0 }));
-  return Object.assign(oneChart(lensProjector(C, f, L, u, n, thMax)), {
-    kind: "lens", C, f, R, c, tk: L.tk, thMax, thValid: L.thValid, mc: C,
-    axes: [X, Z], fam: { 0: X, 2: UP3, 3: Z }, markers,
-    fits: p => offAxis(p) <= thMax * 0.97, keepIn: S => pullIn(S, C, f * L.tk(thMax * 0.95)),
-    edges: [{ circle: C, r: f * L.tk(thMax) }],
-    cone: { center: C, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
+  let axes, fam, markers;
+  if (front) {
+    const X = V3(1, 0, 0), Z = V3(0, 0, 1);
+    axes = [X, Z]; fam = { 0: X, 2: UP3, 3: Z };
+    markers = [
+      marker(C, "Center", 3, "center"),
+      marker(lens.proj(V3(-1, 0, 0)), "Left", 0, "sideH", { side: "L", far: farOff(sides.L) }),
+      marker(lens.proj(X), "Right", 0, "sideH", { side: "R", far: farOff(sides.R), primary: false }),
+      ...vert
+    ];
+  } else {
+    const turn = state.curvi.turn * deg;
+    axes = [-Math.PI / 4 + turn, Math.PI / 4 + turn].map(p => V3(Math.sin(p), 0, Math.cos(p)));
+    const seen = axes.map(d => (d.z >= 0 ? d : m3(d, -1))); // the end of each direction that lies in front of you
+    fam = { 0: seen[0], 1: seen[1], 2: UP3 };
+    markers = [0, 1].map(k => marker(lens.proj(seen[k]), "VP" + (k + 1), k, "corner", { axis: k, yaw: Math.atan2(seen[k].x, seen[k].z) })).concat(vert);
+  }
+  return Object.assign(oneChart(lens), {
+    kind: "lens", C, F, sides, thMax, mc: C, axes, fam, markers,
+    R: F * sides.D * PI2, // how far below the center the down VP sits
+    fits: p => offAxis(p) <= thMax * 0.97, keepIn: lens.keepIn(thMax * 0.95),
+    edges: [{ ring: lens.ring(thMax) }],
+    cone: { center: C, radius: ang => lens.ring(Math.min(ang, Math.PI * 0.999)) }
   });
 }
-// 6-point: the whole sphere in one continuous circle. The front VP is the center; left, right, up and
-// down sit on the 90° ring; the back VP is the outer rim, where every line heading behind you ends up.
-// It needs 60–150% curvature so the full 360° stays finite (equidistant at 100%, equisolid at 150%).
+// 6-point: the whole sphere in one continuous view. The front VP is the center; left, right, up and down
+// sit on the 90° ring; the back VP is the outer rim, where every line heading behind you ends up.
 function sphereCam(g) {
-  const c = Math.min(1.5, Math.max(0.6, state.curvi.bend / 100)), L = lensFn(c);
-  const rim = Math.max(20, state.curvi.radius6), f = rim / L.tk(Math.PI), R = f * L.tk(Math.PI / 2);
+  const rec = state.curvi.f6, F = Math.max(5, rec.size) / PI2, sides = lensSides(rec);
+  const prof = lensProfile({ L: rec.back * rec.BL, R: rec.back * rec.BR, U: rec.back * rec.BU, D: rec.back * rec.BD });
   const u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv));
-  const thMax = Math.min(Math.PI * 0.999, L.thLimit);
-  const lens = lensProjector(C, f, L, u, n, thMax);
-  const at = (dx, dy) => add(C, add(mul(u, dx), mul(n, dy)));
+  const thMax = Math.PI * 0.999;
+  const lens = twoAxisLens(C, F, sides, u, n, prof, thMax);
   const azi = p => Math.atan2(p.y, p.x);
-  const rimAt = a => at(rim * Math.cos(a), -rim * Math.sin(a));
+  const rimAt = a => lens.place(Math.PI, Math.cos(a), Math.sin(a));
   // Straight behind you, the picture wraps around the rim: a line passing through the back VP leaves the
   // rim on one side and comes back on the opposite side, so it is broken there instead of cutting across.
   const nearBack = p => offAxis(p) > Math.PI * 0.85;
   const crosses = (p, q) => nearBack(p) && nearBack(q) && Math.abs(Math.atan2(Math.sin(azi(p) - azi(q)), Math.cos(azi(p) - azi(q)))) > Math.PI / 2;
-  const scale = rim / R, across = w => Math.abs(dot(sub(w, C), u)) * scale, upDown = w => Math.abs(dot(sub(w, C), n)) * scale, outer = w => len(sub(w, C));
   const X = V3(1, 0, 0), Z = V3(0, 0, 1);
   // A face that covers the point straight behind you would wrap all the way around the rim when filled
   const hitsBack = q => rayHitsQuad(V3(0, 0, -1), q);
   return {
-    kind: "sphere", C, f, R, rim, c, tk: L.tk, thMax, thValid: L.thValid, mc: C,
+    kind: "sphere", C, F, sides, back: rec.back, thMax, mc: C,
     axes: [X, Z], fam: { 0: X, 2: UP3, 3: Z },
     proj: lens.proj, projG: lens.projG, unproj: lens.unproj,
     crosses, chartOf: azi, projChart: (D, a) => rimAt(a), seamPoint: () => V3(0, 0, -1),
     clip: (ring, quad) => (quad && hitsBack(quad) ? [] : null), // leave such a face unfilled; its edges still draw
     // a carried-over box stays clear of the point behind you and of the squeezed zone around it
-    fits: p => offAxis(p) <= Math.PI * 0.88, keepIn: S => pullIn(S, C, f * L.tk(Math.PI * 0.62)),
+    fits: p => offAxis(p) <= Math.PI * 0.88, keepIn: lens.keepIn(Math.PI * 0.62),
     boxOk: (B, T) => !FACES.some(fc => hitsBack(fc.v.map(s => (s[0] === "b" ? B : T)[+s[1]]))),
+    R: F * sides.D * PI2,
     markers: [
-      marker(C, "Front", 3, "center", { cvShift: 0 }),
-      marker(at(-R, 0), "Left", 0, "radius", { rf: across, key: "radius6" }), marker(at(R, 0), "Right", 0, "radius", { rf: across, key: "radius6", primary: false }),
-      marker(at(0, -R), "Up", 2, "radius", { rf: upDown, key: "radius6" }), marker(at(0, R), "Down", 2, "radius", { rf: upDown, key: "radius6", primary: false }),
-      marker(at(-rim, 0), "Back", 3, "radius", { rf: outer, key: "radius6", primary: false }), marker(at(rim, 0), "Back", 3, "radius", { rf: outer, key: "radius6", primary: false })
+      marker(C, "Front", 3, "center"),
+      marker(lens.proj(V3(-1, 0, 0)), "Left", 0, "sideH", { side: "L", far: farOff(sides.L) }),
+      marker(lens.proj(X), "Right", 0, "sideH", { side: "R", far: farOff(sides.R), primary: false }),
+      marker(lens.proj(UP3), "Up", 2, "sideV", { side: "U", far: farOff(sides.U) }),
+      marker(lens.proj(V3(0, -1, 0)), "Down", 2, "sideV", { side: "D", far: farOff(sides.D), primary: false }),
+      marker(rimAt(Math.PI), "Back", 3, "back", { dir: -1, far: farOff(sides.L), primary: false }),
+      marker(rimAt(0), "Back", 3, "back", { dir: 1, far: farOff(sides.R), primary: false })
     ],
-    edges: [{ circle: C, r: R }, { circle: C, r: rim }],
-    cone: { center: C, radius: ang => f * L.tk(Math.min(ang, L.thLimit)) }
+    edges: [{ ring: lens.ring(PI2) }, { ring: lens.ring(Math.PI) }],
+    cone: { center: C, radius: ang => lens.ring(Math.min(ang, Math.PI * 0.999)) }
   };
 }
 // 4-point panorama: a 360° cylinder. Verticals stay straight, and each horizontal direction has a VP on
-// the horizon plus another 180° away, so edges curve between VP1 and VP3, or between VP2 and VP4.
+// the horizon plus another 180° away, so edges curve between VP1 and VP3, or between VP2 and VP4. Yaw is
+// spread across the strip by panoWarp; heights scale with √(its slope), which keeps an even panorama's
+// shapes true along the horizon and becomes a straight view's as the panorama flattens.
 function panoCam(g) {
-  const s = Math.max(10, state.curvi.pano), Rp = s / (Math.PI / 2); // px per radian
-  const u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv)), elevMax = 80 * deg;
+  const s = Math.max(10, state.curvi.pano), F = s / PI2; // px per radian
+  const w = panoWarp(state.curvi), u = g.u, n = g.n, C = add(g.O, mul(u, state.cone.cv)), elevMax = 80 * deg;
   const wrap = a => { const t = (a + Math.PI) % (2 * Math.PI); return (t < 0 ? t + 2 * Math.PI : t) - Math.PI; };
-  const at = (yaw, elev) => add(C, add(mul(u, Rp * yaw), mul(n, -Rp * Math.tan(elev))));
+  const tall = yaw => F * Math.sqrt(Math.max(1e-9, w.dh(yaw)));
+  const at = (yaw, elev) => add(C, add(mul(u, F * w.h(yaw)), mul(n, -tall(yaw) * Math.tan(elev))));
   const elevOf = D => Math.atan2(D.y, Math.hypot(D.x, D.z));
   const clampE = e => Math.max(-elevMax, Math.min(elevMax, e));
   // chart 0 holds yaw 0…180°, chart 1 holds −180…0°; they only disagree at the seam behind the viewer
   const projChart = (D, ch) => at(Math.atan2(Math.abs(D.x), D.z) * (ch === 0 ? 1 : -1), clampE(elevOf(D)));
   const proj = D => at(Math.atan2(D.x, D.z), clampE(elevOf(D)));
   const crosses = (p, q) => (p.x >= 0) !== (q.x >= 0) && p.z + q.z < 0;
-  const turn = state.curvi.turn * deg, psi = [wrap(-Math.PI / 4 + turn), wrap(Math.PI / 4 + turn)];
+  // the yaw at a spot across the strip (px from the center): undo base, then undo the VP shifts with
+  // Newton's method, kept inside a shrinking bracket
+  const yawAt = x => {
+    const t = x / F;
+    if (t <= w.h(-Math.PI)) return -Math.PI;
+    if (t >= w.h(Math.PI)) return Math.PI;
+    const target = w.unbase(t);
+    let lo = target - w.reach - 0.01, hi = target + w.reach + 0.01, y = target - w.w(target);
+    for (let i = 0; i < 80; i++) {
+      const e = y + w.w(y) - target; if (Math.abs(e) < 1e-13) break;
+      if (e > 0) hi = y; else lo = y;
+      const ny = y - e / (1 + w.dw(y));
+      y = ny > lo && ny < hi ? ny : (lo + hi) / 2;
+    }
+    return Math.max(-Math.PI, Math.min(Math.PI, y));
+  };
+  const unproj = S => {
+    const v = sub(S, C), yaw = yawAt(dot(v, u)), e = Math.atan(-dot(v, n) / tall(yaw)), ce = Math.cos(e);
+    return V3(ce * Math.sin(yaw), Math.sin(e), ce * Math.cos(yaw));
+  };
+  const psi = [wrap(w.psi0), wrap(w.psi0 + PI2)];
   const X = psi.map(p => V3(Math.sin(p), 0, Math.cos(p)));
   return {
-    kind: "pano", C, Rp, s, psi, mc: C, axes: X, fam: { 0: X[0], 1: X[1] },
-    proj, projChart, chartOf: D => (D.x >= 0 ? 0 : 1), crosses,
+    kind: "pano", C, F, s, warp: w, psi, mc: C, axes: X, fam: { 0: X[0], 1: X[1] },
+    proj, projChart, chartOf: D => (D.x >= 0 ? 0 : 1), crosses, unproj,
     projG: D => (Math.abs(elevOf(D)) > elevMax ? null : proj(D)),
-    unproj: S => {
-      const v = sub(S, C), yaw = Math.max(-Math.PI, Math.min(Math.PI, dot(v, u) / Rp)), e = Math.atan(-dot(v, n) / Rp), ce = Math.cos(e);
-      return V3(ce * Math.sin(yaw), Math.sin(e), ce * Math.cos(yaw));
-    },
     seamPoint: (p, q) => lerp3(p, q, p.x / (p.x - q.x)),
     clip: pts => (pts.some((p, i) => crosses(p, pts[(i + 1) % pts.length])) ? splitPoly(pts, p => p.x) : null),
     // a carried-over box stays clear of the strip's ends and of the steep top and bottom
     fits: (p, q) => Math.abs(elevOf(p)) <= elevMax * 0.95 && Math.abs(Math.atan2(p.x, p.z) - Math.atan2(q.x, q.z)) < Math.PI * 0.8,
     keepIn: S => {
-      const v = sub(S, C), xl = 0.9 * Math.PI * Rp, yl = Rp * Math.tan(elevMax * 0.9);
-      return add(C, add(mul(u, Math.max(-xl, Math.min(xl, dot(v, u)))), mul(n, Math.max(-yl, Math.min(yl, dot(v, n))))));
+      const D = unproj(S), yaw = Math.atan2(D.x, D.z), e = elevOf(D), yl = 0.9 * Math.PI, el = 0.9 * elevMax;
+      return Math.abs(yaw) <= yl && Math.abs(e) <= el ? S : at(Math.max(-yl, Math.min(yl, yaw)), Math.max(-el, Math.min(el, e)));
     },
-    markers: [
-      marker(at(psi[0], 0), "VP1", 0, "turn"), marker(at(psi[1], 0), "VP2", 1, "turn"),
-      marker(at(wrap(psi[0] + Math.PI), 0), "VP3", 0, "turn", { primary: false }),
-      marker(at(wrap(psi[1] + Math.PI), 0), "VP4", 1, "turn", { primary: false })
-    ],
+    // VP1 and VP2 are the box's two horizontal directions; VP3 and VP4 the same directions, behind you
+    markers: [0, 1, 2, 3].map(k => { const yaw = wrap(w.psi0 + k * PI2); return marker(at(yaw, 0), "VP" + (k + 1), k % 2, "knot", { k, yaw, primary: k < 2 }); }),
     edges: [-Math.PI, Math.PI].map(y => ({ line: [at(y, -elevMax), at(y, elevMax)] })),
     cone: null
   };
@@ -724,7 +868,8 @@ function topFromScreen(Bu, S, g) {
 }
 function axisName(a) {
   if (isPanoMode()) return a ? "VP2 and VP4" : "VP1 and VP3";
-  if (["4pt", "5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
+  if (state.mode === "4pt") return a ? "VP2" : "VP1";
+  if (["5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
   return a ? "VP2" : "VP1";
 }
 function faceLabel(id) {
@@ -876,9 +1021,12 @@ function farDist(p, b) {
 }
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
+// A closed curve through screen points (a lens's rings and cone are ovals once its sides differ)
+function tracePoly(c, pts) { pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); }
+// The cone of vision: a circle of radius r, or the closed curve r when it is a list of points
 function drawCone(c, k, cv, r) {
   strokeStyle(c, { color: state.cone.color, width: 1, dash: "dashed", opacity: 0.8 }, k);
-  c.beginPath(); c.arc(cv.x, cv.y, r, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); if (Array.isArray(r)) tracePoly(c, r); else c.arc(cv.x, cv.y, r, 0, Math.PI * 2); c.stroke();
   c.beginPath(); const a = 8 / k; c.moveTo(cv.x - a, cv.y); c.lineTo(cv.x + a, cv.y); c.moveTo(cv.x, cv.y - a); c.lineTo(cv.x, cv.y + a); c.setLineDash([]); c.stroke();
 }
 function drawGuides(c, k, b, inc, g) {
@@ -891,7 +1039,7 @@ function drawGuides(c, k, b, inc, g) {
       strokeStyle(c, { color: C.color, width: 1.25, dash: "dotted", opacity: 0.9 }, k);
       c.beginPath();
       for (const e of cam.edges) {
-        if (e.circle) { c.moveTo(e.circle.x + e.r, e.circle.y); c.arc(e.circle.x, e.circle.y, e.r, 0, Math.PI * 2); }
+        if (e.ring) tracePoly(c, e.ring);
         else { c.moveTo(e.line[0].x, e.line[0].y); c.lineTo(e.line[1].x, e.line[1].y); }
       }
       c.stroke();
@@ -1173,7 +1321,97 @@ function keepBoxes(mutate, turn = 0) {
     captureFit(bx, g1); // the boxes moved with the scene on purpose, so this is their new look
   });
 }
-const LENS_PATHS = ["curvi.radius", "curvi.radius6", "curvi.bend", "curvi.coverage", "curvi.pano", "curvi.turn", "curvi.style4", "cone.cv"];
+// Dragging one VP of a curved view moves just that VP, and the lens reshapes around it. Each drag works
+// from the lens as it was when the drag began, so the points that stay put don't drift.
+function lensVPDrag(mk, w, g) {
+  const c0 = drag.lens0, cam0 = drag.cam0, C = cam0.C, rel = sub(w, C);
+  const along = dot(rel, g.u), down = dot(rel, g.n), gap = 6 / view.z;
+  // how far out a side's 90° point sits for each unit of that side's share
+  const unit = (key, curv) => cam0.F * stretchOf(c0[key][curv]) * PI2;
+  switch (mk.drag) {
+    case "sideH": case "sideV": {
+      const key = lensKey(), horiz = mk.drag === "sideH", sd = mk.side, r0 = c0[key], un = unit(key, horiz ? "hc" : "vc");
+      let dist = Math.max(gap, horiz ? (sd === "L" ? -along : along) : (sd === "U" ? -down : down));
+      if (key !== "f6") { keepBoxes(() => { state.curvi[key][sd] = dist / un; }); return; }
+      // in 6-point the back rim on that side stays put, and the 90° point can't pass it
+      const rim = un * r0[sd] * r0.back * r0["B" + sd];
+      dist = Math.min(dist, rim / BACK_MIN);
+      keepBoxes(() => { const r = state.curvi.f6; r[sd] = dist / un; r["B" + sd] = rim / (dist * r0.back); });
+      return;
+    }
+    case "center": {
+      // The center slides between the left and right points, which stay put, as does the 6-point back rim
+      // beside them; up and down ride along
+      const key = lensKey(), r0 = c0[key], un = unit(key, "hc"), xL = -un * r0.L, xR = un * r0.R;
+      let lo = xL + gap, hi = xR - gap;
+      const six = key === "f6", rimL = six ? -xL * r0.back * r0.BL : 0, rimR = six ? xR * r0.back * r0.BR : 0;
+      if (six) { // keep each side's rim at least BACK_MIN times as far out as its 90° point
+        hi = Math.min(hi, (rimL + BACK_MIN * xL) / (BACK_MIN - 1));
+        lo = Math.max(lo, -(rimR - BACK_MIN * xR) / (BACK_MIN - 1));
+      }
+      if (!(lo < hi)) return;
+      const cv = Math.round(drag.cv0 + Math.max(lo, Math.min(hi, along))), shift = Math.max(lo, Math.min(hi, cv - drag.cv0));
+      keepBoxes(() => {
+        const r = state.curvi[key];
+        state.cone.cv = drag.cv0 + shift; r.L = (shift - xL) / un; r.R = (xR - shift) / un;
+        if (six) { r.BL = (rimL + shift) / ((shift - xL) * r0.back); r.BR = (rimR - shift) / ((xR - shift) * r0.back); }
+      });
+      return;
+    }
+    case "back": {
+      // the back VP is the whole rim: it grows or shrinks as one, each side keeping its own share
+      const r0 = c0.f6, sd = mk.dir < 0 ? "L" : "R", rim = cam0.F * cam0.sides[sd] * PI2 * r0.back * r0["B" + sd];
+      const k = Math.max(gap, mk.dir < 0 ? -along : along) / rim, eff = ["L", "R", "U", "D"].map(s => r0.back * r0["B" + s]);
+      const kk = Math.min(BACK_MAX / Math.max(...eff), Math.max(BACK_MIN / Math.min(...eff), k));
+      keepBoxes(() => { state.curvi.f6.back = r0.back * kk; });
+      return;
+    }
+    case "corner": {
+      // Like a 2-point VP: the other VP stays where it is, and the lens turns and resizes so this one lands
+      // under the pointer. Up and down keep their places too.
+      const other = cam0.markers.find(m => m.drag === "corner" && m.axis !== mk.axis);
+      const left = mk.yaw < other.yaw, xo = dot(sub(other.p, C), g.u);
+      const sol = solveCorner(left ? Math.min(-gap, along) : xo, left ? xo : Math.max(gap, along), cam0.sides.L, cam0.sides.R);
+      if (!sol || !(sol.F * PI2 >= 5 && sol.F * PI2 <= 1e5)) return;
+      const turn = c0.turn + (-sol.p - Math.min(mk.yaw, other.yaw)) / deg, k = cam0.F / sol.F;
+      keepBoxes(() => { const r = state.curvi.f4; state.curvi.turn = turn; r.size = sol.F * PI2; r.U = c0.f4.U * k; r.D = c0.f4.D * k; }, (turn - state.curvi.turn) * deg);
+      return;
+    }
+    case "knot": {
+      // a panorama VP: only its own yaw shift changes, as long as the strip still runs left to right
+      const K = c0.panoK.slice();
+      K[mk.k] = cam0.warp.unbase(along / cam0.F) - mk.yaw;
+      if (!panoOk(Object.assign({}, c0, { panoK: K }))) return;
+      keepBoxes(() => { state.curvi.panoK = K; });
+      return;
+    }
+  }
+}
+// 4-point fisheye: with the left VP at yaw −p and the right one at 90° − p, find p and the lens scale F
+// that put them at screen offsets xl < 0 < xr from the lens center
+const horizonReach = (lam, a) => a * Math.atan2(Math.sin(lam), a * Math.cos(lam)); // in units of F
+function solveCorner(xl, xr, aL, aR) {
+  const ratio = -xl / xr, f = p => horizonReach(p, aL) / horizonReach(PI2 - p, aR);
+  if (!(ratio > 0 && Number.isFinite(ratio))) return null;
+  let lo = 1e-4, hi = PI2 - 1e-4;
+  for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (f(mid) < ratio) lo = mid; else hi = mid; }
+  const p = (lo + hi) / 2;
+  return { p, F: xr / horizonReach(PI2 - p, aR) };
+}
+// Put the current curved view's VPs back in an even layout, keeping its size and curvature. In 4-point
+// fisheye VP1 and VP2 go back to 45° either side, which turns the boxes with them.
+function evenVPs() {
+  if (!camMode()) return;
+  const c = state.curvi, turn = isFish4() ? Math.round(c.turn / 90) * 90 : c.turn;
+  keepBoxes(() => {
+    if (isPano()) c.panoK = [0, 0, 0, 0];
+    else { const r = c[lensKey()]; r.L = r.R = r.U = r.D = r.BL = r.BR = r.BU = r.BD = 1; r.back = 2; }
+    c.turn = turn;
+  }, (turn - c.turn) * deg);
+  commit(); touch();
+}
+// Settings that change the curved views' camera rather than the scene ($l is the current mode's lens)
+const LENS_PATHS = ["curvi.$l.size", "curvi.$l.hc", "curvi.$l.vc", "curvi.f6.back", "curvi.coverage", "curvi.pano", "curvi.panoHc", "curvi.turn", "curvi.style4", "cone.cv"];
 // ---- Carrying boxes across a change of perspective ----
 // Every mode can be read as a camera: the curved modes have one, 1- and 2-point are level pinholes, and
 // 3-point is a tilted one. That lets a box be read out as a 3D shape in one mode and rebuilt in another.
@@ -1340,19 +1578,20 @@ function captureFit(bx, g) {
 }
 // A lens or panorama only has so much room. When switching into one, grow it (never shrink it) until
 // every box fits at exactly its old size and place, so the switch doesn't change how the boxes look.
-const lensScaleKey = () => (isPano() ? "pano" : is6() ? "radius6" : "radius");
+// The setting that scales the whole view: the panorama's VP spacing, or the lens size
+const lensScale = () => (isPano() ? { obj: state.curvi, key: "pano" } : { obj: state.curvi[lensKey()], key: "size" });
 // In 6-point it also grows until a box that was in front of you is still in front of you, rather than
 // wrapped around behind you, where it would bend into a sliver near the rim.
 function growLensToFit(plans) {
-  const key = lensScaleKey(), start = Math.max(20, state.curvi[key]);
+  const { obj, key } = lensScale(), start = Math.max(20, obj[key]);
   const inFront = (p, f) => !is6() || !p.front || offAxis(m3(a3(f.B[0], f.T[2]), 0.5)) <= Math.PI / 2;
-  const fitsAll = v => { state.curvi[key] = v; const g = geo(); return plans.every(p => { if (!p) return true; const f = solveFit(p.dims, p.c, p.s, g, p.place); return !!f && f.exact && inFront(p, f); }); };
+  const fitsAll = v => { obj[key] = v; const g = geo(); return plans.every(p => { if (!p) return true; const f = solveFit(p.dims, p.c, p.s, g, p.place); return !!f && f.exact && inFront(p, f); }); };
   if (fitsAll(start)) return;
   let lo = start, hi = start * 1.5, found = false;
   for (let i = 0; i < 12; i++) { if (fitsAll(hi)) { found = true; break; } lo = hi; hi *= 1.6; }
-  if (!found) { state.curvi[key] = Math.round(hi); return; } // as close as it gets
+  if (!found) { obj[key] = Math.round(hi); return; } // as close as it gets
   for (let i = 0; i < 12; i++) { const mid = (lo + hi) / 2; if (fitsAll(mid)) hi = mid; else lo = mid; }
-  state.curvi[key] = Math.ceil(hi);
+  obj[key] = Math.ceil(hi);
 }
 // What every box should look like: its real proportions and its remembered place and size on screen
 function boxPlans(g) {
@@ -1455,14 +1694,15 @@ function doRedo() { if (!redoStack.length) return; undoStack.push(JSON.stringify
 function updateHistoryButtons() { document.getElementById("tbUndo").disabled = !undoStack.length; }
 
 /* ---------- binding ---------- */
-const resolve = path => path.replace("$v", ui.vp).replace("$b", state.sel);
+const resolve = path => path.replace("$v", ui.vp).replace("$b", state.sel).replace("$l", lensKey());
 function getP(path) { return resolve(path).split(".").reduce((o, k) => (o == null ? undefined : o[k]), state); }
 function rawSet(parts, val) { let o = state; for (let i = 0; i < parts.length - 1; i++) { o = o[parts[i]]; if (o == null) return; } o[parts[parts.length - 1]] = val; }
 function setP(path, val) {
   const parts = resolve(path).split(".");
   const old = getP(path);
   if (LENS_PATHS.includes(path) && camMode() && path !== "curvi.style4") {
-    keepBoxes(() => rawSet(parts, val), path === "curvi.turn" && typeof old === "number" ? (val - old) * deg : 0);
+    // turning spins the scene with the view, but only in the views that have a turn
+    keepBoxes(() => rawSet(parts, val), path === "curvi.turn" && typeof old === "number" && is4() ? (val - old) * deg : 0);
     touch(); return;
   }
   if (GRID_PATHS.includes(path)) {
@@ -1504,19 +1744,19 @@ function camCheck3() {
   return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
     : "Camera check: no real camera matches this setup. VP3 needs to sit between VP1 and VP2 and far enough from the horizon. Boxes still draw, but they will look stretched, their proportions carry over to other modes only approximately, and the cone of vision is hidden.";
 }
-const LENSES = [[0, "rectilinear"], [50, "stereographic"], [100, "equidistant"], [150, "equisolid"], [200, "orthographic"]];
-function lensName(pct) {
-  const exact = LENSES.find(m => Math.abs(m[0] - pct) < 0.5), next = LENSES.findIndex(m => m[0] > pct);
-  return exact ? `${exact[1]} lens` : pct > 200 ? "past orthographic" : `between ${LENSES[next - 1][1]} and ${LENSES[next][1]}`;
-}
+// What the curved view's settings work out to on screen
 function lensInfo() {
   const cam = geo().cam; if (!cam) return "";
-  const b = state.curvi.bend;
-  if (cam.kind === "pano") return `Panorama: the full 360° is ${Math.round(cam.s * 4)} px wide, so neighboring VPs sit 90° (${Math.round(cam.s)} px) apart. VP3 is 180° from VP1, and VP4 is 180° from VP2.`;
-  const used = Math.round(cam.c * 100), range = cam.kind === "sphere" ? "60–150%" : "5–200%";
-  const size = cam.kind === "sphere" ? `The 90° ring has a ${Math.round(cam.R)} px radius and the back rim ${Math.round(cam.rim)} px` : `The 90° circle has a ${Math.round(cam.R)} px radius`;
-  return `Lens type: ${lensName(used)}. ${size}, and the focal length is about ${Math.round(cam.f)} px.` +
-    (used !== Math.round(b) ? ` This mode needs ${range} curvature, so ${Math.round(b)}% is drawn as ${used}%.` : "");
+  const px = v => (v > 1e5 ? "off at infinity" : Math.round(v) + " px");
+  if (cam.kind === "pano") return `Panorama: the full 360° is ${Math.round(cam.F * 2 * Math.PI * cam.warp.a)} px wide. From the center, VP1 is ${px(Math.abs(cam.markers[0].p.x - cam.C.x))} along and VP2 ${px(Math.abs(cam.markers[1].p.x - cam.C.x))}.`;
+  const at = label => cam.markers.find(m => m.label === label), d = label => px(len(sub(at(label).p, cam.C)));
+  if (state.mode === "4pt") {
+    const side = m => `${Math.round(Math.abs(m.yaw) / deg)}° ${m.yaw < 0 ? "left" : "right"}`;
+    return `VP1 is ${side(at("VP1"))} of straight ahead and VP2 ${side(at("VP2"))}. Up is ${d("Up")} above the lens center and down ${d("Down")} below it.`;
+  }
+  const rim = is6() ? cam.markers.filter(m => m.drag === "back").map(m => px(len(sub(m.p, cam.C)))) : null;
+  return `From the ${is6() ? "front" : "center"} VP, left is ${d("Left")}, right ${d("Right")}, up ${d("Up")} and down ${d("Down")}.` +
+    (rim ? ` The back rim is ${rim[0]} out on the left and ${rim[1]} on the right.` : "");
 }
 const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [64, "1/64"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
 const styleRows = (pre, title) => [
@@ -1537,19 +1777,23 @@ const schema = [
     { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
-    { t: "select", bind: "curvi.style4", label: "4-point style", options: [["fish", "Fisheye: left, right, up, down"], ["pano", "Panorama: 4 VPs on the horizon"]], apply: v => reshape(() => { state.curvi.style4 = v; }), when: is4 },
-    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 5, max: 200, step: 1, lo: 5, hi: 200, when: lensMode },
+    { t: "select", bind: "curvi.style4", label: "4-point style", options: [["fish", "Fisheye: VP1 and VP2 on the horizon, up and down"], ["pano", "Panorama: 4 VPs on the horizon"]], apply: v => reshape(() => { state.curvi.style4 = v; }), when: is4 },
+    { t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.panoHc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: isPano },
+    { t: "note", html: "Horizontal curvature bends the lines that run left and right, and vertical curvature the lines that run up and down. 100% is an even fisheye, 0% makes those lines straight, and more bends them further.", when: lensMode },
     { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: is5 },
-    { t: "range", bind: "curvi.radius", label: "Lens radius (the 90° circle)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: () => isFish4() || is5() },
-    { t: "range", bind: "curvi.radius6", label: "Radius of the whole view (the back rim)", min: 50, max: 1500, step: 1, lo: 20, hi: 100000, when: is6 },
-    { t: "range", bind: "curvi.pano", label: "Distance between neighboring VPs (90°)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
-    { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: isPano },
+    { t: "range", bind: "curvi.$l.size", label: "Lens size (the 90° circle at 100%)", min: 50, max: 1500, step: 1, lo: 5, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.f6.back", label: "Back rim (× the 90° ring)", min: 1.1, max: 4, step: 0.05, lo: BACK_MIN, hi: BACK_MAX, when: is6 },
+    { t: "range", bind: "curvi.pano", label: "Panorama size (90° at 100%)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
+    { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: is4 },
     { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
+    { t: "btns", items: [["Even out the vanishing points", evenVPs, ""]], when: camMode },
     { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
-    { t: "note", html: "Four vanishing points on a fisheye circle: left and right on the horizon, up and down straight above and below. Lines across the picture curve between left and right, and vertical lines curve between up and down. Drag any of the four to resize the circle. Box depth edges head for the lens center, which 5-point adds as a fifth point.", when: isFish4 },
-    { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight. Drag any VP to turn the view; lines that run off one end of the strip continue from the other.", when: isPano },
-    { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, while lines across or up and down curve to the left/right and up/down points on the 90° circle. Drag the center to move the lens, or an outer point to resize it.", when: is5 },
-    { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag the center to move the view, or the side or back points to resize it.", when: is6 },
+    { t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
+    { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other.", when: isPano },
+    { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
+    { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
     { t: "readout", text: lensInfo, when: camMode }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
@@ -1856,7 +2100,8 @@ function buildPanel() {
 function rayTabs() {
   if (is1()) return [[3, "VP rays"]];
   if (isPano()) return [[0, "VP1 & VP3"], [1, "VP2 & VP4"]];
-  if (radiusMode()) return [[0, "Left & right"], ...(isFish4() ? [] : [[3, is6() ? "Front & back" : "Center"]]), [2, "Up & down"]];
+  if (isFish4()) return [[0, "VP1"], [1, "VP2"], [2, "Up & down"]];
+  if (radiusMode()) return [[0, "Left & right"], [3, is6() ? "Front & back" : "Center"], [2, "Up & down"]];
   return fams().map(vi => [vi, `VP${vi + 1} rays`]);
 }
 function refreshPanel() {
@@ -1945,7 +2190,7 @@ function fitView() {
   const r = canvas.getBoundingClientRect(); cw = r.width; ch = r.height;
   const g = geo(), V = state.viewport;
   const xs = [V.x, V.x + V.w], ys = [V.y, V.y + V.h];
-  vpMarkers(g).forEach(mk => { xs.push(mk.p.x); ys.push(mk.p.y); });
+  vpMarkers(g).forEach(mk => { if (!mk.far) { xs.push(mk.p.x); ys.push(mk.p.y); } }); // not a VP off at infinity
   state.boxes.forEach(b => { const G = boxGeo(b, g); [...G.B, ...G.T].forEach(p => { xs.push(p.x); ys.push(p.y); }); });
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const z = Math.min((cw - 60) / Math.max(1, x1 - x0), (ch - 120) / Math.max(1, y1 - y0));
@@ -2009,9 +2254,12 @@ const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize"
 const VP_DRAGS = {
   dist: ["Drag the vanishing point along the horizon", "ew-resize"],
   free: ["Drag VP3 anywhere off the horizon", "move"],
-  radius: ["Drag to resize the lens", "move"],
-  center: ["Drag to move the lens along the horizon", "ew-resize"],
-  turn: ["Drag to turn the panorama", "ew-resize"]
+  sideH: ["Drag along the horizon to move just this point; only its side of the lens changes", "ew-resize"],
+  sideV: ["Drag up or down to move just this point; only its side of the lens changes", "ns-resize"],
+  corner: ["Drag along the horizon to move this VP; the other one stays put", "ew-resize"],
+  center: ["Drag along the horizon to move the center; the left and right points stay put", "ew-resize"],
+  back: ["Drag to move the back rim; the 90° ring stays put", "ew-resize"],
+  knot: ["Drag along the horizon to move just this VP", "ew-resize"]
 };
 
 canvas.addEventListener("pointerdown", e => {
@@ -2046,7 +2294,7 @@ canvas.addEventListener("pointerdown", e => {
     drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), ci: len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? 0 : 2 };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
-  else if (hit.type === "vp") { drag.turn0 = state.curvi.turn; drag.Rp = g.cam && g.cam.Rp; }
+  else if (hit.type === "vp" && g.cam) { drag.cv0 = state.cone.cv; drag.lens0 = clone(state.curvi); drag.cam0 = g.cam; }
   else if (hit.type === "anchor" || hit.type === "horizon") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
   if (hit.type === "pan") canvas.style.cursor = "grabbing";
@@ -2137,12 +2385,7 @@ canvas.addEventListener("pointermove", e => {
         state.vps[2].dist = dist; state.vps[2].drop = drop;
         refitBoxes(drag.plans, geo());
       } else if (mk.drag === "dist") { state.vps[drag.i].dist = dist; if (state.symmetric && drag.i < 2) state.vps[1 - drag.i].dist = -dist; refitBoxes(drag.plans, geo()); }
-      else if (mk.drag === "radius") keepBoxes(() => { state.curvi[mk.key || "radius"] = Math.max(20, Math.round(mk.rf(w))); });
-      else if (mk.drag === "center") keepBoxes(() => { state.cone.cv = Math.round(dist + mk.cvShift); });
-      else if (mk.drag === "turn") {
-        const t = Math.round((drag.turn0 + dot(sub(w, drag.w0), g.u) / drag.Rp / deg) * 10) / 10;
-        keepBoxes(() => { state.curvi.turn = t; }, (t - state.curvi.turn) * deg);
-      }
+      else if (g.cam) lensVPDrag(mk, w, g);
       break;
     }
     case "anchor": case "horizon": {

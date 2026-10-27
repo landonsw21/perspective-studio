@@ -11,11 +11,20 @@ Switch modes from the toolbar or the Perspective panel.
 - **1-point:** one vanishing point on the horizon; depth edges run to it while widths stay horizontal and heights vertical, so box fronts are true rectangles. Comes with a starburst of rays plus horizontal and vertical guides
 - **2-point:** two vanishing points on the horizon, vertical edges stay vertical
 - **3-point:** a third vanishing point above or below the horizon that vertical edges run to. A camera check in the panel says whether the setup matches a real camera. A setup that doesn't still works, but its boxes look stretched and carry their proportions to other modes only approximately
-- **4-point:** two styles. *Fisheye* puts left, right, up and down vanishing points on a lens circle, with lines curving between each pair. *Panorama* is a 360° strip with four vanishing points on the horizon, each horizontal direction vanishing at two points 180° apart, and straight verticals
-- **5-point:** a fisheye looking straight ahead: depth lines run to a center vanishing point, and lines across or up and down curve to the four points on the 90° circle
-- **6-point:** the whole sphere in one continuous circle: the front vanishing point at the center, left, right, up and down on the 90° ring, and the back vanishing point stretched around the outer rim, where every line heading behind you meets
+- **4-point:** two styles. *Fisheye* looks at a box's corner, like 2-point seen through a curved lens: the box's two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to up and down VPs above and below. *Panorama* is a 360° strip with four vanishing points on the horizon, each horizontal direction vanishing at two points 180° apart, and straight verticals
+- **5-point:** a fisheye looking straight ahead: depth lines run straight to a center vanishing point, lines across curve to the left and right VPs, and lines up and down curve to the up and down VPs
+- **6-point:** the whole sphere in one continuous view: the front vanishing point at the center, left, right, up and down around the 90° ring, and the back vanishing point stretched around the outer rim, where every line heading behind you meets
 
-The curved modes (4-, 5- and 6-point) all project true 3D lines through the same camera, with curvature from stereographic (50%) through equidistant (100%) and equisolid (150%) to orthographic (200%), so boxes, snapping and face divisions work the same way everywhere.
+## Curved views (4-, 5- and 6-point)
+
+- **Horizontal and vertical curvature are set separately.** Horizontal curvature bends the lines that run left and right, and vertical curvature the lines that run up and down. 100% is an even fisheye, 0% makes those lines straight (straight verticals with curved horizontals, for example), and higher values bend them further. A panorama's vertical lines always stay straight, so it has horizontal curvature only
+- **Every vanishing point moves on its own.** Drag a VP and only that one moves, while the lens reshapes on that side to match:
+  - In 5- and 6-point, the left, right, up and down VPs slide along their lines, and the center slides between the left and right VPs. In 6-point, dragging the back rim grows or shrinks it, and the rim stays put while the other VPs move
+  - In the 4-point fisheye, dragging VP1 or VP2 works like 2-point: the other one stays put while the lens turns and resizes, and the up and down VPs keep their places
+  - In the panorama, each of the four VPs slides along the horizon on its own
+  - **Even out the vanishing points** puts them back in an even layout
+- Lens size, the lens center, 5-point's coverage, the 6-point back rim and the 4-point turn are in the Perspective panel
+- Every curved view projects true 3D lines through its camera, so boxes, snapping and face divisions work the same way everywhere. Setups saved with the earlier single curvature setting open with their lens rings exactly where they were
 
 ## Boxes
 
@@ -30,7 +39,7 @@ The curved modes (4-, 5- and 6-point) all project true 3D lines through the same
 - **Switching perspective** keeps every box at the same place and size on screen, with the same real proportions. Each box is read as a 3D shape through the current mode's camera and rebuilt in the new one, so nothing needs re-zooming or re-placing after a switch
 - **Switching into 4-, 5- or 6-point** grows the lens or panorama (it never shrinks on its own) until every box fits at its old size and place. In 6-point it also keeps boxes that were in front of you in front of you, rather than wrapped around toward the rim
 - **Moving the horizon or a vanishing point** in 1-, 2- or 3-point rebuilds every box on the new grid at the same place and size, with the same proportions
-- **In 4-, 5- and 6-point**, moving the horizon or changing the lens size, center, curvature, coverage or panorama turn keeps boxes where they stand in the scene, so they move with the view
+- **In 4-, 5- and 6-point**, moving the horizon, dragging a lens VP or changing the curvature, lens size, center, coverage, back rim or turn keeps boxes where they stand in the scene, so they move with the view
 - Where a view can't show a box that large or that far out, the box gets as close as it can, and switching back restores it exactly
 
 ## Everything else
@@ -49,11 +58,13 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
 
 Stress tested on 27 October 2026 with scripted runs in the browser, covering all six modes and both 4-point styles:
 
-- **Switching perspective:** 225 random switches on nine scenes of 20 random boxes of different sizes, shapes and positions. Every box kept its proportions exactly, its size to within 0.4% and its center to within 1.6% of its size
-- **Dragging:** 2,469 random drags on 84 scenes of 8 boxes, covering base corners, tops, bodies, the horizon, vanishing points and lens handles. A moved box always kept its proportions and the other boxes stayed exactly where they were. Moving the horizon or a vanishing point kept every box's proportions, and in 1-, 2- and 3-point its place and size too. No base ended up lying on or straddling the horizon. Every drag that changed anything was undone and redone, and both restored the drawing exactly
-- **Panel values:** 2,110 random edits to the horizon, vanishing points and lens settings, 840 of them at extreme values, many past the slider ends. No box changed proportions, every box in 1-, 2- and 3-point kept its place and size, and every edit undid and redid exactly
+- **The curved-view lens:** 14,023 directions sent to the screen and back under random settings, including 0% and very high curvature and uneven sides, came back to within 0.000002°. At 0% vertical curvature every vertical box edge in the 4-point fisheye, 5- and 6-point is straight to the pixel (0.0000 px off), and so is every horizontal edge in 5-point at 0% horizontal curvature and every edge of a box in front of you in a panorama at 0%; at 100% they bend by 3–31 px. Four setups saved with the old single curvature setting reopened with their 90° rings and 6-point rims exactly where they were
+- **Moving VPs one at a time:** 475 random drags of single lens VPs, across all four curved views. Each moved only that VP, landed under the pointer (or at its limit, such as a 6-point ring point meeting the back rim), left every box's proportions alone, and undid and redid exactly
+- **Switching perspective:** 225 random switches on nine scenes of 20 random boxes of different sizes, shapes and positions. Every box kept its proportions exactly, its size to within 0.5% and its center to within 1.6% of its size
+- **Dragging:** 2,468 random drags on 84 scenes of 8 boxes, covering base corners, tops, bodies, the horizon, vanishing points and lens VPs. A moved box always kept its proportions and the other boxes stayed exactly where they were. Moving the horizon or a vanishing point kept every box's proportions, and in 1-, 2- and 3-point its place and size too. No base ended up lying on or straddling the horizon. Every drag that changed anything was undone and redone, and both restored the drawing exactly
+- **Panel values:** 2,070 random edits to the horizon, vanishing points and lens settings, 1,160 of them at extreme values or on a randomly reshaped lens. No box changed proportions, every box in 1-, 2- and 3-point kept its place and size, and every edit undid and redid exactly
 - **Export, save and load:** PNG export in every mode at 1× and 2×, the 64-megapixel cap, setups surviving a save and load exactly, and files that aren't setups being refused
-- **Speed and layout:** with 34 boxes, each with face divisions and diagonals, a full redraw took about 3 ms in 1-, 2- and 3-point and 9–11 ms in the curved modes. Each step of a drag took at most about 4 ms and a switch at most 43 ms. On a 375 px wide phone screen, nothing scrolls sideways
+- **Speed and layout:** with 34 boxes, each with face divisions and diagonals, a full redraw took 2–3 ms in 1-, 2- and 3-point and 10–14 ms in the curved views. Each step of a drag took at most about 6.5 ms and a switch at most 47 ms. On a 375 px wide phone screen, nothing scrolls sideways
 
 ## Run locally
 
