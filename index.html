@@ -118,6 +118,10 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pair .row { grid-template-columns: auto minmax(0, 1fr); }
 .pair .num { width: 100%; }
+.pick { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.pick select { max-width: 132px; }
+.pick .num { width: 58px; }
+.ph .tip { font-size: 11.5px; }
 .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 .patview { display: flex; gap: 2px; height: 14px; align-items: stretch; }
 .patview i { flex: 1; max-width: 10px; border-radius: 1px; }
@@ -153,6 +157,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
     <div class="ph">
       <h1>Two-Point Perspective Studio</h1>
       <p>Choose 2-point, 3-point or curvilinear perspective, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
+      <p class="tip">Number boxes take values past the end of their sliders, and the slider stretches to fit. Let go of a slider at its end to double its range.</p>
     </div>
     <div id="sections"></div>
   </aside>
@@ -263,7 +268,7 @@ try { const raw = localStorage.getItem(STORE_KEY); state = raw ? normalize(JSON.
 const freshStart = !state;
 if (!state) state = defaultState();
 
-const ui = { vp: 0, resetArm: false };
+const ui = { vp: 0, resetArm: false, scales: {} };
 const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
@@ -288,23 +293,35 @@ const activeVPs = () => (state.mode === "3pt" ? [0, 1, 2] : [0, 1]);
 // k = 1 is an ordinary pinhole (straight lines), k → 0 is an equidistant fisheye (r = f·θ).
 // VP1 and VP2 are perpendicular horizontal directions, so their positions fix the focal length.
 function makeCam(g) {
-  const Cv = state.curvi, k = Math.max(0, 1 - Cv.bend / 100);
-  const tk = t => (k > 1e-4 ? Math.tan(k * t) / k : t);
-  const itk = r => (k > 1e-4 ? Math.atan(r * k) / k : r);
+  // Curvature c picks the lens: 0–100% is r = f·tan(kθ)/k with k = 1 − c (pinhole → equidistant),
+  // 100–200% is r = f·sin(kθ)/k with k = c − 1 (equidistant → equisolid → orthographic). Past 200%
+  // the sine lens keeps squeezing the edges, but it can only show angles below 90°/k.
+  const Cv = state.curvi, c = Math.max(0, Cv.bend) / 100, sine = c > 1;
+  const k = sine ? Math.min(c - 1, 1.98) : 1 - c;
+  const tk = sine ? (t => (k > 1e-4 ? Math.sin(k * t) / k : t)) : (t => (k > 1e-4 ? Math.tan(k * t) / k : t));
+  const itk = sine ? (r => (k > 1e-4 ? Math.asin(Math.min(1, r * k)) / k : r)) : (r => (k > 1e-4 ? Math.atan(r * k) / k : r));
+  const thValid = k > 1e-4 ? Math.min(Math.PI, Math.PI / (2 * k)) : Math.PI, thLimit = thValid * 0.995;
+  // VP1 and VP2 are 90° apart, so their angles off center add to 90° and both must stay inside the lens.
+  const lo = Math.max(1e-6, Math.PI / 2 - thLimit), hi = Math.min(Math.PI / 2 - 1e-6, thLimit);
+  const ratio = m => tk(m) / tk(Math.PI / 2 - m);
+  const p1 = state.vps[0].dist, p2 = state.vps[1].dist;
   let off = state.cone.cv, moved = false;
-  let d1 = state.vps[0].dist - off, d2 = state.vps[1].dist - off;
-  if (!(d1 * d2 < 0)) {
-    off = (state.vps[0].dist + state.vps[1].dist) / 2; moved = true;
-    d1 = state.vps[0].dist - off; d2 = state.vps[1].dist - off;
-    if (Math.abs(d1) < 1) { d1 = -400; d2 = 400; }
+  if (!((p1 - off) * (p2 - off) < 0)) { off = (p1 + p2) / 2; moved = true; }
+  let d1 = p1 - off, d2 = p2 - off;
+  if (Math.abs(d1) < 1) { d1 = -400; d2 = 400; }
+  let want = Math.abs(d1) / Math.abs(d2);
+  const rMin = ratio(lo), rMax = ratio(hi);
+  if (want < rMin || want > rMax) {
+    // This lens can't reach the VPs as placed: slide the lens center until it can, keeping the VPs put.
+    want = Math.min(rMax, Math.max(rMin, want));
+    off = (p1 + want * p2) / (1 + want); moved = true;
+    d1 = p1 - off; d2 = p2 - off;
   }
-  const A1 = Math.abs(d1), A2 = Math.abs(d2), want = A1 / A2;
-  let lo = 1e-6, hi = Math.PI / 2 - 1e-6;
-  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (tk(mid) / tk(Math.PI / 2 - mid) < want) lo = mid; else hi = mid; }
-  const th1 = (lo + hi) / 2, f = A1 / tk(th1);
+  let a = lo, b = hi;
+  for (let i = 0; i < 60; i++) { const mid = (a + b) / 2; if (ratio(mid) < want) a = mid; else b = mid; }
+  const th1 = (a + b) / 2, f = Math.abs(d1) / tk(th1);
   const psi = [Math.sign(d1) * th1, Math.sign(d2) * (Math.PI / 2 - th1)];
   const X = psi.map(p => V3(Math.sin(p), 0, Math.cos(p)));
-  const thLimit = (k > 1e-4 ? Math.min(Math.PI, Math.PI / (2 * k)) : Math.PI) * 0.995;
   const thMax = Math.min(Cv.coverage / 2 * deg, thLimit);
   const C = add(g.O, mul(g.u, off)), u = g.u, n = g.n;
   const projT = (D, clampIt) => {
@@ -318,7 +335,7 @@ function makeCam(g) {
     const th = Math.min(itk(Math.hypot(dx, dy) / f), Math.PI * 0.999), ph = Math.atan2(-dy, dx), s = Math.sin(th);
     return V3(s * Math.cos(ph), s * Math.sin(ph), Math.cos(th));
   };
-  return { C, f, k, tk, X, psi, thMax, projT, proj: D => projT(D, true), unproj, moved };
+  return { C, f, k, tk, X, psi, thMax, thLimit, thValid, off, projT, proj: D => projT(D, true), unproj, moved };
 }
 // Orthocenter of the three VPs: where a real 3-point camera's center of vision must be.
 function ortho3(g) {
@@ -470,6 +487,7 @@ function faceLabel(id) {
 // Guides are cached together with their crossings: straight lines in 2- and 3-point,
 // great circles (each one a straight 3D line seen through the lens) in curvilinear.
 let snapCache = { key: "", lines: [], arcs: [], pts: [] };
+const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
   const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "curvi" ? [state.curvi, state.cone.cv] : 0]);
   if (key === snapCache.key) return snapCache;
@@ -485,7 +503,8 @@ function linearGuides(g) {
   const V = state.verticals;
   if (V.show && state.mode !== "3pt") for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
   const pts = [], LIM = 4e4;
-  for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+  // With thousands of guides the crossings get too dense to use, so snapping falls back to sliding along lines.
+  if (lines.length <= MAX_CROSSING_GUIDES) for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
     const A = lines[i], Bl = lines[j];
     if (A.fam === Bl.fam) continue;
     const r = isect(A.p, A.d, Bl.p, Bl.d);
@@ -525,7 +544,7 @@ function curviGuides(g) {
     push(makeArc(cam, UP3, V3(D.x, 0, D.z), false, { fam: "v" }));
   }
   const pts = [];
-  for (let i = 0; i < arcs.length; i++) for (let j = i + 1; j < arcs.length; j++) {
+  if (arcs.length <= MAX_CROSSING_GUIDES) for (let i = 0; i < arcs.length; i++) for (let j = i + 1; j < arcs.length; j++) {
     const A = arcs[i], B = arcs[j]; if (A.fam === B.fam) continue;
     const x = c3(A.N, B.N), xl = l3(x); if (xl < 1e-9) continue;
     const p = m3(x, 1 / xl);
@@ -615,7 +634,7 @@ function drawGuides(c, k, b, inc, g) {
   const C = state.cone, V = state.verticals, H = state.horizon;
   if (g.cam) {
     const cam = g.cam, arcs = snapData().arcs;
-    if (inc.cone && C.show) drawCone(c, k, cam.C, cam.f * cam.tk(C.angle / 2 * deg));
+    if (inc.cone && C.show) drawCone(c, k, cam.C, cam.f * cam.tk(Math.min(C.angle / 2 * deg, cam.thLimit)));
     if (inc.cone && state.curvi.circle) {
       strokeStyle(c, { color: C.color, width: 1.25, dash: "dotted", opacity: 0.9 }, k);
       c.beginPath(); c.arc(cam.C.x, cam.C.y, cam.f * cam.tk(cam.thMax), 0, Math.PI * 2); c.stroke();
@@ -699,7 +718,7 @@ function drawDivisions(c, f, bx, k, alphaMul) {
   for (let i = 1; i < nu; i++) { const t = i / nu; line(t, 0, t, 1, weight(i, nu)); }
   for (let j = 1; j < nv; j++) { const t = j / nv; line(0, t, 1, t, weight(j, nv)); }
   if (D.diag === "face") { line(0, 0, 1, 1, base); line(1, 0, 0, 1, base); }
-  else if (D.diag === "cells" || D.diag === "cellsOne") {
+  else if ((D.diag === "cells" || D.diag === "cellsOne") && nu * nv <= 4096) { // past 64×64 cells the face would just turn solid
     const w = base * 0.75;
     for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
       const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
@@ -883,6 +902,7 @@ function setP(path, val) {
   rawSet(parts, val);
   if (path.startsWith("vps.$v.rays.") && state.linkRays && ui.vp < 2 && !path.endsWith(".color")) { const o = parts.slice(); o[1] = String(1 - ui.vp); rawSet(o, val); }
   if (state.symmetric && (path === "vps.0.dist" || path === "vps.1.dist")) state.vps[path === "vps.0.dist" ? 1 : 0].dist = -val;
+  if (path === "vps.2.drop" && Math.abs(val) < 40) state.vps[2].drop = val < 0 ? -40 : 40; // VP3 can't sit on the horizon
   const V = state.viewport;
   if (V.lockAspect && typeof old === "number" && old > 0) {
     if (path === "viewport.w") V.h = Math.max(1, Math.round(V.h * val / old));
@@ -903,19 +923,24 @@ function camCheck3() {
   return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
     : "Camera check: VP3 is too close to the horizon for a real camera, so boxes will look stretched and the cone of vision is hidden. Move VP3 farther away.";
 }
+const LENSES = [[0, "rectilinear"], [50, "stereographic"], [100, "equidistant"], [150, "equisolid"], [200, "orthographic"]];
 function lensInfo() {
   const cam = geo().cam; if (!cam) return "";
-  const side = p => `${Math.abs(Math.round(p / deg))}° ${p < 0 ? "left" : "right"}`;
-  return `Lens: focal length about ${Math.round(cam.f)} px. VP1 is ${side(cam.psi[0])} and VP2 is ${side(cam.psi[1])} of the lens center.` +
-    (cam.moved ? " Both VPs were on one side of the lens center, so the lens is centered between them instead." : "");
+  const b = state.curvi.bend, side = p => `${Math.abs(Math.round(p / deg))}° ${p < 0 ? "left" : "right"}`;
+  const exact = LENSES.find(m => Math.abs(m[0] - b) < 0.5), next = LENSES.findIndex(m => m[0] > b);
+  const type = exact ? `${exact[1]} lens` : b > 200 ? "past orthographic" : `between ${LENSES[next - 1][1]} and ${LENSES[next][1]}`;
+  const maxCov = Math.round(2 * cam.thValid / deg);
+  return `Lens type: ${type}. Focal length about ${Math.round(cam.f)} px. VP1 is ${side(cam.psi[0])} and VP2 is ${side(cam.psi[1])} of the lens center.` +
+    (state.curvi.coverage > maxCov ? ` At this curvature the lens shows at most ${maxCov}°.` : "") +
+    (cam.moved ? ` To keep both VPs where you put them, the lens center moved to ${Math.round(cam.off)}.` : "");
 }
-const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
+const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [64, "1/64"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
 const styleRows = (pre, title) => [
   { t: "sub", label: title },
   { t: "color", bind: pre + ".color", label: "Color" },
-  { t: "range", bind: pre + ".width", label: "Weight", min: 0.25, max: 8, step: 0.25 },
+  { t: "range", bind: pre + ".width", label: "Weight", min: 0.25, max: 8, step: 0.25, hi: 500 },
   { t: "select", bind: pre + ".dash", label: "Line style", options: DASH },
-  { t: "range", bind: pre + ".opacity", label: "Opacity", min: 0, max: 1, step: 0.05 }
+  { t: "range", bind: pre + ".opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 }
 ];
 const schema = [
   { id: "mode", title: "Perspective", rows: [
@@ -928,22 +953,22 @@ const schema = [
     { t: "color", bind: "vps.2.color", label: "VP3 marker color", when: is3 },
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
-    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 0, max: 100, step: 1, when: isC },
-    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, when: isC },
+    { t: "range", bind: "curvi.bend", label: "Curvature (%)", min: 0, max: 200, step: 1, hi: 295, when: isC },
+    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: isC },
     { t: "range", bind: "cone.cv", uid: "lens", label: "Lens center along horizon", min: -4000, max: 4000, step: 1, when: isC },
     { t: "check", bind: "curvi.circle", label: "Show the lens edge", when: isC },
-    { t: "note", html: "Straight edges bend like a fisheye lens around the lens center. At 0% curvature this is plain 2-point. Pull the VPs toward the center for stronger bending. Vertical lines curve toward points at the top and bottom of the lens.", when: isC },
+    { t: "note", html: "Straight edges bend like a fisheye lens around the lens center. 0% is plain 2-point, 100% is an equidistant fisheye and 200% is the strongest full-circle fisheye. Past 200% (type it in, up to 295%) the bending keeps growing but the lens shows less than 180°. Pulling the VPs toward the center also strengthens the bend. Vertical lines curve toward points at the top and bottom of the lens.", when: isC },
     { t: "readout", text: lensInfo, when: isC }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
     { t: "check", bind: "horizon.show", label: "Show horizon line" },
     { t: "range", bind: "horizon.y", label: "Eye level (Y)", min: -3000, max: 3000, step: 1 },
     { t: "range", bind: "horizon.x", label: "Center point (X)", min: -3000, max: 3000, step: 1 },
-    { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1 },
+    { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1, lo: -180, hi: 180 },
     { t: "color", bind: "horizon.color", label: "Color" },
-    { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25 },
+    { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25, hi: 500 },
     { t: "select", bind: "horizon.dash", label: "Line style", options: DASH },
-    { t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05 },
+    { t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 },
     { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame." }
   ]},
   { id: "vps", title: "Vanishing points", rows: [
@@ -955,10 +980,10 @@ const schema = [
     { t: "color", bind: "vps.0.color", label: "VP1 marker color" },
     { t: "check", bind: "vps.1.show", label: "Show VP2 marker" },
     { t: "color", bind: "vps.1.color", label: "VP2 marker color" },
-    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, also: ["vps.1.size", "vps.2.size"] },
+    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, lo: 1, hi: 200, also: ["vps.1.size", "vps.2.size"] },
     { t: "sub", label: "Cone of vision" },
     { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)" },
-    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1 },
+    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179 },
     { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1, when: is2 },
     { t: "color", bind: "cone.color", label: "Color" },
     { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched.", when: is2 },
@@ -970,11 +995,11 @@ const schema = [
     { t: "check", bind: "linkRays", label: "Edit VP1 and VP2 rays together (colors stay separate)", when: () => ui.vp < 2 },
     { t: "check", bind: "vps.$v.rays.show", label: "Show rays from this VP" },
     { t: "select", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing on a measuring line"], ["angle", "Even angles"]] },
-    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? (ui.vp === 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1 },
-    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, when: isSpacing },
+    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? (ui.vp === 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
+    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: isSpacing },
     { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp === 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: isSpacing },
-    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, when: () => !isSpacing() },
-    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, when: () => !isSpacing() },
+    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() },
+    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() },
     { t: "check", bind: "vps.$v.rays.behind", label: "Extend rays behind the VP" },
     { t: "sub", label: "Alternating pattern" },
     { t: "preset" },
@@ -988,38 +1013,38 @@ const schema = [
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
     { t: "check", bind: "verticals.show", label: () => (isC() ? "Show verticals (they bow outward through the lens)" : "Show verticals (perpendicular to horizon)"), when: () => !is3() },
-    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1, when: () => !is3() },
-    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, when: () => !is3() },
+    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1, hi: 400, when: () => !is3() },
+    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !is3() },
     { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !is3() },
     { t: "color", bind: "verticals.color", label: "Color", when: () => !is3() },
-    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, when: () => !is3() },
+    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: () => !is3() },
     { t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: () => !is3() },
-    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, when: () => !is3() }
+    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => !is3() }
   ]},
   { id: "boxes", title: "Rectangular prisms", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
-    { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
+    { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
     { t: "color", bind: "boxes.$b.stroke", label: "Edge color", when: hasBox },
     { t: "color", bind: "boxes.$b.fill", label: "Face color", when: hasBox },
-    { t: "range", bind: "boxes.$b.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, when: hasBox },
+    { t: "range", bind: "boxes.$b.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, hi: 500, when: hasBox },
     { t: "sub", label: "Faces", when: hasBox },
     ...["top", "bottom", "s01", "s23", "s12", "s30"].map(id => ({ t: "check", bind: "boxes.$b.faces." + id, label: () => faceLabel(id), when: hasBox })),
     { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
     { t: "sub", label: "Face divisions", when: hasBox },
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
-    { t: "select", bind: "boxes.$b.div.vp", label: "Lines to the VPs", num: true, options: PARTS, when: hasDiv },
-    { t: "select", bind: "boxes.$b.div.vert", label: "Vertical lines on sides", num: true, options: PARTS, when: hasDiv },
+    { t: "parts", bind: "boxes.$b.div.vp", label: "Lines to the VPs", hi: 128, when: hasDiv },
+    { t: "parts", bind: "boxes.$b.div.vert", label: () => (is3() ? "Lines to VP3 on sides" : "Vertical lines on sides"), hi: 128, when: hasDiv },
     { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: [["none", "None"], ["face", "Corner to corner (X)"], ["cells", "Every cell (X)"], ["cellsOne", "Every cell, one way"]], when: hasDiv },
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.hier", label: "Thinner lines at each finer split", when: hasDiv },
     { t: "color", bind: "boxes.$b.div.color", label: "Line color", when: hasDiv },
-    { t: "range", bind: "boxes.$b.div.width", label: "Line weight", min: 0.25, max: 6, step: 0.25, when: hasDiv },
-    { t: "range", bind: "boxes.$b.div.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, when: hasDiv },
+    { t: "range", bind: "boxes.$b.div.width", label: "Line weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: hasDiv },
+    { t: "range", bind: "boxes.$b.div.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: hasDiv },
     { t: "note", html: "Halves, quarters and eighths are measured in depth, not on screen, so each part shrinks as it recedes toward its vanishing point.", when: hasDiv },
     { t: "btns", items: [["Use these divisions on all boxes", () => { const d = state.boxes[state.sel].div; state.boxes.forEach(b => b.div = clone(d)); commit(); touch(); toast("Divisions copied to every box"); }, ""]], when: hasDiv }
   ]},
@@ -1033,7 +1058,7 @@ const schema = [
     { t: "check", bind: "viewport.dim", label: "Shade the area outside" },
     { t: "check", bind: "viewport.clip", label: "Clip guides to the export area" },
     { t: "sub", label: "PNG output" },
-    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"]] },
+    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]] },
     { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]] },
     { t: "check", bind: "export.rays", label: "Include rays" },
     { t: "check", bind: "export.verticals", label: "Include vertical guides" },
@@ -1045,7 +1070,7 @@ const schema = [
   ]},
   { id: "snap", title: "Snapping", open: false, rows: [
     { t: "check", bind: "snap.on", label: "Snapping on" },
-    { t: "range", bind: "snap.radius", label: "Snap radius (screen px)", min: 4, max: 40, step: 1 },
+    { t: "range", bind: "snap.radius", label: "Snap radius (screen px)", min: 4, max: 40, step: 1, lo: 1, hi: 400 },
     { t: "check", bind: "snap.points", label: "Snap to ray intersections" },
     { t: "check", bind: "snap.lines", label: "Slide along rays when no crossing is near" },
     { t: "check", bind: "snap.corners", label: "Snap to other boxes' corners" },
@@ -1057,6 +1082,7 @@ const schema = [
 const rows = [];
 function idFor(bind) { return "f-" + bind.replace(/[$.]/g, "-"); }
 function fmt(v, step) { const d = (String(step).split(".")[1] || "").length; return (+v).toFixed(d); }
+const fmtScale = v => String(Math.round(v * 1000) / 1000);
 function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v); } kids.forEach(k => e.append(k)); return e; }
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
@@ -1066,15 +1092,52 @@ function makeRow(r) {
   const onCommit = () => commit();
   switch (r.t) {
     case "range": {
+      // min/max is only the slider's starting scale. Typed values may go anywhere inside lo/hi,
+      // and the scale (remembered per edited value) stretches to fit them.
+      const lo = r.lo !== undefined ? r.lo : r.min >= 0 ? 0 : -1e6, hi = r.hi !== undefined ? r.hi : 1e6;
       const lab = el("label", { for: id + "-n" });
-      const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step) });
+      const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step), min: String(lo), max: String(hi) });
       const rng = el("input", { type: "range", id, min: String(r.min), max: String(r.max), step: String(r.step), "aria-label": labelText(r) });
-      const set = v => { if (!Number.isFinite(v)) return; setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
+      const set = v => { if (!Number.isFinite(v)) return; v = Math.min(hi, Math.max(lo, v)); setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
+      const scale = () => ui.scales[resolve(r.bind)] || { min: r.min, max: r.max };
+      const grow = (sc, v) => {
+        let { min, max } = sc;
+        if (v > max) { if (max <= 0) max = Math.min(hi, v); else while (v > max && max < hi) max = Math.min(hi, max * 2); }
+        if (v < min) { if (min >= 0) min = Math.max(lo, v); else while (v < min && min > lo) min = Math.max(lo, min * 2); }
+        return { min, max };
+      };
       rng.addEventListener("input", () => set(+rng.value));
       num.addEventListener("input", () => { if (num.value !== "") set(+num.value); });
-      rng.addEventListener("change", onCommit); num.addEventListener("change", onCommit);
+      rng.addEventListener("change", () => {
+        // Letting go at the end of the slider doubles its scale so it can keep going.
+        const sc = scale(), v = +rng.value; let ext = null;
+        if (v >= sc.max && sc.max < hi) ext = { min: sc.min, max: Math.min(hi, sc.max > 0 ? sc.max * 2 : 1) };
+        else if (v <= sc.min && sc.min < 0 && sc.min > lo) ext = { min: Math.max(lo, sc.min * 2), max: sc.max };
+        if (ext) { ui.scales[resolve(r.bind)] = ext; toast(`${labelText(r)} slider now runs ${fmtScale(ext.min)} to ${fmtScale(ext.max)}`); touch(); }
+        commit();
+      });
+      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = fmt(v, r.step); commit(); });
       node = el("div", { class: "row range" }, lab, num, rng);
-      update = () => { lab.textContent = labelText(r); const v = getP(r.bind); if (v === undefined) return; if (document.activeElement !== num) num.value = fmt(v, r.step); rng.value = v; };
+      update = () => {
+        lab.textContent = labelText(r);
+        const v = getP(r.bind); if (v === undefined) return;
+        const sc = grow(scale(), v);
+        if (sc.min !== r.min || sc.max !== r.max) ui.scales[resolve(r.bind)] = sc;
+        rng.min = String(sc.min); rng.max = String(sc.max); rng.title = `${fmtScale(sc.min)} to ${fmtScale(sc.max)}`;
+        if (document.activeElement !== num) num.value = fmt(v, r.step);
+        rng.value = v;
+      };
+      break;
+    }
+    case "parts": {
+      // Preset fractions plus a number box for any count up to r.hi
+      const sel = el("select", { id }); PARTS.forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
+      const num = el("input", { class: "num", type: "number", id: id + "-n", min: "1", max: String(r.hi), step: "1", "aria-label": labelText(r) + ", number of parts" });
+      sel.addEventListener("change", () => { if (sel.value === "custom") { num.focus(); num.select(); return; } setP(r.bind, +sel.value); commit(); });
+      num.addEventListener("input", () => { const v = Math.round(+num.value); if (num.value !== "" && Number.isFinite(v)) setP(r.bind, Math.min(r.hi, Math.max(1, v))); });
+      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = v; commit(); });
+      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), el("div", { class: "pick" }, sel, num));
+      update = () => { const v = getP(r.bind); if (v === undefined) return; sel.value = PARTS.some(p => p[0] === v) ? String(v) : "custom"; if (document.activeElement !== num) num.value = v; };
       break;
     }
     case "color": {
@@ -1099,7 +1162,7 @@ function makeRow(r) {
       break;
     }
     case "text": {
-      const inp = el("input", { class: "txt", type: "text", id, maxlength: "32", spellcheck: "false", autocomplete: "off" });
+      const inp = el("input", { class: "txt", type: "text", id, maxlength: "64", spellcheck: "false", autocomplete: "off" });
       inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^AB.]/g, ""); if (v) setP(r.bind, v); });
       inp.addEventListener("change", () => { inp.value = getP(r.bind); commit(); });
       node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), inp);
@@ -1207,27 +1270,30 @@ function renderExport() {
   drawScene(x, s, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
   return c;
 }
-async function offerFile(filename, data, fallback) {
+async function offerFile(filename, data, fallback, note) {
+  const saved = "Saved " + filename + (note ? ". " + note : "");
   if (downloads) {
-    try { await downloads.save({ filename, data }); toast("Saved " + filename); return; }
+    try { await downloads.save({ filename, data }); toast(saved); return; }
     catch (e) { if (e && e.code === "declined") { toast("Save cancelled"); return; } if (e && e.code === "rate_limited") { toast("A save prompt is already open"); return; } }
   }
   if (!window.claude) {
     // Hosted on a normal website: a plain download link works.
     const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], { type: "application/json" }));
     const a = el("a", { href: url, download: filename }); document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000); toast("Saved " + filename); return;
+    setTimeout(() => URL.revokeObjectURL(url), 4000); toast(saved); return;
   }
   fallback();
 }
 function exportPNG() {
   const c = renderExport();
+  const capped = c.width < Math.round(state.viewport.w * state.export.scale) - 1;
+  const note = capped ? `Kept to 64 megapixels, so it is ${c.width} × ${c.height} px` : "";
   c.toBlob(blob => {
     if (!blob) { toast("Export failed. Try a lower resolution."); return; }
     offerFile("perspective-" + state.viewport.w + "x" + state.viewport.h + ".png", blob, () => {
       const img = el("img", { alt: "Exported perspective drawing", src: c.toDataURL("image/png") });
-      showModal(`Export ${c.width} × ${c.height} px`, el("div", { style: "display:grid;gap:8px" }, el("div", { class: "note" }, "Right-click (or long-press) the image and choose Save Image."), img));
-    });
+      showModal(`Export ${c.width} × ${c.height} px`, el("div", { style: "display:grid;gap:8px" }, el("div", { class: "note" }, "Right-click (or long-press) the image and choose Save Image." + (note ? " " + note + "." : "")), img));
+    }, note);
   }, "image/png");
 }
 function saveSetup() {
