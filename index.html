@@ -384,7 +384,7 @@ function levelPinhole(C, f, u, n, axes) {
   return {
     kind: "pinhole", proj, projG: proj, unproj: S => n3(V3(dot(sub(S, C), u), -dot(sub(S, C), n), f)),
     crosses: () => false, chartOf: () => 0, projChart: D => proj(D), seamPoint: null, clip: null,
-    axes, fits: p => p.z > 0.25 * l3(p)
+    axes, fits: p => p.z > 0.25 * l3(p), depthOf: p => p.z
   };
 }
 // 2-point: VP1 and VP2 are perpendicular horizontal directions, so with the center of vision on the
@@ -1138,11 +1138,6 @@ function keepBoxes(mutate, turn = 0) {
   });
 }
 const LENS_PATHS = ["curvi.radius", "curvi.radius6", "curvi.bend", "curvi.pano", "curvi.turn", "curvi.style4", "cone.cv"];
-// Where the camera ray through screen point S meets the horizontal plane at height y0 (3D, or null)
-function planeHit(cam, S, y0) {
-  const D = cam.unproj(S);
-  return D.y * y0 > 1e-12 ? m3(D, y0 / D.y) : null;
-}
 // ---- Carrying boxes across a change of perspective ----
 // Every mode can be read as a camera: the curved modes have one, 2-point is exactly a level pinhole, and
 // 3-point is a tilted pinhole whenever VP3 matches a real camera. That lets a box be read out as a 3D
@@ -1160,7 +1155,7 @@ function pinhole3(g) {
   const r2 = toWorld(ray(g.vp[1]));
   return {
     kind: "pinhole", proj, projG: proj, unproj: S => toWorld(ray(S)), crosses: () => false, chartOf: () => 0, projChart: D => proj(D), seamPoint: null, clip: null,
-    axes: [V3(1, 0, 0), n3(V3(r2.x, 0, r2.z))], fits: p => { const c = toCam(p); return c.z > 0.25 * l3(c); }
+    axes: [V3(1, 0, 0), n3(V3(r2.x, 0, r2.z))], fits: p => { const c = toCam(p); return c.z > 0.25 * l3(c); }, depthOf: p => toCam(p).z
   };
 }
 function convCam(g) {
@@ -1185,8 +1180,9 @@ function screenBox(pts) {
   return { c: P((x0 + x1) / 2, (y0 + y1) / 2), s: Math.hypot(x1 - x0, y1 - y0) };
 }
 // Rebuild a box with the given proportions so its outline on screen is centered on `target` with
-// diagonal `size`. The box's distance and direction are adjusted until its projection lands there.
-function fitBox(bx, dims, target0, size, g) {
+// diagonal `size`. solveFit finds the box's direction and size (it never grows past `size`, and keeps
+// the box where the view can show it); applyFit writes the result into the box.
+function solveFit(dims, target0, size, g) {
   const cam = convCam(g), [A1, A2] = cam.axes;
   const target = cam.keepIn ? cam.keepIn(target0) : target0; // a spot outside the view moves just inside it
   const build = (q, k) => {
@@ -1215,10 +1211,9 @@ function fitBox(bx, dims, target0, size, g) {
     const m = look(q, k);
     return Number.isFinite(m.s) && len(sub(m.c, target)) <= 2 + 0.02 * size ? { q, s: m.s } : null;
   };
-  // Then find the largest size that is still centered, fits the view and isn't bigger than before: the
-  // box keeps its place for sure, and its size as far as this view allows.
+  // Then the largest size that is still centered, fits the view and isn't bigger than before
   let lo = 0.002, best = centered(lo);
-  if (!best) return;
+  if (!best) return null;
   let hi = lo;
   for (let i = 0; i < 24; i++) {
     hi *= 2;
@@ -1227,13 +1222,16 @@ function fitBox(bx, dims, target0, size, g) {
     lo = hi; best = r;
   }
   for (let i = 0; i < 24; i++) { const mid = (lo + hi) / 2, r = centered(mid); if (r && r.s <= size) { lo = mid; best = r; } else hi = mid; }
-  const k = lo, q = best.q;
-  const { B, T } = build(q, k), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
+  return Object.assign(build(best.q, lo), { k: lo, s: best.s, exact: best.s >= 0.97 * size && len(sub(target, target0)) < 1 });
+}
+function applyFit(bx, fit, g) {
+  const cam = convCam(g), { B, T } = fit, p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
   if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite)) return;
   bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y);
-  if (g.cam) bx.H = k * dims.h / (l3(B[bx.anchor]) || 1);
+  if (g.cam) bx.H = l3(s3(T[bx.anchor], B[bx.anchor])) / (l3(B[bx.anchor]) || 1);
   else { const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); bx.h = Math.max(1, dot(sub(Ta, Ba), g.up(Ba))); }
 }
+function fitBox(bx, dims, target, size, g) { const f = solveFit(dims, target, size, g); if (f) applyFit(bx, f, g); }
 // Record where a box sits on screen and how big it looks, as the target for later perspective switches
 function captureFit(bx, g) {
   try {
@@ -1241,18 +1239,51 @@ function captureFit(bx, g) {
     if (Number.isFinite(c.x) && Number.isFinite(c.y) && sb.s > 0) bx.fit = { x: c.x, y: c.y, s: sb.s };
   } catch (e) { /* leave the old target */ }
 }
+// A lens or panorama only has so much room. When switching into one, grow it (never shrink it) until
+// every box fits at exactly its old size and place, so the switch doesn't change how the boxes look.
+const lensScaleKey = () => (isPano() ? "pano" : is6() ? "radius6" : "radius");
+function growLensToFit(plans) {
+  const key = lensScaleKey(), start = Math.max(20, state.curvi[key]);
+  const fitsAll = v => { state.curvi[key] = v; const g = geo(); return plans.every(p => !p || (s => s && s.exact)(solveFit(p.dims, p.c, p.s, g))); };
+  if (fitsAll(start)) return;
+  let lo = start, hi = start * 1.5, found = false;
+  for (let i = 0; i < 12; i++) { if (fitsAll(hi)) { found = true; break; } lo = hi; hi *= 1.6; }
+  if (!found) { state.curvi[key] = Math.round(hi); return; } // as close as it gets
+  for (let i = 0; i < 12; i++) { const mid = (lo + hi) / 2; if (fitsAll(mid)) hi = mid; else lo = mid; }
+  state.curvi[key] = Math.ceil(hi);
+}
 // Changing the perspective keeps each box's size and place on screen and its real proportions, then
 // rebuilds it under the new rules, so nothing needs re-zooming or re-placing after a switch.
 function reshape(mutate) {
   const g0 = geo();
   state.boxes.forEach(bx => { if (!bx.fit) captureFit(bx, g0); });
-  const plan = state.boxes.map(bx => { try { return bx.fit ? boxDims(bx, g0) : null; } catch (e) { return null; } });
+  const plans = state.boxes.map(bx => { try { return bx.fit ? { dims: boxDims(bx, g0), c: P(bx.fit.x, bx.fit.y), s: bx.fit.s } : null; } catch (e) { return null; } });
   mutate();
+  if (camMode()) growLensToFit(plans);
   const g1 = geo();
-  state.boxes.forEach((bx, i) => { if (plan[i]) fitBox(bx, plan[i], P(bx.fit.x, bx.fit.y), bx.fit.s, g1); });
+  state.boxes.forEach((bx, i) => { const p = plans[i]; if (p) fitBox(bx, p.dims, p.c, p.s, g1); });
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch();
   return g1;
+}
+// Moving a box is a rigid move in 3D: point p slides to the camera ray through screen point S, keeping
+// its depth (distance into the picture for a flat camera, distance from the eye for a lens).
+function slideTo(cam, p, S) {
+  const r = cam.unproj(S);
+  if (cam.depthOf) { const d = cam.depthOf(p), rz = cam.depthOf(r); return rz > 1e-6 ? m3(r, d / rz) : p; }
+  return m3(n3(r), l3(p));
+}
+// A base is valid when both corners sit on the same side of eye level and, through a flat camera, every
+// corner is in front of the viewer (a corner past a vanishing point would be behind you).
+function baseOk(b0, b2, g) {
+  const s0 = dot(sub(b0, g.O), g.n), s2 = dot(sub(b2, g.O), g.n);
+  if (!(s0 * s2 > 0)) return false;
+  if (g.cam) return true;
+  const cam = convCam(g), [A1, A2] = cam.axes, D0 = cam.unproj(b0), D2 = cam.unproj(b2), l = D0.y / D2.y;
+  if (!(Number.isFinite(l) && l > 0)) return false;
+  const V = s3(m3(D2, l), D0), B1 = a3(D0, m3(A1, d3(V, A1))), B3 = a3(D0, m3(A2, d3(V, A2)));
+  const depth = cam.depthOf || (p => p.z);
+  return [D0, B1, m3(D2, l), B3].every(p => depth(p) > 1e-3);
 }
 function setMode(m) {
   if (m === state.mode) return;
@@ -1839,7 +1870,7 @@ const VP_DRAGS = {
 
 canvas.addEventListener("pointerdown", e => {
   canvas.focus({ preventScroll: true });
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety; dragging works without it */ }
   const s = spos(e); pointers.set(e.pointerId, s);
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
@@ -1862,14 +1893,12 @@ canvas.addEventListener("pointerdown", e => {
     if (hit.type === "bottom") drag.fixed = P(G.B[j].x, G.B[j].y); else drag.base = P(G.B[j].x, G.B[j].y);
   } else if (hit.type === "body") {
     state.sel = hit.bi; const bx = state.boxes[hit.bi];
-    drag.b0 = { ...bx.b0 }; drag.b2 = { ...bx.b2 };
-    drag.ci = len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? 0 : 2;
-    drag.corner = drag.ci === 0 ? { ...bx.b0 } : { ...bx.b2 };
-    if (g.cam) {
-      // Through a lens, slide the box across its own floor plane in 3D so it keeps its shape
-      const G = boxGeoCam(bx, g);
-      drag.B3 = G.B3; drag.H0 = bx.H; drag.y0 = G.B3[0].y; drag.P0 = planeHit(g.cam, w, drag.y0);
-    }
+    // Moving a box is a rigid move in 3D: it keeps its shape and its distance from you, and can pass
+    // above or below eye level without warping. Every mode is read through its camera for this.
+    const cam = convCam(g), gc = g.cam ? g : Object.assign({}, g, { cam }), B = boxGeoCam(bx, gc).B3;
+    const H = g.cam ? bx.H : topFromScreen(n3(B[bx.anchor]), boxGeoLinear(bx, g).T[bx.anchor], gc);
+    const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8), s0 = cam.proj(c0);
+    drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), ci: len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? 0 : 2 };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vp") { drag.turn0 = state.curvi.turn; drag.Rp = g.cam && g.cam.Rp; }
@@ -1903,8 +1932,12 @@ canvas.addEventListener("pointermove", e => {
     case "bottom": {
       const bx = state.boxes[state.sel];
       let m = w; if (useSnap) { const sp = snapPoint(w, state.sel); if (sp) { m = sp.pt; snapMark = sp; } }
+      // A base can't cross eye level (its far edges would shoot back out of the VPs), so the dragged
+      // corner stays on the same side of the horizon as the fixed one
+      const sf = dot(sub(drag.fixed, g.O), g.n), sm = dot(sub(m, g.O), g.n), eps = 2 / view.z;
+      if (Math.sign(sm) !== Math.sign(sf) || Math.abs(sm) < eps) m = add(m, mul(g.n, Math.sign(sf || 1) * eps - sm));
       const r = bottomFromDiag(drag.i, m, drag.fixed, g);
-      if (r) { bx.b0 = r[0]; bx.b2 = r[1]; }
+      if (r && baseOk(r[0], r[1], g)) { bx.b0 = r[0]; bx.b2 = r[1]; }
       break;
     }
     case "top": {
@@ -1921,23 +1954,18 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "body": {
-      const bx = state.boxes[state.sel];
-      if (g.cam && drag.P0) {
-        const cam = g.cam, hitW = planeHit(cam, w, drag.y0); if (!hitW) break;
-        let delta = s3(hitW, drag.P0);
-        if (useSnap) {
-          const t = cam.proj(a3(drag.B3[drag.ci], delta)), sp = snapPoint(P(t.x, t.y), state.sel);
-          const hs = sp && planeHit(cam, sp.pt, drag.y0);
-          if (hs) { delta = s3(hs, drag.B3[drag.ci]); snapMark = sp; }
-        }
-        const B = drag.B3.map(p => a3(p, delta)), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
-        bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y); bx.H = drag.H0 / (l3(B[bx.anchor]) || 1);
-        break;
+      const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
+      let delta = s3(slideTo(R.cam, R.c0, add(R.s0, sub(w, drag.w0))), R.c0);
+      if (useSnap) {
+        // snap the base corner nearest the grab point, moving the whole box with it
+        const t = R.cam.proj(a3(R.B[R.ci], delta)), sp = snapPoint(P(t.x, t.y), state.sel);
+        if (sp) { delta = s3(slideTo(R.cam, R.B[R.ci], sp.pt), R.B[R.ci]); snapMark = sp; }
       }
-      let target = add(drag.corner, sub(w, drag.w0));
-      if (useSnap) { const sp = snapPoint(target, state.sel); if (sp) { target = sp.pt; snapMark = sp; } }
-      const d = sub(target, drag.corner);
-      bx.b0 = add(drag.b0, d); bx.b2 = add(drag.b2, d);
+      const B = R.B.map(p => a3(p, delta)), p0 = R.cam.proj(B[0]), p2 = R.cam.proj(B[2]);
+      if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite)) break;
+      bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y);
+      if (g.cam) bx.H = R.H / (l3(B[bx.anchor]) || 1);
+      else { const Ba = R.cam.proj(B[bx.anchor]), Ta = R.cam.proj(a3(B[bx.anchor], m3(UP3, R.H))); bx.h = Math.max(1, dot(sub(Ta, Ba), g.up(Ba))); }
       break;
     }
     case "vp": {
