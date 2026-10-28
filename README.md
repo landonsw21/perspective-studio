@@ -46,7 +46,7 @@ Choose the mode from the perspective dropdown on the toolbar, which lists 4-poin
 
 - Editable horizon line: eye level, center, tilt, color, weight, line style
 - Draggable vanishing points whose markers take the color of their primary rays, with an optional cone of vision
-- Ray fans from each vanishing point: even spacing or even angles, any count, and a repeating pattern of letters. Each letter from A to Z is a ray style with its own color, weight, line (solid, dashed, dotted or dash-dot) and opacity, a dot skips a ray, and a letter gets a row in the style table as soon as it's typed. VP1 and VP2 can be edited together, sharing everything but their colors
+- Ray fans from each vanishing point: even spacing or even angles, any count, and a repeating pattern of letters. Each letter from A to Z is a ray style with its own color, weight, opacity slider and line: solid, dashed, dotted, dash-dot, long dash or dash-dot-dot (the horizon and guides offer the same six). A dot skips a ray, and a letter gets a row in the style table as soon as it's typed. VP1 and VP2 can be edited together, sharing everything but their colors
 - A sized export area that renders to PNG at up to 8× (capped at 64 megapixels)
 - Number boxes accept values past the end of each slider, and the slider stretches to fit; releasing a slider at its end doubles its range
 - Undo from the toolbar or with Ctrl/⌘ Z; redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y

@@ -129,10 +129,11 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .seg .swatch { margin-right: 6px; }
 .row.pattern .patview { grid-column: 1 / -1; }
 .row.pattern .txt { width: 84px; }
-.styles { display: grid; grid-template-columns: 16px 44px minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr); gap: 6px; align-items: center; }
+.styles { display: grid; grid-template-columns: 14px 36px minmax(0, .8fr) minmax(0, 1.55fr) minmax(0, .9fr); gap: 6px; align-items: center; }
 .styles .lt { font: 600 12px/1 var(--f-data); color: var(--ink); text-align: center; }
 .styles .hd { font: 600 10.5px/1.2 var(--f-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .styles .num, .styles select, .styles input[type=color] { width: 100%; max-width: none; }
+.styles input[type=range] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); }
 .pick select { max-width: 132px; }
 .pick .num { width: 58px; }
 .ph .tip { font-size: 11.5px; }
@@ -301,7 +302,7 @@ function panoOk(c) {
 const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 // Rays: a pattern of letters and dots. Each letter (A to Z) is a ray style with its own color, weight, line
 // and opacity, "." skips a ray, and the pattern repeats. A's color also colors the VP's marker.
-const DASH_NAMES = ["solid", "dashed", "dotted", "dashdot"];
+const DASH_NAMES = ["solid", "dashed", "dotted", "dashdot", "longdash", "dashdotdot"];
 const rayStyle = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 const raysDefault = (ca, cb, extra = {}) => Object.assign({
   show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center",
@@ -312,7 +313,7 @@ const mixHex = (h1, h2, t) => { const x = hex2rgb(h1), y = hex2rgb(h2); return "
 // of its own so it stands apart: C dashed, D dotted, E dash-dot, then round again
 function newRayStyle(R, ch) {
   const base = R.styles.B || R.styles.A, k = Math.max(0, ch.charCodeAt(0) - 67);
-  return rayStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % 3], base.opacity);
+  return rayStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % (DASH_NAMES.length - 1)], base.opacity);
 }
 function ensureRayStyles(R) { for (const ch of R.pattern) if (ch !== "." && !R.styles[ch]) R.styles[ch] = newRayStyle(R, ch); }
 function defaultState() {
@@ -1039,13 +1040,13 @@ function snapTopCurvi(Bu, w, g) {
 /* ---------- drawing ---------- */
 const canvas = document.getElementById("cv"), ctx = canvas.getContext("2d");
 let dpr = 1, cw = 0, ch = 0, dirty = true, panelDirty = true, snapMark = null, hover = null, drag = null;
-const DASHES = { solid: [], dashed: [7, 5], dotted: [0.1, 3], dashdot: [9, 4, 0.1, 4] };
+const DASHES = { solid: [], dashed: [7, 5], dotted: [0.1, 3], dashdot: [9, 4, 0.1, 4], longdash: [16, 6], dashdotdot: [9, 4, 0.1, 4, 0.1, 4] };
 function strokeStyle(c, s, k) {
   c.strokeStyle = s.color; c.globalAlpha = s.opacity;
   c.lineWidth = Math.max(s.width, 0.6 / k);
   const w = Math.max(c.lineWidth * k, 1);
   c.setLineDash((DASHES[s.dash] || []).map(x => x * w / k));
-  c.lineCap = s.dash === "dotted" || s.dash === "dashdot" ? "round" : "butt";
+  c.lineCap = /dot/.test(s.dash) ? "round" : "butt"; // round caps turn the short segments into dots
 }
 // Rays draw in one group per letter, each in its letter's style, with A (the primary rays) drawn last so it
 // sits on top
@@ -1770,7 +1771,7 @@ function setP(path, val) {
   touch();
 }
 
-const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"]];
+const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"], ["longdash", "Long dash"], ["dashdotdot", "Dash-dot-dot"]];
 const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["ABC", "Three styles: A, B, C"], ["ABCD", "Four styles: A to D"], ["ABAC", "A, then B and C in turn"], ["custom", "Custom…"]];
 const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"]];
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
@@ -1790,7 +1791,9 @@ const PREVIEW_DASH = {
   solid: c => c,
   dashed: c => `repeating-linear-gradient(to bottom, ${c} 0 4px, transparent 4px 7px)`,
   dotted: c => `repeating-linear-gradient(to bottom, ${c} 0 2px, transparent 2px 4px)`,
-  dashdot: c => `repeating-linear-gradient(to bottom, ${c} 0 5px, transparent 5px 7px, ${c} 7px 9px, transparent 9px 11px)`
+  dashdot: c => `repeating-linear-gradient(to bottom, ${c} 0 5px, transparent 5px 7px, ${c} 7px 9px, transparent 9px 11px)`,
+  longdash: c => `repeating-linear-gradient(to bottom, ${c} 0 9px, transparent 9px 12px)`,
+  dashdotdot: c => `repeating-linear-gradient(to bottom, ${c} 0 5px, transparent 5px 7px, ${c} 7px 9px, transparent 9px 11px, ${c} 11px 13px, transparent 13px 15px)`
 };
 const hasBox = () => state.sel >= 0 && !!state.boxes[state.sel];
 const hasDiv = () => hasBox() && state.boxes[state.sel].div.on;
@@ -2121,6 +2124,13 @@ function makeRow(r) {
         sel.addEventListener("change", () => { setP(bind, sel.value); commit(); });
         return { node: sel, update: () => { sel.value = getP(bind); } };
       };
+      const slider = (bind, aria) => {
+        const inp = el("input", { type: "range", id: idFor(bind), min: "0", max: "1", step: "0.01", "aria-label": aria });
+        const show = () => { const pct = Math.round(getP(bind) * 100) + "%"; inp.title = pct; inp.setAttribute("aria-valuetext", pct); };
+        inp.addEventListener("input", () => { setP(bind, +inp.value); show(); });
+        inp.addEventListener("change", () => commit());
+        return { node: inp, update: () => { inp.value = getP(bind); show(); } };
+      };
       node = grid;
       update = () => {
         const R = state.vps[ui.vp].rays, letters = [...new Set(["A", ...R.pattern])].filter(ch => ch !== "." && R.styles[ch]).sort(), s = ui.vp + letters.join("");
@@ -2130,7 +2140,7 @@ function makeRow(r) {
           letters.forEach(ch => {
             const pre = `vps.$v.rays.styles.${ch}`;
             grid.append(el("b", { class: "lt", title: ch === "A" ? "A's color also colors the VP marker" : `Rays drawn for each ${ch} in the pattern` }, ch));
-            [color(pre + ".color", `${ch} ray color`), number(pre + ".width", 0.25, 0, 500, `${ch} ray weight`), line(pre + ".dash", `${ch} ray line style`), number(pre + ".opacity", 0.05, 0, 1, `${ch} ray opacity`)]
+            [color(pre + ".color", `${ch} ray color`), number(pre + ".width", 0.25, 0, 500, `${ch} ray weight`), line(pre + ".dash", `${ch} ray line style`), slider(pre + ".opacity", `${ch} ray opacity`)]
               .forEach(c => { grid.append(c.node); ctls.push(c); });
           });
         }
