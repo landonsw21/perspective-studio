@@ -6,7 +6,7 @@ Live at https://landonsw21.github.io/perspective-studio/
 
 ## Perspective modes
 
-Switch modes from the toolbar.
+Choose the mode from the perspective dropdown on the toolbar, which lists 4-point's fisheye and panorama as separate choices.
 
 - **1-point:** one vanishing point on the horizon; depth edges run to it while widths stay horizontal and heights vertical, so box fronts are true rectangles. Comes with a starburst of rays plus horizontal and vertical guides
 - **2-point:** two vanishing points on the horizon, vertical edges stay vertical
@@ -22,7 +22,7 @@ Switch modes from the toolbar.
   - In 5- and 6-point, the left, right, up and down VPs slide along their lines, and the center slides between the left and right VPs. In 6-point, dragging the back rim grows or shrinks it, and the rim stays put while the other VPs move
   - In the 4-point fisheye, dragging VP1 or VP2 works like 2-point: the other one stays put while the lens turns and resizes, and the up and down VPs keep their places
   - In the panorama, each of the four VPs slides along the horizon on its own
-  - **Even out the vanishing points** puts them back in an even layout
+  - **Even out VPs**, on the toolbar next to Fit view, puts them back in an even layout
 - Lens size, the lens center, 5-point's coverage, the 6-point back rim and the 4-point turn are in the Perspective panel
 - Every curved view projects true 3D lines through its camera, so boxes, snapping and face divisions work the same way everywhere. Setups saved with the earlier single curvature setting open with their lens rings exactly where they were
 
@@ -46,7 +46,7 @@ Switch modes from the toolbar.
 
 - Editable horizon line: eye level, center, tilt, color, weight, line style
 - Draggable vanishing points whose markers take the color of their primary rays, with an optional cone of vision
-- Ray fans from each vanishing point: even spacing or even angles, any count, alternating A/B/skip patterns
+- Ray fans from each vanishing point: even spacing or even angles, any count, and a repeating pattern of letters. Each letter from A to Z is a ray style with its own color, weight, line (solid, dashed, dotted or dash-dot) and opacity, a dot skips a ray, and a letter gets a row in the style table as soon as it's typed. VP1 and VP2 can be edited together, sharing everything but their colors
 - A sized export area that renders to PNG at up to 8× (capped at 64 megapixels)
 - Number boxes accept values past the end of each slider, and the slider stretches to fit; releasing a slider at its end doubles its range
 - Undo from the toolbar or with Ctrl/⌘ Z; redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y
@@ -63,6 +63,7 @@ Stress tested on 27 October 2026 with scripted runs in the browser, covering all
 - **Switching perspective:** 225 random switches on nine scenes of 20 random boxes of different sizes, shapes and positions. Every box kept its proportions exactly, its size to within 0.5% and its center to within 1.6% of its size
 - **Dragging:** 2,468 random drags on 84 scenes of 8 boxes, covering base corners, tops, bodies, the horizon, vanishing points and lens VPs. A moved box always kept its proportions and the other boxes stayed exactly where they were. Moving the horizon or a vanishing point kept every box's proportions, and in 1-, 2- and 3-point its place and size too. No base ended up lying on or straddling the horizon. Every drag that changed anything was undone and redone, and both restored the drawing exactly
 - **Panel values:** 2,070 random edits to the horizon, vanishing points and lens settings, 1,160 of them at extreme values or on a randomly reshaped lens. No box changed proportions, every box in 1-, 2- and 3-point kept its place and size, and every edit undid and redid exactly
+- **Ray patterns:** in all six modes and both 4-point styles, every letter of a pattern was drawn in its own color, weight, line and opacity, with the A rays on top, in the view and in the exported PNG. Dots skipped exactly the rays they should, setups saved with the earlier A/B styles opened looking the same, and typing a pattern or changing a letter's style undid and redid exactly
 - **Export, save and load:** PNG export in every mode at 1× and 2×, the 64-megapixel cap, setups surviving a save and load exactly, and files that aren't setups being refused
 - **Speed and layout:** with 34 boxes, each with face divisions and diagonals, a full redraw took 2–3 ms in 1-, 2- and 3-point and 10–14 ms in the curved views. Each step of a drag took at most about 6.5 ms and a switch at most 47 ms. On a 375 px wide phone screen, nothing scrolls sideways
 

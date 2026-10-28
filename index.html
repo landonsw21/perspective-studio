@@ -58,11 +58,7 @@ body { background: var(--chrome); color: var(--ink); font-family: var(--f-ui); f
 .tb[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
 .tb.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 .tb:disabled { opacity: .45; cursor: default; }
-.tbmodes { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
-.tbmodes button { font: 500 12px/1 var(--f-ui); letter-spacing: .02em; color: var(--ink); background: transparent; border: 0; padding: 8px 9px; cursor: pointer; }
-.tbmodes button + button { border-left: 1px solid var(--rule); }
-.tbmodes button:hover { background: var(--accent-soft); }
-.tbmodes button[aria-pressed="true"] { background: var(--accent); color: var(--panel); }
+select.tb { padding: 7px 6px; max-width: none; }
 .status {
   position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 10px; right: 12px;
   display: flex; gap: 14px; flex-wrap: wrap; pointer-events: none;
@@ -133,14 +129,15 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .seg .swatch { margin-right: 6px; }
 .row.pattern .patview { grid-column: 1 / -1; }
 .row.pattern .txt { width: 84px; }
-.styles { display: grid; grid-template-columns: minmax(0, 1fr) 100px 100px; gap: 6px 8px; align-items: center; }
+.styles { display: grid; grid-template-columns: 16px 44px minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr); gap: 6px; align-items: center; }
+.styles .lt { font: 600 12px/1 var(--f-data); color: var(--ink); text-align: center; }
 .styles .hd { font: 600 10.5px/1.2 var(--f-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .styles .num, .styles select, .styles input[type=color] { width: 100%; max-width: none; }
 .pick select { max-width: 132px; }
 .pick .num { width: 58px; }
 .ph .tip { font-size: 11.5px; }
 .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
-.patview { display: flex; gap: 2px; height: 14px; align-items: stretch; }
+.patview { display: flex; gap: 2px; height: 22px; align-items: stretch; }
 .patview i { flex: 1; max-width: 10px; border-radius: 1px; }
 
 .modal { position: fixed; inset: 0; background: rgb(10 14 17 / .55); display: grid; place-items: center; padding: 16px; z-index: 10; }
@@ -164,7 +161,8 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
       <button class="tb primary" id="tbAdd" type="button">Add box</button>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
-      <div class="tbmodes" id="tbModes" role="group" aria-label="Perspective type"></div>
+      <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout (4-, 5- and 6-point)">Even out VPs</button>
+      <select class="tb" id="tbMode" aria-label="Perspective" title="Perspective"></select>
       <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
       <button class="tb" id="tbExport" type="button">Export PNG</button>
     </div>
@@ -301,7 +299,22 @@ function panoOk(c) {
 
 /* ---------- state ---------- */
 const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
-const raysDefault = (ca, cb) => ({ show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center", a: st(ca, 1, "solid", 0.9), b: st(cb, 0.6, "solid", 0.55) });
+// Rays: a pattern of letters and dots. Each letter (A to Z) is a ray style with its own color, weight, line
+// and opacity, "." skips a ray, and the pattern repeats. A's color also colors the VP's marker.
+const DASH_NAMES = ["solid", "dashed", "dotted", "dashdot"];
+const rayStyle = (color, width, dash, opacity) => ({ color, width, dash, opacity });
+const raysDefault = (ca, cb, extra = {}) => Object.assign({
+  show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center",
+  styles: { A: rayStyle(ca, 1, "solid", 0.9), B: rayStyle(cb, 0.6, "solid", 0.55) }
+}, extra);
+const mixHex = (h1, h2, t) => { const x = hex2rgb(h1), y = hex2rgb(h2); return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join(""); };
+// A letter without a style yet starts from B's, a little lighter the further along the alphabet, with a line
+// of its own so it stands apart: C dashed, D dotted, E dash-dot, then round again
+function newRayStyle(R, ch) {
+  const base = R.styles.B || R.styles.A, k = Math.max(0, ch.charCodeAt(0) - 67);
+  return rayStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % 3], base.opacity);
+}
+function ensureRayStyles(R) { for (const ch of R.pattern) if (ch !== "." && !R.styles[ch]) R.styles[ch] = newRayStyle(R, ch); }
 function defaultState() {
   return {
     mode: "2pt",
@@ -309,9 +322,9 @@ function defaultState() {
     vps: [
       { dist: -1300, drop: 0, size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
       { dist: 1300, drop: 0, size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") },
-      { dist: 0, drop: 2600, size: 8, show: true, rays: Object.assign(raysDefault("#3f9a63", "#a3d4b4"), { count: 12, spacing: 120, pattern: "AB" }) },
+      { dist: 0, drop: 2600, size: 8, show: true, rays: raysDefault("#3f9a63", "#a3d4b4", { count: 12, spacing: 120, pattern: "AB" }) },
       // the center (5-point) or front/back (6-point) VP: its rays fan out evenly all the way around
-      { dist: 0, drop: 0, size: 8, show: true, rays: Object.assign(raysDefault("#8a63c4", "#c9b6e8"), { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
+      { dist: 0, drop: 0, size: 8, show: true, rays: raysDefault("#8a63c4", "#c9b6e8", { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
     // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
     curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
@@ -377,6 +390,16 @@ function normalize(s) {
   cv.panoHc = Math.max(0, cv.panoHc);
   if (!(cv.panoK.length === 4 && cv.panoK.every(Number.isFinite) && panoOk(cv))) cv.panoK = [0, 0, 0, 0];
   // boxes without two usable corners are dropped rather than drawn wrong
+  out.vps.forEach((v, i) => {
+    const R = v.rays, raw = s && s.vps && s.vps[i] && s.vps[i].rays, def = d.vps[i].rays.styles;
+    R.pattern = (R.pattern || "").toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 64) || "A";
+    // every saved letter's style (setups saved before letters past B kept A and B as "a" and "b")
+    const saved = raw && raw.styles && typeof raw.styles === "object" ? raw.styles : { A: raw && raw.a, B: raw && raw.b };
+    R.styles = { A: clone(def.A), B: clone(def.B) };
+    for (const [k, st] of Object.entries(saved)) if (/^[A-Z]$/.test(k) && st && typeof st === "object") R.styles[k] = deepMerge(def[k] || def.B, st);
+    for (const st of Object.values(R.styles)) if (!DASH_NAMES.includes(st.dash)) st.dash = "solid";
+    ensureRayStyles(R);
+  });
   out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).filter(b => b && okPt(b.b0) && okPt(b.b2)).map(b => deepMerge(boxDefaults(), b));
   out.boxes.forEach(b => {
     if (![0, 1, 2, 3].includes(b.anchor)) b.anchor = 0;
@@ -1024,6 +1047,10 @@ function strokeStyle(c, s, k) {
   c.setLineDash((DASHES[s.dash] || []).map(x => x * w / k));
   c.lineCap = s.dash === "dotted" || s.dash === "dashdot" ? "round" : "butt";
 }
+// Rays draw in one group per letter, each in its letter's style, with A (the primary rays) drawn last so it
+// sits on top
+const rayStyleOf = (R, ch) => R.styles[ch] || R.styles.B || R.styles.A;
+const byLayer = ([k1], [k2]) => (k1 < k2 ? 1 : k1 > k2 ? -1 : 0);
 function farDist(p, b) {
   let m = 0; for (const c of [P(b.x, b.y), P(b.x + b.w, b.y), P(b.x, b.y + b.h), P(b.x + b.w, b.y + b.h)]) m = Math.max(m, len(sub(c, p)));
   return m + 10;
@@ -1062,8 +1089,9 @@ function drawGuides(c, k, b, inc, g) {
     if (inc.verticals && V.show && usesVerticals()) strokeArcs(arcs.filter(a => a.fam === "v"), V);
     if (inc.rays) fams().forEach(vi => {
       const R = state.vps[vi].rays; if (!R.show) return;
-      const mine = arcs.filter(a => a.fam === "r" + vi);
-      strokeArcs(mine.filter(a => a.ch === "B"), R.b); strokeArcs(mine.filter(a => a.ch !== "B"), R.a);
+      const groups = new Map();
+      arcs.filter(a => a.fam === "r" + vi).forEach(a => { if (!groups.has(a.ch)) groups.set(a.ch, []); groups.get(a.ch).push(a); });
+      [...groups].sort(byLayer).forEach(([ch, list]) => strokeArcs(list, rayStyleOf(R, ch)));
     });
     if (inc.horizon && H.show) strokeArcs(arcs.filter(a => a.fam === "h"), H);
     c.globalAlpha = 1; c.setLineDash([]);
@@ -1097,15 +1125,14 @@ function drawGuides(c, k, b, inc, g) {
   }
   if (inc.rays) fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
-    const VP = g.vp[vi], L = farDist(VP, b), pa = new Path2D(), pb = new Path2D();
+    const VP = g.vp[vi], L = farDist(VP, b), paths = new Map();
     for (const r of rayList(vi, g)) {
       if (r.ch === ".") continue;
-      const p = r.ch === "B" ? pb : pa;
-      const s = R.behind ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
+      if (!paths.has(r.ch)) paths.set(r.ch, new Path2D());
+      const p = paths.get(r.ch), s = R.behind ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
       p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
     }
-    strokeStyle(c, R.b, k); c.stroke(pb);
-    strokeStyle(c, R.a, k); c.stroke(pa);
+    [...paths].sort(byLayer).forEach(([ch, p]) => { strokeStyle(c, rayStyleOf(R, ch), k); c.stroke(p); });
   });
   if (inc.horizon && H.show) {
     const L = farDist(g.O, b), a = add(g.O, mul(g.u, -L)), e = add(g.O, mul(g.u, L));
@@ -1192,11 +1219,11 @@ function drawBox(c, bx, g, k) {
 function vpMarkers(g) {
   return g.cam ? g.cam.markers : fams().map(i => marker(g.vp[i], state.mode === "1pt" ? "VP" : "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
 }
-// Each marker takes the color of its primary (A) rays, so recoloring the rays recolors the VP too
+// Each marker takes the color of its A rays, so recoloring them recolors the VP too
 function drawVPs(c, k, g) {
   for (const mk of vpMarkers(g)) {
     const v = state.vps[mk.vi]; if (!v.show) continue;
-    const p = mk.p, r = v.size / k, color = v.rays.a.color;
+    const p = mk.p, r = v.size / k, color = v.rays.styles.A.color;
     c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = color; c.fillStyle = "#ffffff";
     c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
     c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
@@ -1673,6 +1700,14 @@ function setMode(m) {
   if (m === state.mode) return;
   reshape(() => { state.mode = m; });
 }
+// A toolbar choice: a mode, or 4-point with its style ("4pt-fish", "4pt-pano")
+const modeKey = () => (state.mode === "4pt" ? "4pt-" + state.curvi.style4 : state.mode);
+function chooseMode(key) {
+  const [m, style] = key.split("-");
+  if (key === modeKey()) return;
+  if (!style) setMode(m);
+  else reshape(() => { state.mode = m; state.curvi.style4 = style; });
+}
 function flipVP3(sign) { changeGrid(() => { state.vps[2].drop = sign * Math.max(40, Math.abs(state.vps[2].drop)); }); commit(); touch(); }
 function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captureFit(bx, g); state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
 function dupBox() {
@@ -1734,9 +1769,27 @@ function setP(path, val) {
 }
 
 const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"]];
-const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["custom", "Custom…"]];
+const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["ABC", "Three styles: A, B, C"], ["ABCD", "Four styles: A to D"], ["ABAC", "A, then B and C in turn"], ["custom", "Custom…"]];
 const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"]];
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
+// A new ray pattern gives any letter it adds a style of its own. VP1 and VP2 rays edited together share the
+// pattern, and a letter new to the other family copies the edited family's weight, line and opacity in a
+// color of its own
+function setPattern(v) {
+  const src = state.vps[ui.vp].rays; src.pattern = v; ensureRayStyles(src);
+  if (state.linkRays && ui.vp < 2 && fams().includes(1)) {
+    const R = state.vps[1 - ui.vp].rays; R.pattern = v;
+    for (const ch of v) if (ch !== "." && !R.styles[ch]) R.styles[ch] = Object.assign({}, src.styles[ch], { color: newRayStyle(R, ch).color });
+  }
+  touch();
+}
+// The pattern preview draws each letter's line style down its bar
+const PREVIEW_DASH = {
+  solid: c => c,
+  dashed: c => `repeating-linear-gradient(to bottom, ${c} 0 4px, transparent 4px 7px)`,
+  dotted: c => `repeating-linear-gradient(to bottom, ${c} 0 2px, transparent 2px 4px)`,
+  dashdot: c => `repeating-linear-gradient(to bottom, ${c} 0 5px, transparent 5px 7px, ${c} 7px 9px, transparent 9px 11px)`
+};
 const hasBox = () => state.sel >= 0 && !!state.boxes[state.sel];
 const hasDiv = () => hasBox() && state.boxes[state.sel].div.on;
 const is1 = () => state.mode === "1pt", is2 = () => state.mode === "2pt", is3 = () => state.mode === "3pt";
@@ -1778,7 +1831,6 @@ const schema = [
     { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
-    { t: "select", bind: "curvi.style4", label: "4-point style", options: [["fish", "Fisheye: VP1 and VP2 on the horizon, up and down"], ["pano", "Panorama: 4 VPs on the horizon"]], apply: v => reshape(() => { state.curvi.style4 = v; }), when: is4 },
     { t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
     { t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
     { t: "range", bind: "curvi.panoHc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: isPano },
@@ -1789,7 +1841,6 @@ const schema = [
     { t: "range", bind: "curvi.pano", label: "Panorama size (90° at 100%)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
     { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: is4 },
     { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
-    { t: "btns", items: [["Even out the vanishing points", evenVPs, ""]], when: camMode },
     { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
     { t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other.", when: isPano },
@@ -1840,11 +1891,11 @@ const schema = [
     { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: isSpacing },
     { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() },
     { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() },
-    { t: "sub", label: "Pattern and line styles" },
+    { t: "sub", label: "Pattern and styles" },
     { t: "pattern" },
     { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]] },
     { t: "styles" },
-    { t: "note", html: "<code>A</code> draws a primary ray, <code>B</code> a secondary ray and <code>.</code> skips one, repeating. Style A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
+    { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
   ]},
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
@@ -2032,8 +2083,8 @@ function makeRow(r) {
       const sel = el("select", { id: "f-pattern-preset", "aria-label": "Pattern preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
       const inp = el("input", { class: "txt", type: "text", id: tid, maxlength: "64", spellcheck: "false", autocomplete: "off", "aria-label": "Pattern sequence" });
       const box = el("div", { class: "patview", "aria-hidden": "true" });
-      sel.addEventListener("change", () => { if (sel.value !== "custom") { setP(bind, sel.value); commit(); } else { inp.focus(); inp.select(); } });
-      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^AB.]/g, ""); if (v) setP(bind, v); });
+      sel.addEventListener("change", () => { if (sel.value !== "custom") { setPattern(sel.value); commit(); } else { inp.focus(); inp.select(); } });
+      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^A-Z.]/g, ""); if (v) setPattern(v); });
       inp.addEventListener("change", () => { inp.value = getP(bind); commit(); });
       node = el("div", { class: "row pattern" }, el("label", { for: tid }, "Pattern"), el("div", { class: "pick" }, sel, inp), box);
       update = () => {
@@ -2041,34 +2092,48 @@ function makeRow(r) {
         sel.value = PATTERNS.some(x => x[0] === p) ? p : "custom";
         if (document.activeElement !== inp) inp.value = p;
         box.innerHTML = "";
-        for (let i = 0; i < 24; i++) { const c = p[i % p.length]; const s = c === "." ? null : R[c === "B" ? "b" : "a"]; const b = el("i"); b.style.background = s ? s.color : "transparent"; b.style.opacity = s ? Math.max(0.25, s.opacity) : 1; b.style.transform = `scaleX(${s ? Math.min(1, 0.25 + s.width / 3) : 1})`; box.append(b); }
+        for (let i = 0; i < 24; i++) {
+          const c = p[i % p.length], sty = c === "." ? null : rayStyleOf(R, c), bar = el("i");
+          if (sty) { bar.style.background = (PREVIEW_DASH[sty.dash] || PREVIEW_DASH.solid)(sty.color); bar.style.opacity = Math.max(0.25, sty.opacity); bar.style.transform = `scaleX(${Math.min(1, 0.25 + sty.width / 3)})`; }
+          box.append(bar);
+        }
       };
       break;
     }
     case "styles": {
-      // the A and B line styles side by side: a column each, a row per setting
-      const cols = [["a", "A · primary", "Primary"], ["b", "B · secondary", "Secondary"]], kids = [el("span"), ...cols.map(c => el("span", { class: "hd" }, c[1]))], ctls = [];
-      const field = (name, make) => { kids.push(el("span", { class: "lab" }, name)); cols.forEach(([k, , who]) => { const c = make(`vps.$v.rays.${k}`, `${who} ray ${name.toLowerCase()}`); kids.push(c.node); ctls.push(c); }); };
-      const number = (key, step, lo, hi) => (pre, aria) => {
-        const bind = `${pre}.${key}`, inp = el("input", { class: "num", type: "number", id: idFor(bind), step: String(step), min: String(lo), max: String(hi), "aria-label": aria });
+      // one row per letter the pattern uses, plus A, whose color also marks the VP
+      const grid = el("div", { class: "styles" }); let sig = "", ctls = [];
+      const number = (bind, step, lo, hi, aria) => {
+        const inp = el("input", { class: "num", type: "number", id: idFor(bind), step: String(step), min: String(lo), max: String(hi), "aria-label": aria });
         inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) setP(bind, Math.min(hi, Math.max(lo, +inp.value))); });
         inp.addEventListener("change", () => { inp.value = fmt(getP(bind), step); commit(); });
         return { node: inp, update: () => { if (document.activeElement !== inp) inp.value = fmt(getP(bind), step); } };
       };
-      field("Color", (pre, aria) => {
-        const bind = `${pre}.color`, inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
+      const color = (bind, aria) => {
+        const inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
         inp.addEventListener("input", () => setP(bind, inp.value)); inp.addEventListener("change", onCommit);
         return { node: inp, update: () => { inp.value = getP(bind); } };
-      });
-      field("Weight", number("width", 0.25, 0, 500));
-      field("Line", (pre, aria) => {
-        const bind = `${pre}.dash`, sel = el("select", { id: idFor(bind), "aria-label": aria }); DASH.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+      };
+      const line = (bind, aria) => {
+        const sel = el("select", { id: idFor(bind), "aria-label": aria }); DASH.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
         sel.addEventListener("change", () => { setP(bind, sel.value); commit(); });
         return { node: sel, update: () => { sel.value = getP(bind); } };
-      });
-      field("Opacity", number("opacity", 0.05, 0, 1));
-      node = el("div", { class: "styles" }, ...kids);
-      update = () => ctls.forEach(c => c.update());
+      };
+      node = grid;
+      update = () => {
+        const R = state.vps[ui.vp].rays, letters = [...new Set(["A", ...R.pattern])].filter(ch => ch !== "." && R.styles[ch]).sort(), s = ui.vp + letters.join("");
+        if (s !== sig) { // rebuilt only when the letters change, so a control keeps its focus
+          sig = s; grid.innerHTML = ""; ctls = [];
+          grid.append(el("span"), ...["Color", "Weight", "Line", "Opacity"].map(t => el("span", { class: "hd" }, t)));
+          letters.forEach(ch => {
+            const pre = `vps.$v.rays.styles.${ch}`;
+            grid.append(el("b", { class: "lt", title: ch === "A" ? "A's color also colors the VP marker" : `Rays drawn for each ${ch} in the pattern` }, ch));
+            [color(pre + ".color", `${ch} ray color`), number(pre + ".width", 0.25, 0, 500, `${ch} ray weight`), line(pre + ".dash", `${ch} ray line style`), number(pre + ".opacity", 0.05, 0, 1, `${ch} ray opacity`)]
+              .forEach(c => { grid.append(c.node); ctls.push(c); });
+          });
+        }
+        ctls.forEach(c => c.update());
+      };
       break;
     }
     case "seg": {
@@ -2076,9 +2141,9 @@ function makeRow(r) {
       node = el("div", { class: "seg", role: "group", "aria-label": "Choose which rays to edit" });
       let sig = "";
       update = () => {
-        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + tabs.map(([vi]) => state.vps[vi].rays.a.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
+        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + tabs.map(([vi]) => state.vps[vi].rays.styles.A.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
         tabs.forEach(([vi, t]) => {
-          const sw = el("span", { class: "swatch" }); sw.style.background = state.vps[vi].rays.a.color;
+          const sw = el("span", { class: "swatch" }); sw.style.background = state.vps[vi].rays.styles.A.color;
           const b = el("button", { type: "button", "aria-pressed": String(ui.vp === vi) }, sw, t); b.addEventListener("click", () => { ui.vp = vi; touch(); }); node.append(b);
         });
       };
@@ -2146,8 +2211,12 @@ function refreshPanel() {
     node.hidden = !show;
     if (show) update();
   }
+  syncToolbar();
+}
+function syncToolbar() {
   document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
-  document.querySelectorAll("#tbModes button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode)));
+  document.getElementById("tbEven").disabled = !camMode(); // only the curved views have VPs to even out
+  document.getElementById("tbMode").value = modeKey();
 }
 
 /* ---------- export ---------- */
@@ -2471,8 +2540,9 @@ canvas.addEventListener("wheel", e => {
 window.addEventListener("keydown", e => {
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !typing) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !typing) { e.preventDefault(); doRedo(); return; }
+  const textUndo = typing && tag !== "SELECT"; // a dropdown has no undo of its own, so the drawing's applies
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !textUndo) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !textUndo) { e.preventDefault(); doRedo(); return; }
   if (typing) return;
   if ((e.key === "Delete" || e.key === "Backspace") && state.sel >= 0) { e.preventDefault(); delBox(); }
   else if (e.key === "Escape") { state.sel = -1; touch(); }
@@ -2484,15 +2554,15 @@ window.addEventListener("keydown", e => {
 /* ---------- toolbar ---------- */
 document.getElementById("tbAdd").addEventListener("click", addBox);
 document.getElementById("tbFit").addEventListener("click", fitView);
+document.getElementById("tbEven").addEventListener("click", evenVPs);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
-// Perspective switch on the toolbar (the same choice as the panel's Perspective section)
-const MODES = [["1pt", "1-pt", "1-point"], ["2pt", "2-pt", "2-point"], ["3pt", "3-pt", "3-point"], ["4pt", "4-pt", "4-point"], ["5pt", "5-pt", "5-point"], ["6pt", "6-pt", "6-point"]];
-MODES.forEach(([m, short, full]) => {
-  const b = el("button", { type: "button", title: full + " perspective", "aria-label": full + " perspective", "data-mode": m }, short);
-  b.addEventListener("click", () => setMode(m));
-  document.getElementById("tbModes").append(b);
-});
+// The perspective dropdown on the toolbar, with 4-point's fisheye and panorama as choices of their own
+const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"]];
+const tbMode = document.getElementById("tbMode");
+MODES.forEach(([v, t]) => tbMode.append(el("option", { value: v }, t)));
+tbMode.addEventListener("change", () => chooseMode(tbMode.value));
+syncToolbar();
 document.getElementById("tbExport").addEventListener("click", exportPNG);
 
 /* ---------- boot ---------- */
