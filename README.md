@@ -28,7 +28,7 @@ Choose the mode from the perspective dropdown on the toolbar, which lists 4-poin
 
 ## Boxes
 
-- Rectangular prisms that snap to ray intersections, guide lines and the corners of other boxes, shown solid, ghosted or as wireframes. Shift-click a face to hide it
+- Rectangular prisms that snap to ray intersections, guide lines and the corners of other boxes, shown solid, ghosted or as wireframes. A ghosted box's opacity slider runs from see-through to completely opaque, the faces behind included (they show where a face is hidden). Shift-click a face to hide it
 - Drag a base corner to reshape the base, or a top corner to change the height. A base corner can't be dragged across the horizon, where the box's far edges would shoot back out of the vanishing points
 - Drag a box's body to move it. The move is rigid: the box keeps its real proportions wherever it goes, in every mode. Dragged across eye level, it hops over the horizon rather than flattening onto it
 - In 1-, 2- and 3-point, an edit stops before a box reaches so far to the side that it would stretch out toward infinity

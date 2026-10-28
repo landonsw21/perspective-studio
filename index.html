@@ -1196,11 +1196,14 @@ function drawBox(c, bx, g, k) {
   const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
   c.lineJoin = "round"; c.lineCap = "round";
   const solid = bx.mode === "solid", wire = bx.mode === "wire";
+  // A ghosted box firms up toward solid as its opacity rises: at full opacity the faces behind (seen through
+  // a hidden face) are as opaque as the front
+  const firm = bx.mode === "ghost" ? Math.min(1, Math.max(0, bx.ghost)) ** 4 : 0, ghostly = (v, full) => (solid ? full : v + (full - v) * firm);
   for (const f of backs) {
-    if (!wire) fill(f, solid ? 1 : bx.ghost * 0.6, f.shade * 0.72);
-    drawDivisions(c, f, bx, k, solid ? 1 : 0.45);
+    if (!wire) fill(f, ghostly(bx.ghost * 0.6, 1), f.shade * 0.72);
+    drawDivisions(c, f, bx, k, ghostly(0.45, 1));
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
-    c.globalAlpha = solid ? 1 : 0.75;
+    c.globalAlpha = ghostly(0.75, 1);
     c.setLineDash(!solid && bx.dashHidden ? dash : []);
     edges(f);
   }
