@@ -124,6 +124,18 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .pair .row { grid-template-columns: auto minmax(0, 1fr); }
 .pair .num { width: 100%; }
 .pick { display: flex; gap: 6px; align-items: center; min-width: 0; }
+[hidden] { display: none !important; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.checks .chk { display: inline-flex; align-items: center; gap: 6px; }
+.checks label { cursor: pointer; }
+.seg.mini { display: inline-flex; }
+.seg.mini button { flex: none; padding: 6px 10px; font-size: 11.5px; }
+.seg .swatch { margin-right: 6px; }
+.row.pattern .patview { grid-column: 1 / -1; }
+.row.pattern .txt { width: 84px; }
+.styles { display: grid; grid-template-columns: minmax(0, 1fr) 100px 100px; gap: 6px 8px; align-items: center; }
+.styles .hd { font: 600 10.5px/1.2 var(--f-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.styles .num, .styles select, .styles input[type=color] { width: 100%; max-width: none; }
 .pick select { max-width: 132px; }
 .pick .num { width: 58px; }
 .ph .tip { font-size: 11.5px; }
@@ -1736,7 +1748,6 @@ const radiusMode = () => isFish4() || is5() || is6(); // lenses sized by their 9
 const usesVerticals = () => is1() || is2() || isPano();
 const usesVPDist = () => is2() || is3();
 const markerShowLabel = vi => { const nm = famName(vi); return nm.includes(" and ") ? `Show the ${nm} markers` : nm === "center" ? "Show the center marker" : `Show ${nm} marker`; };
-const markerColorLabel = vi => { const nm = famName(vi); return nm.charAt(0).toUpperCase() + nm.slice(1) + (nm.includes(" and ") ? " color (markers and primary rays)" : " color (marker and primary rays)"); };
 function camCheck3() {
   const o = ortho3(geo());
   return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
@@ -1757,13 +1768,6 @@ function lensInfo() {
     (rim ? ` The back rim is ${rim[0]} out on the left and ${rim[1]} on the right.` : "");
 }
 const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [64, "1/64"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
-const styleRows = (pre, title) => [
-  { t: "sub", label: title },
-  { t: "color", bind: pre + ".color", label: "Color" },
-  { t: "range", bind: pre + ".width", label: "Weight", min: 0.25, max: 8, step: 0.25, hi: 500 },
-  { t: "select", bind: pre + ".dash", label: "Line style", options: DASH },
-  { t: "range", bind: pre + ".opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 }
-];
 const schema = [
   { id: "mode", title: "Perspective", rows: [
     { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
@@ -1809,10 +1813,8 @@ const schema = [
     { t: "range", bind: "vps.1.dist", label: "VP2 distance from center", min: -8000, max: 8000, step: 1, when: usesVPDist },
     { t: "check", bind: "symmetric", label: "Mirror VPs around the center point", when: usesVPDist },
     { t: "check", bind: "lockFrame", label: "Lock horizon and VPs in place" },
-    ...[0, 1, 2, 3].flatMap(vi => [
-      { t: "check", bind: `vps.${vi}.show`, label: () => markerShowLabel(vi), when: () => fams().includes(vi) },
-      { t: "color", bind: `vps.${vi}.rays.a.color`, label: () => markerColorLabel(vi), when: () => fams().includes(vi) }
-    ]),
+    ...[0, 1, 2, 3].map(vi => ({ t: "check", bind: `vps.${vi}.show`, label: () => markerShowLabel(vi), when: () => fams().includes(vi) })),
+    { t: "note", html: "Each marker takes the color of its rays' style A, set under Rays." },
     { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, lo: 1, hi: 200, also: ["vps.1.size", "vps.2.size", "vps.3.size"] },
     { t: "sub", label: "Cone of vision" },
     { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() && !is1() },
@@ -1827,23 +1829,22 @@ const schema = [
   ]},
   { id: "rays", title: "Rays", rows: [
     { t: "seg" },
-    { t: "check", bind: "linkRays", label: "Edit VP1 and VP2 rays together (colors stay separate)", when: () => ui.vp < 2 && fams().includes(1) },
-    { t: "check", bind: "vps.$v.rays.show", label: () => `Show the ${famName(ui.vp)} rays` },
-    { t: "select", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing on a measuring line"], ["angle", "Even angles"]] },
+    { t: "checks", items: [
+      { bind: "vps.$v.rays.show", label: "Show" },
+      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4()) },
+      { bind: "linkRays", label: "Edit VP1 and VP2 together", when: () => ui.vp < 2 && fams().includes(1) }
+    ] },
+    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]] },
     { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
     { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: isSpacing },
     { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: isSpacing },
     { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() },
     { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() },
-    { t: "check", bind: "vps.$v.rays.behind", label: "Extend rays behind the VP", when: () => !(isPano() || is6() || isFish4()) },
-    { t: "sub", label: "Alternating pattern" },
-    { t: "preset" },
-    { t: "text", bind: "vps.$v.rays.pattern", label: "Sequence" },
-    { t: "patview" },
-    { t: "select", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon, mirrored outward"], ["edge", "Outermost ray"]] },
-    { t: "note", html: "<code>A</code> draws a primary ray, <code>B</code> a secondary ray, <code>.</code> skips one. The sequence repeats." },
-    ...styleRows("vps.$v.rays.a", "Style A · primary"),
-    ...styleRows("vps.$v.rays.b", "Style B · secondary")
+    { t: "sub", label: "Pattern and line styles" },
+    { t: "pattern" },
+    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]] },
+    { t: "styles" },
+    { t: "note", html: "<code>A</code> draws a primary ray, <code>B</code> a secondary ray and <code>.</code> skips one, repeating. Style A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
   ]},
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
@@ -2007,37 +2008,79 @@ function makeRow(r) {
       update = () => { const v = getP(r.bind); if (v !== undefined) sel.value = String(v); };
       break;
     }
-    case "text": {
-      const inp = el("input", { class: "txt", type: "text", id, maxlength: "64", spellcheck: "false", autocomplete: "off" });
-      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^AB.]/g, ""); if (v) setP(r.bind, v); });
-      inp.addEventListener("change", () => { inp.value = getP(r.bind); commit(); });
-      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), inp);
-      update = () => { if (document.activeElement !== inp) inp.value = getP(r.bind) || ""; };
+    case "checks": {
+      // several on/off settings in one row; each one hides where it doesn't apply
+      const items = r.items.map(it => {
+        const iid = idFor(it.bind), inp = el("input", { type: "checkbox", id: iid });
+        inp.addEventListener("change", () => { setP(it.bind, inp.checked); commit(); });
+        return { it, inp, cell: el("span", { class: "chk" }, inp, el("label", { for: iid }, it.label)) };
+      });
+      node = el("div", { class: "checks" }, ...items.map(x => x.cell));
+      update = () => items.forEach(({ it, inp, cell }) => { cell.hidden = !!it.when && !it.when(); inp.checked = !!getP(it.bind); });
       break;
     }
-    case "preset": {
-      const sel = el("select", { id: "f-pattern-preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
-      sel.addEventListener("change", () => { if (sel.value !== "custom") { setP("vps.$v.rays.pattern", sel.value); commit(); } else document.getElementById(idFor("vps.$v.rays.pattern")).focus(); });
-      node = el("div", { class: "row" }, el("label", { for: "f-pattern-preset" }, "Preset"), sel);
-      update = () => { const p = getP("vps.$v.rays.pattern"); sel.value = PATTERNS.some(x => x[0] === p) ? p : "custom"; };
+    case "toggle": {
+      // a few choices as one segmented control
+      const btns = r.options.map(([v, t]) => { const b = el("button", { type: "button" }, t); b.addEventListener("click", () => { setP(r.bind, v); commit(); }); return [b, v]; });
+      node = el("div", { class: "row" }, el("span", { class: "lab" }, labelText(r)), el("div", { class: "seg mini", role: "group", "aria-label": labelText(r) }, ...btns.map(x => x[0])));
+      update = () => { const v = getP(r.bind); btns.forEach(([b, bv]) => b.setAttribute("aria-pressed", String(bv === v))); };
       break;
     }
-    case "patview": {
+    case "pattern": {
+      // a preset, the sequence itself, and a strip showing how it repeats
+      const bind = "vps.$v.rays.pattern", tid = idFor(bind);
+      const sel = el("select", { id: "f-pattern-preset", "aria-label": "Pattern preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+      const inp = el("input", { class: "txt", type: "text", id: tid, maxlength: "64", spellcheck: "false", autocomplete: "off", "aria-label": "Pattern sequence" });
       const box = el("div", { class: "patview", "aria-hidden": "true" });
-      node = el("div", {}, box);
+      sel.addEventListener("change", () => { if (sel.value !== "custom") { setP(bind, sel.value); commit(); } else { inp.focus(); inp.select(); } });
+      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^AB.]/g, ""); if (v) setP(bind, v); });
+      inp.addEventListener("change", () => { inp.value = getP(bind); commit(); });
+      node = el("div", { class: "row pattern" }, el("label", { for: tid }, "Pattern"), el("div", { class: "pick" }, sel, inp), box);
       update = () => {
-        const R = state.vps[ui.vp].rays, p = R.pattern || "A"; box.innerHTML = "";
+        const R = state.vps[ui.vp].rays, p = R.pattern || "A";
+        sel.value = PATTERNS.some(x => x[0] === p) ? p : "custom";
+        if (document.activeElement !== inp) inp.value = p;
+        box.innerHTML = "";
         for (let i = 0; i < 24; i++) { const c = p[i % p.length]; const s = c === "." ? null : R[c === "B" ? "b" : "a"]; const b = el("i"); b.style.background = s ? s.color : "transparent"; b.style.opacity = s ? Math.max(0.25, s.opacity) : 1; b.style.transform = `scaleX(${s ? Math.min(1, 0.25 + s.width / 3) : 1})`; box.append(b); }
       };
       break;
     }
+    case "styles": {
+      // the A and B line styles side by side: a column each, a row per setting
+      const cols = [["a", "A · primary", "Primary"], ["b", "B · secondary", "Secondary"]], kids = [el("span"), ...cols.map(c => el("span", { class: "hd" }, c[1]))], ctls = [];
+      const field = (name, make) => { kids.push(el("span", { class: "lab" }, name)); cols.forEach(([k, , who]) => { const c = make(`vps.$v.rays.${k}`, `${who} ray ${name.toLowerCase()}`); kids.push(c.node); ctls.push(c); }); };
+      const number = (key, step, lo, hi) => (pre, aria) => {
+        const bind = `${pre}.${key}`, inp = el("input", { class: "num", type: "number", id: idFor(bind), step: String(step), min: String(lo), max: String(hi), "aria-label": aria });
+        inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) setP(bind, Math.min(hi, Math.max(lo, +inp.value))); });
+        inp.addEventListener("change", () => { inp.value = fmt(getP(bind), step); commit(); });
+        return { node: inp, update: () => { if (document.activeElement !== inp) inp.value = fmt(getP(bind), step); } };
+      };
+      field("Color", (pre, aria) => {
+        const bind = `${pre}.color`, inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
+        inp.addEventListener("input", () => setP(bind, inp.value)); inp.addEventListener("change", onCommit);
+        return { node: inp, update: () => { inp.value = getP(bind); } };
+      });
+      field("Weight", number("width", 0.25, 0, 500));
+      field("Line", (pre, aria) => {
+        const bind = `${pre}.dash`, sel = el("select", { id: idFor(bind), "aria-label": aria }); DASH.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+        sel.addEventListener("change", () => { setP(bind, sel.value); commit(); });
+        return { node: sel, update: () => { sel.value = getP(bind); } };
+      });
+      field("Opacity", number("opacity", 0.05, 0, 1));
+      node = el("div", { class: "styles" }, ...kids);
+      update = () => ctls.forEach(c => c.update());
+      break;
+    }
     case "seg": {
-      // one tab per ray family in the current mode
+      // one tab per ray family in the current mode, each with a swatch of its primary color
       node = el("div", { class: "seg", role: "group", "aria-label": "Choose which rays to edit" });
       let sig = "";
       update = () => {
-        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp; if (s === sig) return; sig = s; node.innerHTML = "";
-        tabs.forEach(([vi, t]) => { const b = el("button", { type: "button", "aria-pressed": String(ui.vp === vi) }, t); b.addEventListener("click", () => { ui.vp = vi; touch(); }); node.append(b); });
+        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + tabs.map(([vi]) => state.vps[vi].rays.a.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
+        tabs.forEach(([vi, t]) => {
+          const sw = el("span", { class: "swatch" }); sw.style.background = state.vps[vi].rays.a.color;
+          const b = el("button", { type: "button", "aria-pressed": String(ui.vp === vi) }, sw, t); b.addEventListener("click", () => { ui.vp = vi; touch(); }); node.append(b);
+        });
       };
       break;
     }
@@ -2089,11 +2132,11 @@ function buildPanel() {
   }
 }
 function rayTabs() {
-  if (is1()) return [[3, "VP rays"]];
+  if (is1()) return [[3, "VP"]];
   if (isPano()) return [[0, "VP1 & VP3"], [1, "VP2 & VP4"]];
   if (isFish4()) return [[0, "VP1"], [1, "VP2"], [2, "Up & down"]];
   if (radiusMode()) return [[0, "Left & right"], [3, is6() ? "Front & back" : "Center"], [2, "Up & down"]];
-  return fams().map(vi => [vi, `VP${vi + 1} rays`]);
+  return fams().map(vi => [vi, `VP${vi + 1}`]);
 }
 function refreshPanel() {
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
