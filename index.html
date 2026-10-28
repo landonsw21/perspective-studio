@@ -1217,7 +1217,9 @@ function drawBox(c, bx, g, k) {
 }
 // Every VP marker on screen: plain VPs in 2- and 3-point, the camera's points (some shown twice) otherwise
 function vpMarkers(g) {
-  return g.cam ? g.cam.markers : fams().map(i => marker(g.vp[i], state.mode === "1pt" ? "VP" : "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
+  if (g.cam) return g.cam.markers;
+  if (state.mode === "1pt") return [marker(g.vp[3], "VP", 3, "anywhere")];
+  return fams().map(i => marker(g.vp[i], "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
 }
 // Each marker takes the color of its A rays, so recoloring them recolors the VP too
 function drawVPs(c, k, g) {
@@ -1824,7 +1826,7 @@ const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "E
 const schema = [
   { id: "mode", title: "Perspective", rows: [
     { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
-    { t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP along the horizon, and set its rays under Rays.", when: is1 },
+    { t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP anywhere and the horizon moves with it, and set its rays under Rays.", when: is1 },
     { t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
     { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
     { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
@@ -2357,6 +2359,7 @@ const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize"
 const VP_DRAGS = {
   dist: ["Drag the vanishing point along the horizon", "ew-resize"],
   free: ["Drag VP3 anywhere off the horizon", "move"],
+  anywhere: ["Drag the vanishing point anywhere; the horizon moves with it", "move"],
   sideH: ["Drag along the horizon to move just this point; only its side of the lens changes", "ew-resize"],
   sideV: ["Drag up or down to move just this point; only its side of the lens changes", "ns-resize"],
   corner: ["Drag along the horizon to move this VP; the other one stays put", "ew-resize"],
@@ -2398,7 +2401,7 @@ canvas.addEventListener("pointerdown", e => {
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vp" && g.cam) { drag.cv0 = state.cone.cv; drag.lens0 = clone(state.curvi); drag.cam0 = g.cam; }
-  else if (hit.type === "anchor" || hit.type === "horizon") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
+  else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
   if (hit.type === "pan") canvas.style.cursor = "grabbing";
 });
@@ -2486,6 +2489,13 @@ canvas.addEventListener("pointermove", e => {
         // VP3 moves freely but never onto the horizon itself
         let drop = Math.round(dot(v, g.n)); if (Math.abs(drop) < 40) drop = drop < 0 ? -40 : 40;
         state.vps[2].dist = dist; state.vps[2].drop = drop;
+        refitBoxes(drag.plans, geo());
+      } else if (mk.drag === "anywhere") {
+        // The 1-point VP goes anywhere and stays on the horizon: the horizon rises and falls with it while
+        // the VP slides along it
+        const h = drag.h0, d = dot(sub(w, P(h.x, h.y)), g.n);
+        state.horizon.x = Math.round(h.x + g.n.x * d); state.horizon.y = Math.round(h.y + g.n.y * d);
+        state.vps[3].dist = Math.round(dot(sub(w, P(state.horizon.x, state.horizon.y)), g.u));
         refitBoxes(drag.plans, geo());
       } else if (mk.drag === "dist") { state.vps[drag.i].dist = dist; if (state.symmetric && drag.i < 2) state.vps[1 - drag.i].dist = -dist; refitBoxes(drag.plans, geo()); }
       else if (g.cam) lensVPDrag(mk, w, g);
