@@ -295,11 +295,11 @@ function defaultState() {
     mode: "2pt",
     horizon: { show: true, x: 0, y: -60, tilt: 0, color: "#1b252d", width: 1.5, dash: "solid", opacity: 1 },
     vps: [
-      { dist: -1300, drop: 0, color: "#1d6fa5", size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
-      { dist: 1300, drop: 0, color: "#b8463a", size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") },
-      { dist: 0, drop: 2600, color: "#2e7d50", size: 8, show: true, rays: Object.assign(raysDefault("#3f9a63", "#a3d4b4"), { count: 12, spacing: 120, pattern: "AB" }) },
+      { dist: -1300, drop: 0, size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
+      { dist: 1300, drop: 0, size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") },
+      { dist: 0, drop: 2600, size: 8, show: true, rays: Object.assign(raysDefault("#3f9a63", "#a3d4b4"), { count: 12, spacing: 120, pattern: "AB" }) },
       // the center (5-point) or front/back (6-point) VP: its rays fan out evenly all the way around
-      { dist: 0, drop: 0, color: "#6d4aa8", size: 8, show: true, rays: Object.assign(raysDefault("#8a63c4", "#c9b6e8"), { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
+      { dist: 0, drop: 0, size: 8, show: true, rays: Object.assign(raysDefault("#8a63c4", "#c9b6e8"), { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
     // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
     curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
@@ -1180,14 +1180,15 @@ function drawBox(c, bx, g, k) {
 function vpMarkers(g) {
   return g.cam ? g.cam.markers : fams().map(i => marker(g.vp[i], state.mode === "1pt" ? "VP" : "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
 }
+// Each marker takes the color of its primary (A) rays, so recoloring the rays recolors the VP too
 function drawVPs(c, k, g) {
   for (const mk of vpMarkers(g)) {
     const v = state.vps[mk.vi]; if (!v.show) continue;
-    const p = mk.p, r = v.size / k;
-    c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = v.color; c.fillStyle = "#ffffff";
+    const p = mk.p, r = v.size / k, color = v.rays.a.color;
+    c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = color; c.fillStyle = "#ffffff";
     c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
     c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
-    c.fillStyle = v.color; c.font = `500 ${11 / k}px "IBM Plex Mono", monospace`;
+    c.fillStyle = color; c.font = `500 ${11 / k}px "IBM Plex Mono", monospace`;
     c.fillText(mk.label, p.x + r + 4 / k, p.y - r - 4 / k);
   }
 }
@@ -1735,7 +1736,7 @@ const radiusMode = () => isFish4() || is5() || is6(); // lenses sized by their 9
 const usesVerticals = () => is1() || is2() || isPano();
 const usesVPDist = () => is2() || is3();
 const markerShowLabel = vi => { const nm = famName(vi); return nm.includes(" and ") ? `Show the ${nm} markers` : nm === "center" ? "Show the center marker" : `Show ${nm} marker`; };
-const markerColorLabel = vi => { const nm = famName(vi); return nm.charAt(0).toUpperCase() + nm.slice(1) + " marker color"; };
+const markerColorLabel = vi => { const nm = famName(vi); return nm.charAt(0).toUpperCase() + nm.slice(1) + (nm.includes(" and ") ? " color (markers and primary rays)" : " color (marker and primary rays)"); };
 function camCheck3() {
   const o = ortho3(geo());
   return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
@@ -1810,7 +1811,7 @@ const schema = [
     { t: "check", bind: "lockFrame", label: "Lock horizon and VPs in place" },
     ...[0, 1, 2, 3].flatMap(vi => [
       { t: "check", bind: `vps.${vi}.show`, label: () => markerShowLabel(vi), when: () => fams().includes(vi) },
-      { t: "color", bind: `vps.${vi}.color`, label: () => markerColorLabel(vi), when: () => fams().includes(vi) }
+      { t: "color", bind: `vps.${vi}.rays.a.color`, label: () => markerColorLabel(vi), when: () => fams().includes(vi) }
     ]),
     { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, lo: 1, hi: 200, also: ["vps.1.size", "vps.2.size", "vps.3.size"] },
     { t: "sub", label: "Cone of vision" },

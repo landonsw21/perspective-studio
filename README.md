@@ -45,7 +45,7 @@ Switch modes from the toolbar.
 ## Everything else
 
 - Editable horizon line: eye level, center, tilt, color, weight, line style
-- Draggable vanishing points, with an optional cone of vision
+- Draggable vanishing points whose markers take the color of their primary rays, with an optional cone of vision
 - Ray fans from each vanishing point: even spacing or even angles, any count, alternating A/B/skip patterns
 - A sized export area that renders to PNG at up to 8× (capped at 64 megapixels)
 - Number boxes accept values past the end of each slider, and the slider stretches to fit; releasing a slider at its end doubles its range
