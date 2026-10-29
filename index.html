@@ -773,34 +773,73 @@ function ortho3(g) {
 }
 // The box the rays are spaced along, if one has "Space the rays along this box" on (one at most). While
 // that box is being dragged the rays stay where they were (so it can snap to them rather than to rays
-// through itself) and catch up when it is let go.
+// through itself) and catch up when it is let go. The vertical guides (and 1-point's horizontal ones)
+// follow it too.
 const rayBox = () => (drag && drag.rays) || state.boxes.find(b => b.rayFit) || null;
 // Rays spaced along a box: each VP's rays run through evenly spaced points on it, at its division spacing,
-// and carry on past it, R.count of them at each end. Rays that run along the box's sides go through the
-// vertical edge nearest you, so they continue the division lines on the side faces that meet there; rays
-// that run up and down go through the two base edges from that corner, out toward each side. Pattern
-// letters count from the corner.
+// and carry on past it, R.count of them at each end. They follow the one vertical face boxFace picks. Lines
+// that run up and down (VP3's rays, the up and down VPs' rays, and the vertical guides) stand at its vertical
+// division lines. Rays that run along the sides go through its vertical edge beside the corner nearest you
+// (the nearest corner's own edge, unless the largest front face is hidden), so they continue the division lines
+// on the two faces that meet there. Pattern letters count from that corner, as the division lines' do.
 const nearestOf = B => [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0); // of a box's 3D base corners
-function boxRays(vi, g, bx) {
-  const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
-  const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes;
-  const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
-  const i = nearestOf(B), D = bx.div, divided = D.on && D.sides;
-  const extra = Math.max(0, Math.round(R.count));
-  const through = (p, j) => {
-    if (cam.depthOf && cam.depthOf(p) <= 1e-6) return; // behind you through a flat camera
-    const s = cam.proj(p), q = P(s.x, s.y), d = sub(q, V);
-    if (Number.isFinite(q.x) && Number.isFinite(q.y) && len(d) > 1e-6) out.push({ d: norm(d), q, ch: pat[((j % pat.length) + pat.length) % pat.length] });
-  };
-  if (Math.abs(d3(n3(dir), UP3)) > 0.9) {
-    const n = divided ? Math.max(1, Math.round(D.vert)) : 1;
-    for (const k of [i ^ 1, i ^ 3]) { const e = s3(B[k], B[i]); for (let j = k === (i ^ 1) ? 0 : 1; j <= n + extra; j++) through(a3(B[i], m3(e, j / n)), j); }
+// The vertical face whose divisions a box's upright lines follow: its largest front face as it looks on
+// screen, or, while that one is hidden, the face opposite it. Returns the face's base corners, starting from its
+// end beside the corner nearest you (the nearest corner itself on a front face).
+const OPPOSITE = { s01: "s23", s23: "s01", s12: "s30", s30: "s12" };
+function boxFace(bx, g, { B }) {
+  const i = nearestOf(B), sides = boxGeo(bx, g).faces.filter(f => f.id[0] === "s").map(f => ({ f, area: f.fills.reduce((s, p) => s + Math.abs(polyArea(p)), 0) }));
+  const fronts = sides.filter(x => x.f.front);
+  let id = (fronts.length ? fronts : sides).reduce((m, x) => (x.area > m.area ? x : m)).f.id;
+  if (bx.faces[id] === false) id = OPPOSITE[id];
+  const a = +id[1], b = +id[2], c = a === i || b === i ? i : a === (i ^ 2) ? b : a;
+  return [c, c === a ? b : a];
+}
+// The points on a box that those lines run through, in 3D as box3 reads it, each with its count j from corner
+// c: along the base edge from c toward corner `to`, or, with no `to`, up c's vertical edge; `extra` more past
+// each end
+function boxSpots({ B, H }, D, extra, c, to) {
+  const divided = D.on && D.sides, out = [];
+  if (to !== undefined) {
+    const n = divided ? Math.max(1, Math.round(D.vert)) : 1, e = s3(B[to], B[c]);
+    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[c], m3(e, j / n)), j });
   } else {
     const n = divided ? Math.max(1, Math.round(D.vp)) : 1;
-    for (let j = -extra; j <= n + extra; j++) through(a3(B[i], m3(UP3, j * H / n)), j);
+    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[c], m3(UP3, j * H / n)), j });
   }
   return out;
 }
+function boxRays(vi, g, bx) {
+  const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
+  const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
+  const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
+  const [c, to] = boxFace(bx, g, b3), upright = Math.abs(d3(n3(dir), UP3)) > 0.9;
+  for (const { p, j } of boxSpots(b3, bx.div, Math.max(0, Math.round(R.count)), c, upright ? to : undefined)) {
+    if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
+    const s = cam.proj(p), q = P(s.x, s.y), d = sub(q, V);
+    if (Number.isFinite(q.x) && Number.isFinite(q.y) && len(d) > 1e-6) out.push({ d: norm(d), q, ch: pat[((j % pat.length) + pat.length) % pat.length] });
+  }
+  return out;
+}
+// Where the straight guides stand, as distances along `dir` from `from`: evenly spaced by guide set G's offset,
+// spacing and count, or, while the rays are spaced along a box, on the face boxFace picks, G.count of them past
+// each end. The vertical guides (1-point, 2-point and the panorama) are measured along the horizon from its
+// center (the panorama's center) and stand at the face's vertical edges and division lines. 1-point's
+// horizontal guides are measured down from the horizon and run level with the division heights up the face's
+// vertical edge beside the corner nearest you.
+function guidesAt(G, g, upright, from, dir) {
+  const fit = rayBox(), out = [];
+  if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(G.offset + j * G.spacing); return out; }
+  const b3 = box3(fit, g), cam = b3.cam, [c, to] = boxFace(fit, g, b3);
+  for (const { p } of boxSpots(b3, fit.div, Math.max(0, Math.round(G.count)), c, upright ? to : undefined)) {
+    if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
+    const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
+    if (Number.isFinite(t)) out.push(t);
+  }
+  return out;
+}
+const verticalsAt = g => guidesAt(state.verticals, g, true, g.mc || g.O, g.u);
+const horizontalsAt = g => guidesAt(state.horizontals, g, false, g.O, g.n);
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
   const pat = R.pattern || "A", fit = rayBox();
@@ -968,8 +1007,8 @@ function faceLabel(id) {
 let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
-  const rb = rayBox(); // rays spaced along a box move with it
-  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div] : 0]);
+  const rb = rayBox(); // rays spaced along a box move with it, and with which of its faces are hidden
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div, rb.faces] : 0, state.drawingScale]);
   if (key === snapCache.key) return snapCache;
   const g = geo();
   snapCache = g.cam ? camGuides(g) : linearGuides(g);
@@ -980,10 +1019,9 @@ function linearGuides(g) {
   const lines = [];
   fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: !v.rays.behind, fam: "r" + vi }); }); });
   if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
-  const V = state.verticals;
-  if (V.show && state.mode !== "3pt") for (let j = -V.count; j <= V.count; j++) lines.push({ p: add(g.O, mul(g.u, V.offset + j * V.spacing)), d: g.n, fwd: false, fam: "v" });
-  const Hz = state.horizontals;
-  if (Hz.show && state.mode === "1pt") for (let j = -Hz.count; j <= Hz.count; j++) if (Hz.offset + j * Hz.spacing !== 0) lines.push({ p: add(g.O, mul(g.n, Hz.offset + j * Hz.spacing)), d: g.u, fwd: false, fam: "x" });
+  if (state.verticals.show && state.mode !== "3pt") for (const t of verticalsAt(g)) lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
+  // (a horizontal guide along the horizon itself would only repeat it)
+  if (state.horizontals.show && state.mode === "1pt") for (const s of horizontalsAt(g)) if (Math.abs(s) > 1e-9) lines.push({ p: add(g.O, mul(g.n, s)), d: g.u, fwd: false, fam: "x" });
   const pts = [], LIM = 4e4;
   // With thousands of guides the crossings get too dense to use, so snapping falls back to sliding along lines.
   if (lines.length <= MAX_CROSSING_GUIDES) for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
@@ -1015,9 +1053,8 @@ function camGuides(g) {
     rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), R.behind || around, { fam: "r" + vi, ch: r.ch })); });
   });
   if (state.horizon.show) push(makeArc(cam, V3(0, 0, 1), V3(1, 0, 0), true, { fam: "h" }));
-  const V = state.verticals;
-  if (V.show && usesVerticals()) for (let j = -V.count; j <= V.count; j++) {
-    const D = cam.unproj(add(g.mc || g.O, mul(g.u, V.offset + j * V.spacing)));
+  if (state.verticals.show && usesVerticals()) for (const t of verticalsAt(g)) {
+    const D = cam.unproj(add(g.mc || g.O, mul(g.u, t)));
     push(makeArc(cam, UP3, V3(D.x, 0, D.z), false, { fam: "v" }));
   }
   const pts = [];
@@ -1154,24 +1191,25 @@ function drawGuides(c, k, b, inc, g) {
       if (d1 * d2 < 0) drawCone(c, k, add(g.O, mul(g.u, C.cv)), Math.sqrt(Math.abs(d1 * d2)) * Math.tan(C.angle / 2 * deg));
     }
   }
-  if (inc.verticals && V.show && state.mode !== "3pt") {
-    const L = farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
+  // Straight guides crossing the line through the horizon's center at distances ts along `along`, each running
+  // along d across the view, all starting level so their dashes line up. Evenly spaced guides reach L, as far as
+  // the outermost one needs. Guides spaced along a box are kept to the ones the view can show, so a far-off one
+  // can't stretch the rest.
+  const guidePath = (ts, along, d, L) => {
+    if (L === undefined) { const F = farDist(g.O, b); ts = ts.filter(t => Math.abs(t) <= F); L = F + Math.max(0, ...ts.map(Math.abs)); }
     const p = new Path2D();
-    for (let j = -V.count; j <= V.count; j++) {
-      const q = add(g.O, mul(g.u, V.offset + j * V.spacing));
-      const a = add(q, mul(g.n, -L)), e = add(q, mul(g.n, L));
-      p.moveTo(a.x, a.y); p.lineTo(e.x, e.y);
-    }
-    strokeStyle(c, V, k); c.stroke(p);
+    for (const t of ts) { const q = add(g.O, mul(along, t)), a = add(q, mul(d, -L)), e = add(q, mul(d, L)); p.moveTo(a.x, a.y); p.lineTo(e.x, e.y); }
+    return p;
+  };
+  const onBox = !!rayBox();
+  if (inc.verticals && V.show && state.mode !== "3pt") {
+    const L = onBox ? undefined : farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
+    strokeStyle(c, V, k); c.stroke(guidePath(verticalsAt(g), g.u, g.n, L));
   }
   const Hz = state.horizontals;
   if (inc.verticals && Hz.show && state.mode === "1pt") {
-    const L = farDist(g.O, b) + Math.abs(Hz.offset) + Hz.count * Hz.spacing, p = new Path2D();
-    for (let j = -Hz.count; j <= Hz.count; j++) {
-      const q = add(g.O, mul(g.n, Hz.offset + j * Hz.spacing)), a = add(q, mul(g.u, -L)), e = add(q, mul(g.u, L));
-      p.moveTo(a.x, a.y); p.lineTo(e.x, e.y);
-    }
-    strokeStyle(c, Hz, k); c.stroke(p);
+    const L = onBox ? undefined : farDist(g.O, b) + Math.abs(Hz.offset) + Hz.count * Hz.spacing;
+    strokeStyle(c, Hz, k); c.stroke(guidePath(horizontalsAt(g), g.n, g.u, L));
   }
   if (inc.rays) fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
@@ -2164,20 +2202,22 @@ const schema = [
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
     { t: "note", html: "Here vertical lines curve to the up and down points. Set them under Rays → Up &amp; down.", when: radiusMode },
+    { t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the edges and vertical division lines of its largest vertical face (or, while that face is hidden, of the face opposite it) and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
     { t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
-    { t: "range", bind: "verticals.count", label: "Lines each side", min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
-    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: usesVerticals },
-    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: usesVerticals },
+    { t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side"), min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
+    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => usesVerticals() && !rayBox() },
+    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => usesVerticals() && !rayBox() },
     { t: "color", bind: "verticals.color", label: "Color", when: usesVerticals },
     { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: usesVerticals },
     { t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: usesVerticals },
     { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: usesVerticals }
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
+    { t: "readout", text: () => `The horizontals are spaced along ${rayBox().name}, like the rays: they run level with its top, bottom and division heights and carry on above and below it. Turn that off under Boxes to space them here again.`, when: () => !!rayBox() },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
-    { t: "range", bind: "horizontals.count", label: "Lines above and below", min: 0, max: 80, step: 1, hi: 400 },
-    { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000 },
-    { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1 },
+    { t: "range", bind: "horizontals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines above and below"), min: 0, max: 80, step: 1, hi: 400 },
+    { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !rayBox() },
+    { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !rayBox() },
     { t: "color", bind: "horizontals.color", label: "Color" },
     { t: "range", bind: "horizontals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500 },
     { t: "select", bind: "horizontals.dash", label: "Line style", options: DASH },
@@ -2191,7 +2231,7 @@ const schema = [
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
-    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time.", when: hasBox },
+    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. Lines that run up and down, the vertical guides among them, stand at the divisions of the box's largest vertical face, or, while that face is hidden, of the face opposite it; in 1-point the horizontal guides line up with that face too.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
