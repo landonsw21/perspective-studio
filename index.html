@@ -1975,7 +1975,7 @@ const schema = [
     { t: "select", bind: "horizontals.dash", label: "Line style", options: DASH },
     { t: "range", bind: "horizontals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 }
   ]},
-  { id: "boxes", title: "Rectangular prisms", rows: [
+  { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it. Hold Alt (⌥) to place freely.", when: hasBox },
