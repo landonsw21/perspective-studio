@@ -777,35 +777,45 @@ function ortho3(g) {
 // follow it too.
 const rayBox = () => (drag && drag.rays) || state.boxes.find(b => b.rayFit) || null;
 // Rays spaced along a box: each VP's rays run through evenly spaced points on it, at its division spacing,
-// and carry on past it, R.count of them at each end. They follow the one vertical face boxFace picks. Lines
-// that run up and down (VP3's rays, the up and down VPs' rays, and the vertical guides) stand at its vertical
-// division lines. Rays that run along the sides go through its vertical edge beside the corner nearest you
-// (the nearest corner's own edge, unless the largest front face is hidden), so they continue the division lines
-// on the two faces that meet there. Pattern letters count from that corner, as the division lines' do.
+// and carry on past it, R.count of them at each end. They follow the vertical faces boxWings picks. Lines that
+// run up and down (VP3's rays, the up and down VPs' rays, and the vertical guides) stand at those faces'
+// vertical division lines. Rays that run along the sides go through the vertical edge at the faces' hub (the
+// corner nearest you, while the front faces are in use), so they continue the division lines on the two faces
+// that meet there. Pattern letters count from the corner nearest you's side, as the division lines' do.
 const nearestOf = B => [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0); // of a box's 3D base corners
-// The vertical face whose divisions a box's upright lines follow: its largest front face as it looks on
-// screen, or, while that one is hidden, the face opposite it. Returns the face's base corners, starting from its
-// end beside the corner nearest you (the nearest corner itself on a front face).
 const OPPOSITE = { s01: "s23", s23: "s01", s12: "s30", s30: "s12" };
-function boxFace(bx, g, { B }) {
-  const i = nearestOf(B), sides = boxGeo(bx, g).faces.filter(f => f.id[0] === "s").map(f => ({ f, area: f.fills.reduce((s, p) => s + Math.abs(polyArea(p)), 0) }));
-  const fronts = sides.filter(x => x.f.front);
-  let id = (fronts.length ? fronts : sides).reduce((m, x) => (x.area > m.area ? x : m)).f.id;
-  if (bx.faces[id] === false) id = OPPOSITE[id];
-  const a = +id[1], b = +id[2], c = a === i || b === i ? i : a === (i ^ 2) ? b : a;
-  return [c, c === a ? b : a];
+// The vertical faces whose divisions a box's upright lines follow: its front faces (the two meeting at the
+// corner nearest you, or the one you look straight at), or, once those are all hidden, the faces opposite them.
+// With no side toward you (looking straight down on it, say) the two at the nearest corner stand in. Returns
+// the hub, the corner where two of them meet (a lone face's end beside the nearest corner), and for n divisions
+// and e lines past each end, each face's run: [c, to, lo, hi] for the points lo … hi of n along its base edge
+// from corner c toward corner `to`. Two faces run out from the hub, past their far ends; a lone face runs past
+// both. Points are counted from the end beside the nearest corner: from the hub on front faces, toward it on
+// back ones.
+function boxWings(bx, g, B) {
+  const i = nearestOf(B), ends = id => [+id[1], +id[2]];
+  let use = boxGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
+  if (!use.length) use = Object.keys(OPPOSITE).filter(id => ends(id).includes(i));
+  const back = use.every(id => bx.faces[id] === false);
+  if (back) use = use.map(id => OPPOSITE[id]);
+  if (use.length > 1) {
+    const [a, b] = use.map(ends), hub = a.find(k => b.includes(k));
+    if (hub !== undefined) return { hub, wings: (n, e) => (back ? [[hub ^ 1, hub, -e, n], [hub ^ 3, hub, -e, n - 1]] : [[hub, hub ^ 1, 0, n + e], [hub, hub ^ 3, 1, n + e]]) };
+  }
+  const [a, b] = ends(use[0]), c = a === i || b === i ? i : a === (i ^ 2) ? b : a;
+  return { hub: c, wings: (n, e) => [[c, c === a ? b : a, -e, n + e]] };
 }
-// The points on a box that those lines run through, in 3D as box3 reads it, each with its count j from corner
-// c: along the base edge from c toward corner `to`, or, with no `to`, up c's vertical edge; `extra` more past
-// each end
-function boxSpots({ B, H }, D, extra, c, to) {
+// The points on a box that those lines run through, in 3D as box3 reads it, each with its count j: along the
+// faces' base edges for lines that run up and down (`upright`), or up the hub's vertical edge for lines that run
+// along the sides; `extra` more past each end
+function boxSpots({ B, H }, D, extra, { hub, wings }, upright) {
   const divided = D.on && D.sides, out = [];
-  if (to !== undefined) {
-    const n = divided ? Math.max(1, Math.round(D.vert)) : 1, e = s3(B[to], B[c]);
-    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[c], m3(e, j / n)), j });
+  if (upright) {
+    const n = divided ? Math.max(1, Math.round(D.vert)) : 1;
+    for (const [c, to, lo, hi] of wings(n, extra)) { const e = s3(B[to], B[c]); for (let j = lo; j <= hi; j++) out.push({ p: a3(B[c], m3(e, j / n)), j }); }
   } else {
     const n = divided ? Math.max(1, Math.round(D.vp)) : 1;
-    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[c], m3(UP3, j * H / n)), j });
+    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[hub], m3(UP3, j * H / n)), j });
   }
   return out;
 }
@@ -813,8 +823,7 @@ function boxRays(vi, g, bx) {
   const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
   const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
   const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
-  const [c, to] = boxFace(bx, g, b3), upright = Math.abs(d3(n3(dir), UP3)) > 0.9;
-  for (const { p, j } of boxSpots(b3, bx.div, Math.max(0, Math.round(R.count)), c, upright ? to : undefined)) {
+  for (const { p, j } of boxSpots(b3, bx.div, Math.max(0, Math.round(R.count)), boxWings(bx, g, b3.B), Math.abs(d3(n3(dir), UP3)) > 0.9)) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), q = P(s.x, s.y), d = sub(q, V);
     if (Number.isFinite(q.x) && Number.isFinite(q.y) && len(d) > 1e-6) out.push({ d: norm(d), q, ch: pat[((j % pat.length) + pat.length) % pat.length] });
@@ -822,16 +831,16 @@ function boxRays(vi, g, bx) {
   return out;
 }
 // Where the straight guides stand, as distances along `dir` from `from`: evenly spaced by guide set G's offset,
-// spacing and count, or, while the rays are spaced along a box, on the face boxFace picks, G.count of them past
+// spacing and count, or, while the rays are spaced along a box, on the faces boxWings picks, G.count of them past
 // each end. The vertical guides (1-point, 2-point and the panorama) are measured along the horizon from its
-// center (the panorama's center) and stand at the face's vertical edges and division lines. 1-point's
-// horizontal guides are measured down from the horizon and run level with the division heights up the face's
-// vertical edge beside the corner nearest you.
+// center (the panorama's center) and stand at those faces' vertical edges and division lines. 1-point's
+// horizontal guides are measured down from the horizon and run level with the division heights up the hub's
+// vertical edge.
 function guidesAt(G, g, upright, from, dir) {
   const fit = rayBox(), out = [];
   if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(G.offset + j * G.spacing); return out; }
-  const b3 = box3(fit, g), cam = b3.cam, [c, to] = boxFace(fit, g, b3);
-  for (const { p } of boxSpots(b3, fit.div, Math.max(0, Math.round(G.count)), c, upright ? to : undefined)) {
+  const b3 = box3(fit, g), cam = b3.cam;
+  for (const { p } of boxSpots(b3, fit.div, Math.max(0, Math.round(G.count)), boxWings(fit, g, b3.B), upright)) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
     if (Number.isFinite(t)) out.push(t);
@@ -2202,7 +2211,7 @@ const schema = [
   { id: "verticals", title: "Vertical guides", open: false, rows: [
     { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
     { t: "note", html: "Here vertical lines curve to the up and down points. Set them under Rays → Up &amp; down.", when: radiusMode },
-    { t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the edges and vertical division lines of its largest vertical face (or, while that face is hidden, of the face opposite it) and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
+    { t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and vertical division lines of its front faces, or of its back faces once the front ones are all hidden, and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
     { t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
     { t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side"), min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
     { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => usesVerticals() && !rayBox() },
@@ -2231,7 +2240,7 @@ const schema = [
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
-    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. Lines that run up and down, the vertical guides among them, stand at the divisions of the box's largest vertical face, or, while that face is hidden, of the face opposite it; in 1-point the horizontal guides line up with that face too.", when: hasBox },
+    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. Lines that run up and down, the vertical guides among them, stand at the divisions of the box's front faces, or of its back faces once the front ones are all hidden; in 1-point the horizontal guides line up with them too.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
