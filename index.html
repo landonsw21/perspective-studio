@@ -129,10 +129,10 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .seg .swatch { margin-right: 6px; }
 .row.pattern .patview { grid-column: 1 / -1; }
 .row.pattern .txt { width: 84px; }
-.styles { display: grid; grid-template-columns: 14px 36px minmax(0, .8fr) minmax(0, 1.55fr) minmax(0, .9fr); gap: 6px; align-items: center; }
+.styles { display: grid; grid-template-columns: 14px 36px minmax(0, 1fr) minmax(0, 1.8fr) minmax(0, 1fr); gap: 6px; align-items: center; }
 .styles .lt { font: 600 12px/1 var(--f-data); color: var(--ink); text-align: center; }
 .styles .hd { font: 600 10.5px/1.2 var(--f-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.styles .num, .styles select, .styles input[type=color] { width: 100%; max-width: none; }
+.styles select, .styles input[type=color] { width: 100%; max-width: none; }
 .styles input[type=range] { width: 100%; min-width: 0; margin: 0; accent-color: var(--accent); }
 .pick select { max-width: 132px; }
 .pick .num { width: 58px; }
@@ -2246,12 +2246,6 @@ function makeRow(r) {
     case "styles": {
       // one row per letter the pattern uses, plus A, whose color also marks the VP
       const grid = el("div", { class: "styles" }); let sig = "", ctls = [];
-      const number = (bind, step, lo, hi, aria) => {
-        const inp = el("input", { class: "num", type: "number", id: idFor(bind), step: String(step), min: String(lo), max: String(hi), "aria-label": aria });
-        inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) setP(bind, Math.min(hi, Math.max(lo, +inp.value))); });
-        inp.addEventListener("change", () => { inp.value = fmt(getP(bind), step); commit(); });
-        return { node: inp, update: () => { if (document.activeElement !== inp) inp.value = fmt(getP(bind), step); } };
-      };
       const color = (bind, aria) => {
         const inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
         inp.addEventListener("input", () => setP(bind, inp.value)); inp.addEventListener("change", onCommit);
@@ -2262,12 +2256,24 @@ function makeRow(r) {
         sel.addEventListener("change", () => { setP(bind, sel.value); commit(); });
         return { node: sel, update: () => { sel.value = getP(bind); } };
       };
-      const slider = (bind, aria) => {
-        const inp = el("input", { type: "range", id: idFor(bind), min: "0", max: "1", step: "0.01", "aria-label": aria });
-        const show = () => { const pct = Math.round(getP(bind) * 100) + "%"; inp.title = pct; inp.setAttribute("aria-valuetext", pct); };
+      // A slider from 0 to max, its value shown on hover. Below `hi`, letting go at the end doubles its reach,
+      // as the panel's other sliders do, and it doubles to fit a bigger value.
+      const slider = (bind, aria, step, max, hi, text) => {
+        const inp = el("input", { type: "range", id: idFor(bind), min: "0", max: String(max), step: String(step), "aria-label": aria });
+        const reach = () => {
+          const v = getP(bind); let m = (ui.scales[resolve(bind)] || { max }).max;
+          while (v > m && m < hi) m = Math.min(hi, m * 2);
+          if (m !== max) ui.scales[resolve(bind)] = { min: 0, max: m };
+          return m;
+        };
+        const show = () => { const t = text(getP(bind)); inp.title = t; inp.setAttribute("aria-valuetext", t); };
         inp.addEventListener("input", () => { setP(bind, +inp.value); show(); });
-        inp.addEventListener("change", () => commit());
-        return { node: inp, update: () => { inp.value = getP(bind); show(); } };
+        inp.addEventListener("change", () => {
+          const m = reach();
+          if (+inp.value >= m && m < hi) { const ext = Math.min(hi, m * 2); ui.scales[resolve(bind)] = { min: 0, max: ext }; toast(`${aria} slider now runs 0 to ${fmtScale(ext)}`); touch(); }
+          commit();
+        });
+        return { node: inp, update: () => { inp.max = String(reach()); inp.value = getP(bind); show(); } };
       };
       node = grid;
       update = () => {
@@ -2278,7 +2284,7 @@ function makeRow(r) {
           letters.forEach(ch => {
             const pre = `vps.$v.rays.styles.${ch}`;
             grid.append(el("b", { class: "lt", title: ch === "A" ? "A's color also colors the VP marker" : `Rays drawn for each ${ch} in the pattern` }, ch));
-            [color(pre + ".color", `${ch} ray color`), number(pre + ".width", 0.25, 0, 500, `${ch} ray weight`), line(pre + ".dash", `${ch} ray line style`), slider(pre + ".opacity", `${ch} ray opacity`)]
+            [color(pre + ".color", `${ch} ray color`), slider(pre + ".width", `${ch} ray weight`, 0.05, 8, 500, v => fmtScale(v) + " px"), line(pre + ".dash", `${ch} ray line style`), slider(pre + ".opacity", `${ch} ray opacity`, 0.01, 1, 1, v => Math.round(v * 100) + "%")]
               .forEach(c => { grid.append(c.node); ctls.push(c); });
           });
         }
@@ -2720,7 +2726,8 @@ window.addEventListener("keydown", e => {
   if ((e.key === "Meta" || e.key === "Control") && !e.repeat) restoreKeyChanged(true);
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-  const textUndo = typing && tag !== "SELECT"; // a dropdown has no undo of its own, so the drawing's applies
+  // only a text or number box has an undo of its own; on a slider, checkbox, color or dropdown the drawing's applies
+  const textUndo = tag === "TEXTAREA" || (tag === "INPUT" && /^(text|number|search|email|url|tel|password)$/.test(document.activeElement.type));
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !textUndo) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !textUndo) { e.preventDefault(); doRedo(); return; }
   if (typing) return;
