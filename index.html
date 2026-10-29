@@ -342,7 +342,7 @@ function defaultState() {
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rayFit: false, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -757,9 +757,39 @@ function ortho3(g) {
   const f2 = -dot(sub(A, H), sub(B, H));
   return f2 > 0 ? { H, f: Math.sqrt(f2) } : null;
 }
+// The box the rays are spaced along, if one has "Space the rays along this box" on (one at most). While
+// that box is being dragged the rays stay where they were (so it can snap to them rather than to rays
+// through itself) and catch up when it is let go.
+const rayBox = () => (drag && drag.rays) || state.boxes.find(b => b.rayFit) || null;
+// Rays spaced along a box: each VP's rays run through evenly spaced points on it, at its division spacing,
+// and carry on past it, R.count of them at each end. Rays that run along the box's sides go through the
+// vertical edge nearest you, so they continue the division lines on the side faces that meet there; rays
+// that run up and down go through the two base edges from that corner, out toward each side. Pattern
+// letters count from the corner.
+function boxRays(vi, g, bx) {
+  const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
+  const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes;
+  const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
+  const i = [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0), D = bx.div, divided = D.on && D.sides;
+  const extra = Math.max(0, Math.round(R.count));
+  const through = (p, j) => {
+    if (cam.depthOf && cam.depthOf(p) <= 1e-6) return; // behind you through a flat camera
+    const s = cam.proj(p), q = P(s.x, s.y), d = sub(q, V);
+    if (Number.isFinite(q.x) && Number.isFinite(q.y) && len(d) > 1e-6) out.push({ d: norm(d), q, ch: pat[((j % pat.length) + pat.length) % pat.length] });
+  };
+  if (Math.abs(d3(n3(dir), UP3)) > 0.9) {
+    const n = divided ? Math.max(1, Math.round(D.vert)) : 1;
+    for (const k of [i ^ 1, i ^ 3]) { const e = s3(B[k], B[i]); for (let j = k === (i ^ 1) ? 0 : 1; j <= n + extra; j++) through(a3(B[i], m3(e, j / n)), j); }
+  } else {
+    const n = divided ? Math.max(1, Math.round(D.vp)) : 1;
+    for (let j = -extra; j <= n + extra; j++) through(a3(B[i], m3(UP3, j * H / n)), j);
+  }
+  return out;
+}
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
-  const pat = R.pattern || "A";
+  const pat = R.pattern || "A", fit = rayBox();
+  if (fit) return boxRays(vi, g, fit);
   if (R.mode === "spacing") {
     // VP1/VP2 measure along a vertical line; VP3, up/down and center rays measure along a horizontal one.
     const across = vi >= 2;
@@ -922,7 +952,8 @@ function faceLabel(id) {
 let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
-  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0]);
+  const rb = rayBox(); // rays spaced along a box move with it
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div] : 0]);
   if (key === snapCache.key) return snapCache;
   const g = geo();
   snapCache = g.cam ? camGuides(g) : linearGuides(g);
@@ -1750,6 +1781,7 @@ function dupBox() {
     c.b0 = P(p0.x, p0.y); c.b2 = P(p2.x, p2.y); c.H = bx.H / (l3(B[bx.anchor]) || 1);
   } else { const d = mul(g.u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); }
   if (c.centerH) centerOnHorizon(c, g);
+  c.rayFit = false; // the rays stay with the original
   captureFit(c, g);
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
@@ -1828,6 +1860,11 @@ function setP(path, val) {
     // turning spins the scene with the view, but only in the views that have a turn
     keepBoxes(() => rawSet(parts, val), path === "curvi.turn" && typeof old === "number" && is4() ? (val - old) * deg : 0);
     touch(); return;
+  }
+  if (path === "boxes.$b.rayFit") {
+    // only one box at a time spaces the rays
+    if (val) state.boxes.forEach(b => { b.rayFit = false; });
+    rawSet(parts, val); touch(); return;
   }
   if (path === "boxes.$b.centerH") {
     // turning it on centers the box straight away, unless the view can't show it that way
@@ -1968,20 +2005,21 @@ const schema = [
   ]},
   { id: "rays", title: "Rays", rows: [
     { t: "seg" },
+    { t: "readout", text: () => `The rays are spaced along ${rayBox().name}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show" },
       { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4()) },
       { bind: "linkRays", label: "Edit VP1 and VP2 together", when: () => ui.vp < 2 && fams().includes(1) }
     ] },
-    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]] },
-    { t: "range", bind: "vps.$v.rays.count", label: () => isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
-    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: isSpacing },
-    { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: isSpacing },
-    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() },
-    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() },
+    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() },
+    { t: "range", bind: "vps.$v.rays.count", label: () => rayBox() ? "Rays past the box at each end" : isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
+    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isSpacing() && !rayBox() },
+    { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: () => isSpacing() && !rayBox() },
+    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() && !rayBox() },
+    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() && !rayBox() },
     { t: "sub", label: "Pattern and styles" },
     { t: "pattern" },
-    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]] },
+    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() },
     { t: "styles" },
     { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
   ]},
@@ -2014,7 +2052,8 @@ const schema = [
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
-    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below.", when: hasBox },
+    { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
+    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
@@ -2482,6 +2521,8 @@ canvas.addEventListener("pointerdown", e => {
     const b = state.boxes[hit.bi]; b.faces[hit.face] = false; state.sel = hit.bi; commit(); touch(); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
+  const rb = rayBox(), held = hit.type === "body" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
+  if (rb && held === rb) drag.rays = clone(rb);
   if (hit.type === "bottom" || hit.type === "top") {
     // Re-anchor the height at the corner that stays put (the opposite base corner, or the dragged top's own base).
     const bx = state.boxes[state.sel], G = boxGeo(bx, g);
