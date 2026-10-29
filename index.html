@@ -1326,7 +1326,7 @@ function frame() {
     const o = toS(g.O); ctx.fillStyle = paper; ctx.strokeStyle = ink; ctx.lineWidth = 1.25;
     ctx.beginPath(); ctx.moveTo(o.x, o.y - 6); ctx.lineTo(o.x + 6, o.y); ctx.lineTo(o.x, o.y + 6); ctx.lineTo(o.x - 6, o.y); ctx.closePath(); ctx.fill(); ctx.stroke();
   }
-  // a hidden face under the pointer with Shift held: a ghost of it, which a Shift-click brings back
+  // a hidden face under the pointer with ⌘ or Ctrl held: a ghost of it, which a ⌘-click brings back
   const hb = hover && hover.type === "hidden" && state.boxes[hover.bi], hf = hb && boxGeo(hb, g).faces.find(f => f.id === hover.face);
   if (hf) {
     ctx.save(); ctx.fillStyle = shade(hex2rgb(hb.fill), hf.shade); ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
@@ -2058,7 +2058,7 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold Shift over a hidden face to see a ghost of it, and Shift-click to bring it back. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
@@ -2457,8 +2457,9 @@ function zoomAt(s, f) { const w = toW(s); view.z = Math.max(0.02, Math.min(12, v
 const pointers = new Map();
 let pinch = null;
 const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX - r.left, e.clientY - r.top); };
-// With `shift` held, a hidden face counts too, nearest first, so it can be found and brought back
-function hitTest(s, shift = false) {
+// With `restoring` (⌘ or Ctrl held), a hidden face counts too, nearest first, so it can be found and
+// brought back
+function hitTest(s, restoring = false) {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
   if (bx) {
@@ -2477,7 +2478,7 @@ function hitTest(s, shift = false) {
   }
   for (let bi = state.boxes.length - 1; bi >= 0; bi--) {
     const b = state.boxes[bi], G = boxGeo(b, g);
-    const faces = [...G.faces.filter(f => f.front), ...G.faces.filter(f => !f.front)].filter(f => shift || b.faces[f.id] !== false);
+    const faces = [...G.faces.filter(f => f.front), ...G.faces.filter(f => !f.front)].filter(f => restoring || b.faces[f.id] !== false);
     const f = faces.find(f => f.fills.some(poly => inPoly(w, poly)));
     if (f) return { type: b.faces[f.id] === false ? "hidden" : "body", bi, face: f.id };
   }
@@ -2501,14 +2502,15 @@ const HINTS = {
   horizon: "Drag to raise or lower eye level",
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
-  body: "Drag to move the box · Shift-click a face to hide it, or hold Shift over a hidden one to bring it back",
-  hidden: "Shift-click to bring this face back"
+  body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
+  hidden: "⌘-click (Ctrl-click) to bring this face back"
 };
 const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", body: "move", hidden: "pointer" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
-// under the pointer with Shift held is drawn as a ghost). lastPos lets pressing or letting go of Shift
-// update it without the mouse moving.
+// under the pointer with ⌘ or Ctrl held is drawn as a ghost). lastPos lets pressing or letting go of the
+// key update it without the mouse moving.
 let lastPos = null;
+const restoreKey = e => e.metaKey || e.ctrlKey;
 function showHover(h) {
   const key = x => x && [x.type, x.i, x.bi, x.face].join();
   if (key(h) !== key(hover)) { hover = h; redraw(); }
@@ -2516,7 +2518,7 @@ function showHover(h) {
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   document.getElementById("stHint").textContent = vd ? vd[0] : HINTS[h.type] || "";
 }
-const shiftChanged = shift => { if (!drag && lastPos) showHover(hitTest(lastPos, shift)); };
+const restoreKeyChanged = held => { if (!drag && lastPos) showHover(hitTest(lastPos, held)); };
 // VP markers drag in different ways depending on the mode
 const VP_DRAGS = {
   dist: ["Drag the vanishing point along the horizon", "ew-resize"],
@@ -2533,18 +2535,18 @@ const VP_DRAGS = {
 canvas.addEventListener("pointerdown", e => {
   canvas.focus({ preventScroll: true });
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety; dragging works without it */ }
-  const s = spos(e); pointers.set(e.pointerId, s);
+  const s = spos(e); pointers.set(e.pointerId, s); lastPos = s;
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     pinch = { d: len(sub(a, b)), mid: mul(add(a, b), 0.5), z: view.z, vx: view.x, vy: view.y };
     drag = null; snapMark = null; return;
   }
   if (pointers.size > 2) return;
-  const hit = hitTest(s, e.shiftKey), w = toW(s), g = geo();
-  if (e.shiftKey && (hit.type === "body" || hit.type === "hidden")) {
-    // Shift-click hides a face, or brings a hidden one back
+  const hit = hitTest(s, restoreKey(e)), w = toW(s), g = geo();
+  if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && hit.type === "body")) {
+    // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
     const b = state.boxes[hit.bi]; b.faces[hit.face] = hit.type === "hidden"; state.sel = hit.bi; commit(); touch();
-    showHover(hitTest(s, true)); return;
+    showHover(hitTest(s, restoreKey(e))); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
   const rb = rayBox(), held = hit.type === "body" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
@@ -2581,7 +2583,7 @@ canvas.addEventListener("pointermove", e => {
     const wm = P((pinch.mid.x - pinch.vx) / pinch.z, (pinch.mid.y - pinch.vy) / pinch.z);
     view.z = z; view.x = mid.x - wm.x * z; view.y = mid.y - wm.y * z; redraw(); return;
   }
-  if (!drag) { lastPos = s; showHover(hitTest(s, e.shiftKey)); return; }
+  if (!drag) { lastPos = s; showHover(hitTest(s, restoreKey(e))); return; }
   if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
   drag.moved = true;
   const g = geo(), useSnap = state.snap.on && !e.altKey;
@@ -2707,10 +2709,12 @@ canvas.addEventListener("wheel", e => {
   else { view.x -= e.deltaX; view.y -= e.deltaY; redraw(); }
 }, { passive: false });
 
-window.addEventListener("keyup", e => { if (e.key === "Shift") shiftChanged(false); });
+window.addEventListener("keyup", e => { if (e.key === "Meta" || e.key === "Control") restoreKeyChanged(false); });
 canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && hover.type === "hidden") { hover = null; redraw(); } });
+// on a Mac, Ctrl-click would also open the context menu
+canvas.addEventListener("contextmenu", e => { if (e.ctrlKey && hover && hover.type === "hidden") e.preventDefault(); });
 window.addEventListener("keydown", e => {
-  if (e.key === "Shift" && !e.repeat) shiftChanged(true);
+  if ((e.key === "Meta" || e.key === "Control") && !e.repeat) restoreKeyChanged(true);
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
   const textUndo = typing && tag !== "SELECT"; // a dropdown has no undo of its own, so the drawing's applies
