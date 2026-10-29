@@ -1516,6 +1516,15 @@ function boxPlace(bx, g) {
   const side = Math.max(Math.abs(d3(s3(B[1], B[0]), A1)), Math.abs(d3(s3(B[3], B[0]), A2)), Math.abs(H));
   return dist > 1e-9 && side > 0 ? { q: m3(mid, 1 / dist), k: side / dist } : null;
 }
+// A box's sides (signed, along the first axis and the second) and height in 3D, the middle of its base,
+// and px per unit there: how much the view magnifies a short line square to the line of sight. Sizes in
+// those px don't change when the box slides sideways, and don't depend on which corner is its anchor.
+function boxSize(bx, g) {
+  const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes, mid = m3(a3(B[0], B[2]), 0.5);
+  const r = n3(mid), across = s3(UP3, m3(r, d3(UP3, r))), dir = l3(across) > 1e-6 ? n3(across) : n3(s3(A1, m3(r, d3(A1, r))));
+  const e = 1e-4 * l3(mid), p0 = cam.proj(mid), p1 = cam.proj(a3(mid, m3(dir, e)));
+  return { cam, B, H, mid, a: d3(s3(B[1], B[0]), A1), c: d3(s3(B[3], B[0]), A2), px: Math.hypot(p1.x - p0.x, p1.y - p0.y) / e };
+}
 function screenBox(pts) {
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -1702,6 +1711,19 @@ function staysInView(nb, bx, g) {
   const v = viewDepth(nb, g);
   return v >= VIEW_EDGE || v >= viewDepth(bx, g);
 }
+// Box bx rebuilt from a 3D base B and height H, or null where the view can't show it as a box: a base at
+// eye level or past what a lens can draw, or a box stretching out toward infinity
+function boxFrom3(bx, B, H, g) {
+  const cam = convCam(g), T = B.map(p => a3(p, m3(UP3, H))), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
+  if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite) || !baseOk(p0, p2, g, 2 / view.z) || (cam.boxOk && !cam.boxOk(B, T))) return null;
+  const nb = Object.assign({}, bx, { b0: P(p0.x, p0.y), b2: P(p2.x, p2.y) });
+  if (g.cam) {
+    nb.H = H / (l3(B[bx.anchor]) || 1);
+    return readsBack(nb, B, g.cam, l3(s3(T[2], B[0]))) ? nb : null;
+  }
+  const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); nb.h = Math.max(1e-6, dot(sub(Ta, Ba), g.up(Ba)));
+  return staysInView(nb, bx, g) ? nb : null;
+}
 function setMode(m) {
   if (m === state.mode) return;
   reshape(() => { state.mode = m; });
@@ -1730,6 +1752,32 @@ function dupBox() {
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
 function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
+// The selected box's width (k = 0), length (1) or height (2), in px where the middle of its base sits
+function boxSide(k) {
+  const bx = state.boxes[state.sel]; if (!bx) return 0;
+  const s = boxSize(bx, geo());
+  return Math.abs([s.a, s.c, s.H][k]) * s.px;
+}
+// Set one of them. The base keeps its middle where it is (width and length grow out from it, height grows
+// upward) and the other two stay as they are; a size the view can't show stops at the largest one it can.
+function setBoxSide(k, v) {
+  const bx = state.boxes[state.sel]; if (!bx) return;
+  const g = geo(), s = boxSize(bx, g), [A1, A2] = s.cam.axes, from = [s.a, s.c, s.H], to = from.slice();
+  to[k] = (k < 2 && from[k] < 0 ? -1 : 1) * Math.max(1e-6, v / s.px);
+  const build = t => {
+    const [a, c, H] = from.map((x, i) => x + (to[i] - x) * t), B0 = s3(s.mid, m3(a3(m3(A1, a), m3(A2, c)), 0.5));
+    return boxFrom3(bx, [B0, a3(B0, m3(A1, a)), a3(a3(B0, m3(A1, a)), m3(A2, c)), a3(B0, m3(A2, c))], H, g);
+  };
+  let nb = build(1);
+  if (!nb) {
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 30; i++) { const t = (lo + hi) / 2; if (build(t)) lo = t; else hi = t; }
+    nb = lo > 0 ? build(lo) : null;
+  }
+  if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; captureFit(bx, g); }
+  touch();
+}
+const sideLabel = k => (k === 2 ? "Height" : (k ? "Length" : "Width") + (is1() ? (k ? " (toward the VP)" : " (across)") : ` (toward ${axisName(k)})`));
 
 /* ---------- history & persistence ---------- */
 let undoStack = [], redoStack = [], lastSaved = JSON.stringify(state);
@@ -1931,6 +1979,9 @@ const schema = [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "sub", label: "Size", when: hasBox },
+    ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
+    { t: "note", html: "In pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
@@ -2004,7 +2055,9 @@ function makeRow(r) {
       const lab = el("label", { for: id + "-n" });
       const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step), min: String(lo), max: String(hi) });
       const rng = el("input", { type: "range", id, min: String(r.min), max: String(r.max), step: String(r.step), "aria-label": labelText(r) });
-      const set = v => { if (!Number.isFinite(v)) return; v = Math.min(hi, Math.max(lo, v)); setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
+      // r.get and r.set stand in for the bound value when it is worked out rather than stored (a box's size)
+      const read = () => (r.get ? r.get() : getP(r.bind));
+      const set = v => { if (!Number.isFinite(v)) return; v = Math.min(hi, Math.max(lo, v)); if (r.set) { r.set(v); return; } setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
       const scale = () => ui.scales[resolve(r.bind)] || { min: r.min, max: r.max };
       const grow = (sc, v) => {
         let { min, max } = sc;
@@ -2022,11 +2075,11 @@ function makeRow(r) {
         if (ext) { ui.scales[resolve(r.bind)] = ext; toast(`${labelText(r)} slider now runs ${fmtScale(ext.min)} to ${fmtScale(ext.max)}`); touch(); }
         commit();
       });
-      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = fmt(v, r.step); commit(); });
+      num.addEventListener("change", () => { const v = read(); if (v !== undefined) num.value = fmt(v, r.step); commit(); });
       node = el("div", { class: "row range" }, lab, num, rng);
       update = () => {
         lab.textContent = labelText(r);
-        const v = getP(r.bind); if (v === undefined) return;
+        const v = read(); if (v === undefined) return;
         const sc = grow(scale(), v);
         if (sc.min !== r.min || sc.max !== r.max) ui.scales[resolve(r.bind)] = sc;
         rng.min = String(sc.min); rng.max = String(sc.max); rng.title = `${fmtScale(sc.min)} to ${fmtScale(sc.max)}`;
@@ -2480,16 +2533,8 @@ canvas.addEventListener("pointermove", e => {
       // lands it there is skipped, so a box dragged across the horizon hops over it. Through a lens, a spot
       // where the box can't be drawn as itself (over the point straight behind you, say) is skipped too.
       for (const { delta, sp } of moves) {
-        const B = R.B.map(p => a3(p, delta)), T = B.map(p => a3(p, m3(UP3, R.H))), p0 = R.cam.proj(B[0]), p2 = R.cam.proj(B[2]);
-        if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite) || !baseOk(p0, p2, g, 2 / view.z) || (R.cam.boxOk && !R.cam.boxOk(B, T))) continue;
-        const nb = Object.assign({}, bx, { b0: P(p0.x, p0.y), b2: P(p2.x, p2.y) });
-        if (g.cam) {
-          nb.H = R.H / (l3(B[bx.anchor]) || 1);
-          if (!readsBack(nb, B, g.cam, l3(s3(T[2], B[0])))) continue;
-        } else {
-          const Ba = R.cam.proj(B[bx.anchor]), Ta = R.cam.proj(T[bx.anchor]); nb.h = Math.max(1e-6, dot(sub(Ta, Ba), g.up(Ba)));
-          if (!staysInView(nb, bx, g)) continue;
-        }
+        const nb = boxFrom3(bx, R.B.map(p => a3(p, delta)), R.H, g);
+        if (!nb) continue;
         bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h;
         if (sp) snapMark = sp;
         break;
