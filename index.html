@@ -342,7 +342,7 @@ function defaultState() {
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -1658,7 +1658,7 @@ function boxPlans(g) {
     } catch (e) { return null; }
   });
 }
-function refitBoxes(plans, g) { state.boxes.forEach((bx, i) => { const p = plans[i]; if (p) fitBox(bx, p.dims, p.c, p.s, g, p.place); }); }
+function refitBoxes(plans, g) { state.boxes.forEach((bx, i) => { const p = plans[i]; if (p) fitBox(bx, p.dims, p.c, p.s, g, p.place); if (bx.centerH) centerOnHorizon(bx, g); }); }
 // In 1-, 2- and 3-point, moving the horizon or a VP re-fits every box, so each keeps its place, size and
 // proportions and lines up with the new grid. (A box pinned to screen points could otherwise end up with
 // its base straddling the horizon, which sends its edges shooting out of the VPs.) In the lens modes the
@@ -1749,6 +1749,7 @@ function dupBox() {
     const p0 = g.cam.proj(B[0]), p2 = g.cam.proj(B[2]);
     c.b0 = P(p0.x, p0.y); c.b2 = P(p2.x, p2.y); c.H = bx.H / (l3(B[bx.anchor]) || 1);
   } else { const d = mul(g.u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); }
+  if (c.centerH) centerOnHorizon(c, g);
   captureFit(c, g);
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
@@ -1760,13 +1761,15 @@ function boxSide(k) {
   return Math.abs([s.a, s.c, s.H][k]) * s.px;
 }
 // Set one of them. The base keeps its middle where it is (width and length grow out from it, height grows
-// upward) and the other two stay as they are; a size the view can't show stops at the largest one it can.
+// upward, or evenly above and below a box kept centered on the horizon) and the other two stay as they
+// are; a size the view can't show stops at the largest one it can.
 function setBoxSide(k, v) {
   const bx = state.boxes[state.sel]; if (!bx) return;
   const g = geo(), s = boxSize(bx, g), [A1, A2] = s.cam.axes, from = [s.a, s.c, s.H], to = from.slice();
   to[k] = (k < 2 && from[k] < 0 ? -1 : 1) * Math.max(1e-6, v / s.px);
   const build = t => {
     const [a, c, H] = from.map((x, i) => x + (to[i] - x) * t), B0 = s3(s.mid, m3(a3(m3(A1, a), m3(A2, c)), 0.5));
+    if (bx.centerH) B0.y = -H / 2;
     return boxFrom3(bx, [B0, a3(B0, m3(A1, a)), a3(a3(B0, m3(A1, a)), m3(A2, c)), a3(B0, m3(A2, c))], H, g);
   };
   let nb = build(1);
@@ -1779,16 +1782,26 @@ function setBoxSide(k, v) {
   touch();
 }
 const sideLabel = k => (k === 2 ? "Height" : (k ? "Length" : "Width") + (is1() ? (k ? " (toward the VP)" : " (across)") : ` (toward ${axisName(k)})`));
-// Move the selected box straight up or down in 3D, keeping its size and its place across the view, until
-// eye level runs through the middle of its height: the horizon line cuts it in half and neither its top
-// nor its bottom shows
-function centerBoxOnHorizon() {
-  const bx = state.boxes[state.sel]; if (!bx) return;
-  const g = geo(), { B, H } = box3(bx, g), dy = -(B[0].y + H / 2);
+// A box kept centered on the horizon (centerH) has eye level running through the middle of its height:
+// the horizon line cuts it in half and neither its top nor its bottom shows. This moves box bx straight up
+// or down in 3D to get it there, keeping its size and its place across the view; false, with the box left
+// as it was, where the view can't show it that way (too flat, or too tall for a lens).
+function centerOnHorizon(bx, g) {
+  const { B, H } = box3(bx, g), dy = -(B[0].y + H / 2);
+  if (Math.abs(dy) < 1e-9 * (Math.abs(H) || 1)) return true;
   const nb = boxFrom3(bx, B.map(p => a3(p, m3(UP3, dy))), H, g);
-  if (!nb) { toast("The view can't show this box centered on the horizon: it's too flat or too tall"); return; }
-  bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; captureFit(bx, g);
-  commit(); touch();
+  if (!nb) return false;
+  bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h;
+  return true;
+}
+// A centered box's top handle grows it evenly above and below eye level: its top goes to where the camera
+// ray through screen point S passes the corner's vertical, and its base goes as far below
+function centeredTop(bx, S, g) {
+  const { cam, B } = box3(bx, g), A = B[bx.anchor], r = cam.unproj(S), hz = r.x * r.x + r.z * r.z;
+  if (hz < 1e-12) return;
+  const t = Math.max(1e-3 * l3(A), (A.x * r.x + A.z * r.z) / hz * r.y);
+  const nb = boxFrom3(bx, B.map(p => V3(p.x, -t, p.z)), 2 * t, g);
+  if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; }
 }
 
 /* ---------- history & persistence ---------- */
@@ -1814,6 +1827,13 @@ function setP(path, val) {
   if (LENS_PATHS.includes(path) && camMode() && path !== "curvi.style4") {
     // turning spins the scene with the view, but only in the views that have a turn
     keepBoxes(() => rawSet(parts, val), path === "curvi.turn" && typeof old === "number" && is4() ? (val - old) * deg : 0);
+    touch(); return;
+  }
+  if (path === "boxes.$b.centerH") {
+    // turning it on centers the box straight away, unless the view can't show it that way
+    const bx = state.boxes[state.sel], g = geo();
+    if (bx && val && !centerOnHorizon(bx, g)) { toast("The view can't show this box centered on the horizon: it's too flat or too tall"); touch(); return; }
+    rawSet(parts, val); if (bx) captureFit(bx, g);
     touch(); return;
   }
   if (GRID_PATHS.includes(path)) {
@@ -1993,8 +2013,8 @@ const schema = [
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
-    { t: "btns", items: [["Center on horizon", centerBoxOnHorizon, ""]], when: hasBox },
-    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. Center on horizon moves the box straight up or down until the horizon line runs through its middle.", when: hasBox },
+    { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
+    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
@@ -2521,7 +2541,13 @@ canvas.addEventListener("pointermove", e => {
     }
     case "top": {
       const bx = state.boxes[state.sel];
-      if (g.cam) {
+      if (bx.centerH) {
+        // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
+        let S = w;
+        if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
+        else { const r = useSnap ? snapOnVertical(drag.base, w) : null; S = r ? r.pt : w; if (r && !r.free) snapMark = { pt: r.pt, kind: "point" }; }
+        centeredTop(bx, S, g);
+      } else if (g.cam) {
         let S = w;
         if (useSnap) { const sp = snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
         bx.H = Math.max(1e-3, topFromScreen(drag.base3, S, g));
@@ -2536,12 +2562,15 @@ canvas.addEventListener("pointermove", e => {
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
       const free = s3(slideTo(R.cam, R.c0, add(R.s0, sub(w, drag.w0))), R.c0), moves = [];
-      if (useSnap) {
-        // snap the base corner nearest the grab point, moving the whole box with it
-        const t = R.cam.proj(a3(R.B[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
-        if (sp) moves.push({ delta: s3(slideTo(R.cam, R.B[R.ci], sp.pt), R.B[R.ci]), sp });
+      if (bx.centerH) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
+      else {
+        if (useSnap) {
+          // snap the base corner nearest the grab point, moving the whole box with it
+          const t = R.cam.proj(a3(R.B[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
+          if (sp) moves.push({ delta: s3(slideTo(R.cam, R.B[R.ci], sp.pt), R.B[R.ci]), sp });
+        }
+        moves.push({ delta: free });
       }
-      moves.push({ delta: free });
       // The base can't rest at eye level, where it would flatten onto the horizon: a move (or a snap) that
       // lands it there is skipped, so a box dragged across the horizon hops over it. Through a lens, a spot
       // where the box can't be drawn as itself (over the point straight behind you, say) is skipped too.
