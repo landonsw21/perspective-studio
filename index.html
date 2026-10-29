@@ -138,7 +138,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .pick .num { width: 58px; }
 .ph .tip { font-size: 11.5px; }
 .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
-.patview { display: flex; gap: 2px; height: 22px; align-items: stretch; }
+.patview { display: flex; gap: 2px; height: 22px; align-items: stretch; box-sizing: content-box; padding: 3px 4px; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; } /* on paper, as drawn */
 .patview i { flex: 1; max-width: 10px; border-radius: 1px; }
 
 .modal { position: fixed; inset: 0; background: rgb(10 14 17 / .55); display: grid; place-items: center; padding: 16px; z-index: 10; }
@@ -299,23 +299,23 @@ function panoOk(c) {
 }
 
 /* ---------- state ---------- */
-const st = (color, width, dash, opacity) => ({ color, width, dash, opacity });
-// Rays: a pattern of letters and dots. Each letter (A to Z) is a ray style with its own color, weight, line
-// and opacity, "." skips a ray, and the pattern repeats. A's color also colors the VP's marker.
+// Rays, and a box's division lines, follow a pattern of letters and dots. Each letter (A to Z) is a line
+// style with its own color, weight, line and opacity, "." skips a line, and the pattern repeats. The A color
+// of a ray family also colors its VP's marker.
 const DASH_NAMES = ["solid", "dashed", "dotted", "dashdot", "longdash", "dashdotdot"];
-const rayStyle = (color, width, dash, opacity) => ({ color, width, dash, opacity });
+const lineStyle = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 const raysDefault = (ca, cb, extra = {}) => Object.assign({
   show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center",
-  styles: { A: rayStyle(ca, 1, "solid", 0.9), B: rayStyle(cb, 0.6, "solid", 0.55) }
+  styles: { A: lineStyle(ca, 1, "solid", 0.9), B: lineStyle(cb, 0.6, "solid", 0.55) }
 }, extra);
 const mixHex = (h1, h2, t) => { const x = hex2rgb(h1), y = hex2rgb(h2); return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join(""); };
 // A letter without a style yet starts from B's, a little lighter the further along the alphabet, with a line
 // of its own so it stands apart: C dashed, D dotted, E dash-dot, then round again
-function newRayStyle(R, ch) {
-  const base = R.styles.B || R.styles.A, k = Math.max(0, ch.charCodeAt(0) - 67);
-  return rayStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % (DASH_NAMES.length - 1)], base.opacity);
+function newStyle(S, ch) {
+  const base = S.styles.B || S.styles.A, k = Math.max(0, ch.charCodeAt(0) - 67);
+  return lineStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % (DASH_NAMES.length - 1)], base.opacity);
 }
-function ensureRayStyles(R) { for (const ch of R.pattern) if (ch !== "." && !R.styles[ch]) R.styles[ch] = newRayStyle(R, ch); }
+function ensureStyles(S) { for (const ch of S.pattern) if (ch !== "." && !S.styles[ch]) S.styles[ch] = newStyle(S, ch); }
 function defaultState() {
   return {
     mode: "2pt",
@@ -339,7 +339,7 @@ function defaultState() {
     export: { scale: 1, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
 }
-const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", color: "#000000", width: 1, opacity: 0.85, hier: true });
+const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
 const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rayFit: false, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
@@ -372,6 +372,15 @@ function migrateLens(s) {
   const L6 = lensFn(Math.min(1.5, Math.max(0.6, bend / 100))), pct6 = 100 * PI2 / L6.tk(PI2);
   c.f6 = { size: rim / L6.tk(Math.PI) * PI2, hc: pct6, vc: pct6, back: L6.tk(Math.PI) / L6.tk(PI2) };
 }
+// A saved pattern and its letters' styles: every saved letter keeps its style, and anything missing or
+// unusable falls back to the defaults
+function loadPattern(S, saved, def) {
+  S.pattern = (S.pattern || "").toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 64) || "A";
+  S.styles = { A: clone(def.A), B: clone(def.B) };
+  for (const [k, st] of Object.entries(saved)) if (/^[A-Z]$/.test(k) && st && typeof st === "object") S.styles[k] = deepMerge(def[k] || def.B, st);
+  for (const st of Object.values(S.styles)) if (!DASH_NAMES.includes(st.dash)) st.dash = "solid";
+  ensureStyles(S);
+}
 function normalize(s) {
   const d = defaultState();
   migrateLens(s);
@@ -392,16 +401,16 @@ function normalize(s) {
   if (!(cv.panoK.length === 4 && cv.panoK.every(Number.isFinite) && panoOk(cv))) cv.panoK = [0, 0, 0, 0];
   // boxes without two usable corners are dropped rather than drawn wrong
   out.vps.forEach((v, i) => {
-    const R = v.rays, raw = s && s.vps && s.vps[i] && s.vps[i].rays, def = d.vps[i].rays.styles;
-    R.pattern = (R.pattern || "").toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 64) || "A";
-    // every saved letter's style (setups saved before letters past B kept A and B as "a" and "b")
-    const saved = raw && raw.styles && typeof raw.styles === "object" ? raw.styles : { A: raw && raw.a, B: raw && raw.b };
-    R.styles = { A: clone(def.A), B: clone(def.B) };
-    for (const [k, st] of Object.entries(saved)) if (/^[A-Z]$/.test(k) && st && typeof st === "object") R.styles[k] = deepMerge(def[k] || def.B, st);
-    for (const st of Object.values(R.styles)) if (!DASH_NAMES.includes(st.dash)) st.dash = "solid";
-    ensureRayStyles(R);
+    const raw = s && s.vps && s.vps[i] && s.vps[i].rays;
+    // setups saved before letters past B kept A and B as "a" and "b"
+    loadPattern(v.rays, raw && raw.styles && typeof raw.styles === "object" ? raw.styles : { A: raw && raw.a, B: raw && raw.b }, d.vps[i].rays.styles);
   });
-  out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).filter(b => b && okPt(b.b0) && okPt(b.b2)).map(b => deepMerge(boxDefaults(), b));
+  out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).filter(b => b && okPt(b.b0) && okPt(b.b2)).map(b => {
+    const o = deepMerge(boxDefaults(), b), raw = b.div && typeof b.div === "object" ? b.div : {};
+    // division lines saved before they had a pattern had one color, weight and opacity, which become A's
+    loadPattern(o.div, raw.styles && typeof raw.styles === "object" ? raw.styles : { A: { color: raw.color, width: raw.width, opacity: raw.opacity } }, divDefaults().styles);
+    return o;
+  });
   out.boxes.forEach(b => {
     if (![0, 1, 2, 3].includes(b.anchor)) b.anchor = 0;
     if (!(b.h > 0)) b.h = 220;
@@ -766,11 +775,12 @@ const rayBox = () => (drag && drag.rays) || state.boxes.find(b => b.rayFit) || n
 // vertical edge nearest you, so they continue the division lines on the side faces that meet there; rays
 // that run up and down go through the two base edges from that corner, out toward each side. Pattern
 // letters count from the corner.
+const nearestOf = B => [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0); // of a box's 3D base corners
 function boxRays(vi, g, bx) {
   const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
   const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes;
   const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
-  const i = [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0), D = bx.div, divided = D.on && D.sides;
+  const i = nearestOf(B), D = bx.div, divided = D.on && D.sides;
   const extra = Math.max(0, Math.round(R.count));
   const through = (p, j) => {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) return; // behind you through a flat camera
@@ -1072,16 +1082,18 @@ function snapTopCurvi(Bu, w, g) {
 const canvas = document.getElementById("cv"), ctx = canvas.getContext("2d");
 let dpr = 1, cw = 0, ch = 0, dirty = true, panelDirty = true, snapMark = null, hover = null, drag = null;
 const DASHES = { solid: [], dashed: [7, 5], dotted: [0.1, 3], dashdot: [9, 4, 0.1, 4], longdash: [16, 6], dashdotdot: [9, 4, 0.1, 4, 0.1, 4] };
-function strokeStyle(c, s, k) {
-  c.strokeStyle = s.color; c.globalAlpha = s.opacity;
-  c.lineWidth = Math.max(s.width, 0.6 / k);
-  const w = Math.max(c.lineWidth * k, 1);
+// A line style on the canvas, at its own weight unless given another, faded by `alpha`
+function strokeStyle(c, s, k, width = Math.max(s.width, 0.6 / k), alpha = 1) {
+  c.strokeStyle = s.color; c.globalAlpha = s.opacity * alpha;
+  c.lineWidth = width;
+  const w = Math.max(width * k, 1);
   c.setLineDash((DASHES[s.dash] || []).map(x => x * w / k));
   c.lineCap = /dot/.test(s.dash) ? "round" : "butt"; // round caps turn the short segments into dots
 }
+// A letter's style, or B's (then A's) for a letter without one
+const styleOf = (S, ch) => S.styles[ch] || S.styles.B || S.styles.A;
 // Rays draw in one group per letter, each in its letter's style, with A (the primary rays) drawn last so it
 // sits on top
-const rayStyleOf = (R, ch) => R.styles[ch] || R.styles.B || R.styles.A;
 const byLayer = ([k1], [k2]) => (k1 < k2 ? 1 : k1 > k2 ? -1 : 0);
 function farDist(p, b) {
   let m = 0; for (const c of [P(b.x, b.y), P(b.x + b.w, b.y), P(b.x, b.y + b.h), P(b.x + b.w, b.y + b.h)]) m = Math.max(m, len(sub(c, p)));
@@ -1123,7 +1135,7 @@ function drawGuides(c, k, b, inc, g) {
       const R = state.vps[vi].rays; if (!R.show) return;
       const groups = new Map();
       arcs.filter(a => a.fam === "r" + vi).forEach(a => { if (!groups.has(a.ch)) groups.set(a.ch, []); groups.get(a.ch).push(a); });
-      [...groups].sort(byLayer).forEach(([ch, list]) => strokeArcs(list, rayStyleOf(R, ch)));
+      [...groups].sort(byLayer).forEach(([ch, list]) => strokeArcs(list, styleOf(R, ch)));
     });
     if (inc.horizon && H.show) strokeArcs(arcs.filter(a => a.fam === "h"), H);
     c.globalAlpha = 1; c.setLineDash([]);
@@ -1164,7 +1176,7 @@ function drawGuides(c, k, b, inc, g) {
       const p = paths.get(r.ch), s = R.behind ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
       p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
     }
-    [...paths].sort(byLayer).forEach(([ch, p]) => { strokeStyle(c, rayStyleOf(R, ch), k); c.stroke(p); });
+    [...paths].sort(byLayer).forEach(([ch, p]) => { strokeStyle(c, styleOf(R, ch), k); c.stroke(p); });
   });
   if (inc.horizon && H.show) {
     const L = farDist(g.O, b), a = add(g.O, mul(g.u, -L)), e = add(g.O, mul(g.u, L));
@@ -1187,35 +1199,47 @@ function quadMap(p) {
   return (u, v) => { const w = G * u + H * v + 1; return P((A * u + B * v + C) / w, (D * u + E * v + F) / w); };
 }
 const gcd = (a, b) => (b ? gcd(b, a % b) : a);
-function drawDivisions(c, f, bx, k, alphaMul) {
+// Which way each face's u and v run along the box: x along the edge from corner 0 to corner 1, y from 0 to
+// 3, z up
+const FACE_AXES = { bottom: ["y", "x"], top: ["x", "y"], s01: ["x", "z"], s12: ["y", "z"], s23: ["-x", "z"], s30: ["-y", "z"] };
+// Division lines take their styles from the box's pattern. Letters count from the base corner nearest you
+// (`near`), as they do for rays spaced along a box: along each edge from that corner, and up from the base,
+// so a pattern lines up all the way around the box. A's style draws the diagonals.
+function drawDivisions(c, f, bx, k, alphaMul, near) {
   const D = bx.div; if (!D || !D.on) return;
   const cap = f.id === "top" || f.id === "bottom";
   if (cap ? !D.caps : !D.sides) return;
-  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp);
-  const base = Math.max(D.width, 0.5 / k);
-  c.save(); c.setLineDash([]); c.lineCap = "butt"; c.lineJoin = "round"; c.strokeStyle = D.color; c.globalAlpha = D.opacity * alphaMul;
+  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp), pat = D.pattern || "A";
+  const flip = { x: near === 1 || near === 2, y: near === 2 || near === 3, z: false }, [au, av] = FACE_AXES[f.id];
+  const from = (ax, i, n) => ((ax[0] === "-") !== flip[ax.slice(-1)] ? n - i : i); // line i of n, counted from that corner
+  const styleAt = j => { const ch = pat[j % pat.length]; return ch === "." ? null : styleOf(D, ch); };
+  c.save(); c.lineJoin = "round";
   // f.line maps face coordinates (0..1 along each edge, measured in depth) to screen polylines
-  const line = (u0, v0, u1, v1, w) => {
-    c.lineWidth = w; c.beginPath();
+  let cur = null, curW = 0;
+  const line = (u0, v0, u1, v1, s, w) => {
+    if (s !== cur || w !== curW) { strokeStyle(c, s, k, w, alphaMul); cur = s; curW = w; }
+    c.beginPath();
     for (const pl of f.line(u0, v0, u1, v1)) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
     c.stroke();
   };
-  const weight = (i, n) => D.hier ? Math.max(0.5 / k, base * Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1)) : base;
-  for (let i = 1; i < nu; i++) { const t = i / nu; line(t, 0, t, 1, weight(i, nu)); }
-  for (let j = 1; j < nv; j++) { const t = j / nv; line(0, t, 1, t, weight(j, nv)); }
-  if (D.diag === "face") { line(0, 0, 1, 1, base); line(1, 0, 0, 1, base); }
+  const weight = (s, i, n) => Math.max(0.5 / k, s.width * (D.hier ? Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1) : 1));
+  for (let i = 1; i < nu; i++) { const s = styleAt(from(au, i, nu)); if (s) line(i / nu, 0, i / nu, 1, s, weight(s, i, nu)); }
+  for (let j = 1; j < nv; j++) { const s = styleAt(from(av, j, nv)); if (s) line(0, j / nv, 1, j / nv, s, weight(s, j, nv)); }
+  const A = D.styles.A, base = Math.max(A.width, 0.5 / k);
+  if (D.diag === "face") { line(0, 0, 1, 1, A, base); line(1, 0, 0, 1, A, base); }
   else if ((D.diag === "cells" || D.diag === "cellsOne") && nu * nv <= 4096) { // past 64×64 cells the face would just turn solid
     const w = base * 0.75;
     for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
       const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
-      line(u0, v0, u1, v1, w);
-      if (D.diag === "cells") line(u1, v0, u0, v1, w);
+      line(u0, v0, u1, v1, A, w);
+      if (D.diag === "cells") line(u1, v0, u0, v1, A, w);
     }
   }
   c.restore();
 }
 function drawBox(c, bx, g, k) {
   const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill);
+  const near = bx.div && bx.div.on ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false;
   const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
   // Faces fill as polygons (split where they cross a seam) and stroke only their real edges
@@ -1232,7 +1256,7 @@ function drawBox(c, bx, g, k) {
   const firm = bx.mode === "ghost" ? Math.min(1, Math.max(0, bx.ghost)) ** 4 : 0, ghostly = (v, full) => (solid ? full : v + (full - v) * firm);
   for (const f of backs) {
     if (!wire) fill(f, ghostly(bx.ghost * 0.6, 1), f.shade * 0.72);
-    drawDivisions(c, f, bx, k, ghostly(0.45, 1));
+    drawDivisions(c, f, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
     c.setLineDash(!solid && bx.dashHidden ? dash : []);
@@ -1240,7 +1264,7 @@ function drawBox(c, bx, g, k) {
   }
   for (const f of fronts) {
     if (!wire) fill(f, solid ? 1 : bx.ghost, f.shade);
-    drawDivisions(c, f, bx, k, 1);
+    drawDivisions(c, f, bx, k, 1, near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = 1; c.setLineDash([]); edges(f);
   }
@@ -1909,13 +1933,19 @@ const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
 // pattern, and a letter new to the other family copies the edited family's weight, line and opacity in a
 // color of its own
 function setPattern(v) {
-  const src = state.vps[ui.vp].rays; src.pattern = v; ensureRayStyles(src);
+  const src = state.vps[ui.vp].rays; src.pattern = v; ensureStyles(src);
   if (state.linkRays && ui.vp < 2 && fams().includes(1)) {
     const R = state.vps[1 - ui.vp].rays; R.pattern = v;
-    for (const ch of v) if (ch !== "." && !R.styles[ch]) R.styles[ch] = Object.assign({}, src.styles[ch], { color: newRayStyle(R, ch).color });
+    for (const ch of v) if (ch !== "." && !R.styles[ch]) R.styles[ch] = Object.assign({}, src.styles[ch], { color: newStyle(R, ch).color });
   }
   touch();
 }
+function setDivPattern(v) { const D = state.boxes[state.sel].div; D.pattern = v; ensureStyles(D); touch(); }
+// What a pattern row and style table edit: the rays of the VP being edited, or the selected box's division lines
+const RAY_PATTERN = { path: "vps.$v.rays", obj: () => state.vps[ui.vp].rays, set: setPattern, key: () => "v" + ui.vp, name: "Pattern", noun: "ray", aria: "ray",
+  tipA: "A's color also colors the VP marker", tip: ch => `Rays drawn for each ${ch} in the pattern` };
+const DIV_PATTERN = { path: "boxes.$b.div", obj: () => state.boxes[state.sel].div, set: setDivPattern, key: () => "b" + state.sel, name: "Division pattern", noun: "line", aria: "division",
+  tipA: "A's style also draws the diagonals", tip: ch => `Division lines drawn for each ${ch} in the pattern` };
 // The pattern preview draws each letter's line style down its bar
 const PREVIEW_DASH = {
   solid: c => c,
@@ -2028,9 +2058,9 @@ const schema = [
     { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() && !rayBox() },
     { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() && !rayBox() },
     { t: "sub", label: "Pattern and styles" },
-    { t: "pattern" },
+    { t: "pattern", of: RAY_PATTERN },
     { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() },
-    { t: "styles" },
+    { t: "styles", of: RAY_PATTERN },
     { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
   ]},
   { id: "verticals", title: "Vertical guides", open: false, rows: [
@@ -2081,10 +2111,11 @@ const schema = [
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.hier", label: "Thinner lines at each finer split", when: hasDiv },
-    { t: "color", bind: "boxes.$b.div.color", label: "Line color", when: hasDiv },
-    { t: "range", bind: "boxes.$b.div.width", label: "Line weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: hasDiv },
-    { t: "range", bind: "boxes.$b.div.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: hasDiv },
     { t: "note", html: "Halves, quarters and eighths are measured in depth, not on screen, so each part shrinks as it recedes toward its vanishing point.", when: hasDiv },
+    { t: "sub", label: "Division pattern and styles", when: hasDiv },
+    { t: "pattern", of: DIV_PATTERN, when: hasDiv },
+    { t: "styles", of: DIV_PATTERN, when: hasDiv },
+    { t: "note", html: "As with rays, each letter <code>A</code> to <code>Z</code> is a line style, set in the table, <code>.</code> skips a line, and the pattern repeats. Letters count from the box's corner nearest you, along each edge and up from the base, so the pattern lines up all the way around. A's style also draws the diagonals.", when: hasDiv },
     { t: "btns", items: [["Use these divisions on all boxes", () => { const d = state.boxes[state.sel].div; state.boxes.forEach(b => b.div = clone(d)); commit(); touch(); toast("Divisions copied to every box"); }, ""]], when: hasDiv }
   ]},
   { id: "export", title: "Export area", rows: [
@@ -2221,22 +2252,22 @@ function makeRow(r) {
       break;
     }
     case "pattern": {
-      // a preset, the sequence itself, and a strip showing how it repeats
-      const bind = "vps.$v.rays.pattern", tid = idFor(bind);
-      const sel = el("select", { id: "f-pattern-preset", "aria-label": "Pattern preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
-      const inp = el("input", { class: "txt", type: "text", id: tid, maxlength: "64", spellcheck: "false", autocomplete: "off", "aria-label": "Pattern sequence" });
+      // a preset, the sequence itself, and a strip showing how it repeats (for rays, or for r.of's lines)
+      const T = r.of, bind = T.path + ".pattern", tid = idFor(bind);
+      const sel = el("select", { id: tid + "-preset", "aria-label": T.name + " preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t.replace("ray", T.noun))));
+      const inp = el("input", { class: "txt", type: "text", id: tid, maxlength: "64", spellcheck: "false", autocomplete: "off", "aria-label": T.name + " sequence" });
       const box = el("div", { class: "patview", "aria-hidden": "true" });
-      sel.addEventListener("change", () => { if (sel.value !== "custom") { setPattern(sel.value); commit(); } else { inp.focus(); inp.select(); } });
-      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^A-Z.]/g, ""); if (v) setPattern(v); });
+      sel.addEventListener("change", () => { if (sel.value !== "custom") { T.set(sel.value); commit(); } else { inp.focus(); inp.select(); } });
+      inp.addEventListener("input", () => { const v = inp.value.toUpperCase().replace(/[^A-Z.]/g, ""); if (v) T.set(v); });
       inp.addEventListener("change", () => { inp.value = getP(bind); commit(); });
       node = el("div", { class: "row pattern" }, el("label", { for: tid }, "Pattern"), el("div", { class: "pick" }, sel, inp), box);
       update = () => {
-        const R = state.vps[ui.vp].rays, p = R.pattern || "A";
+        const R = T.obj(), p = R.pattern || "A";
         sel.value = PATTERNS.some(x => x[0] === p) ? p : "custom";
         if (document.activeElement !== inp) inp.value = p;
         box.innerHTML = "";
         for (let i = 0; i < 24; i++) {
-          const c = p[i % p.length], sty = c === "." ? null : rayStyleOf(R, c), bar = el("i");
+          const c = p[i % p.length], sty = c === "." ? null : styleOf(R, c), bar = el("i");
           if (sty) { bar.style.background = (PREVIEW_DASH[sty.dash] || PREVIEW_DASH.solid)(sty.color); bar.style.opacity = Math.max(0.25, sty.opacity); bar.style.transform = `scaleX(${Math.min(1, 0.25 + sty.width / 3)})`; }
           box.append(bar);
         }
@@ -2244,8 +2275,9 @@ function makeRow(r) {
       break;
     }
     case "styles": {
-      // one row per letter the pattern uses, plus A, whose color also marks the VP
-      const grid = el("div", { class: "styles" }); let sig = "", ctls = [];
+      // one row per letter the pattern uses, plus A (whose color also marks the VP, or whose style draws a
+      // box's diagonals)
+      const T = r.of, grid = el("div", { class: "styles" }); let sig = "", ctls = [];
       const color = (bind, aria) => {
         const inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
         inp.addEventListener("input", () => setP(bind, inp.value)); inp.addEventListener("change", onCommit);
@@ -2277,14 +2309,14 @@ function makeRow(r) {
       };
       node = grid;
       update = () => {
-        const R = state.vps[ui.vp].rays, letters = [...new Set(["A", ...R.pattern])].filter(ch => ch !== "." && R.styles[ch]).sort(), s = ui.vp + letters.join("");
+        const R = T.obj(), letters = [...new Set(["A", ...R.pattern])].filter(ch => ch !== "." && R.styles[ch]).sort(), s = T.key() + letters.join("");
         if (s !== sig) { // rebuilt only when the letters change, so a control keeps its focus
           sig = s; grid.innerHTML = ""; ctls = [];
           grid.append(el("span"), ...["Color", "Weight", "Line", "Opacity"].map(t => el("span", { class: "hd" }, t)));
           letters.forEach(ch => {
-            const pre = `vps.$v.rays.styles.${ch}`;
-            grid.append(el("b", { class: "lt", title: ch === "A" ? "A's color also colors the VP marker" : `Rays drawn for each ${ch} in the pattern` }, ch));
-            [color(pre + ".color", `${ch} ray color`), slider(pre + ".width", `${ch} ray weight`, 0.05, 8, 500, v => fmtScale(v) + " px"), line(pre + ".dash", `${ch} ray line style`), slider(pre + ".opacity", `${ch} ray opacity`, 0.01, 1, 1, v => Math.round(v * 100) + "%")]
+            const pre = `${T.path}.styles.${ch}`, name = `${ch} ${T.aria}`;
+            grid.append(el("b", { class: "lt", title: ch === "A" ? T.tipA : T.tip(ch) }, ch));
+            [color(pre + ".color", `${name} color`), slider(pre + ".width", `${name} weight`, 0.05, 8, 500, v => fmtScale(v) + " px"), line(pre + ".dash", `${name} line style`), slider(pre + ".opacity", `${name} opacity`, 0.01, 1, 1, v => Math.round(v * 100) + "%")]
               .forEach(c => { grid.append(c.node); ctls.push(c); });
           });
         }
