@@ -2058,7 +2058,7 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
@@ -2457,8 +2457,9 @@ function zoomAt(s, f) { const w = toW(s); view.z = Math.max(0.02, Math.min(12, v
 const pointers = new Map();
 let pinch = null;
 const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX - r.left, e.clientY - r.top); };
-// With `restoring` (⌘ or Ctrl held), a hidden face counts too, nearest first, so it can be found and
-// brought back
+// With `restoring` (⌘ or Ctrl held), the box's hidden faces under the pointer come first, furthest back
+// first (a box's back face before the front face over it), even behind faces you can see, so they can be
+// brought back one by one
 function hitTest(s, restoring = false) {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
@@ -2477,10 +2478,12 @@ function hitTest(s, restoring = false) {
     for (const [hx, hy] of VHANDLES) { const p = P(a.x + W * (hx + 1) / 2, a.y + H * (hy + 1) / 2); if (Math.abs(p.x - s.x) < 8 && Math.abs(p.y - s.y) < 8) return { type: "vresize", hx, hy }; }
   }
   for (let bi = state.boxes.length - 1; bi >= 0; bi--) {
-    const b = state.boxes[bi], G = boxGeo(b, g);
-    const faces = [...G.faces.filter(f => f.front), ...G.faces.filter(f => !f.front)].filter(f => restoring || b.faces[f.id] !== false);
-    const f = faces.find(f => f.fills.some(poly => inPoly(w, poly)));
-    if (f) return { type: b.faces[f.id] === false ? "hidden" : "body", bi, face: f.id };
+    const b = state.boxes[bi], G = boxGeo(b, g), front = G.faces.filter(f => f.front), back = G.faces.filter(f => !f.front);
+    const under = f => f.fills.some(poly => inPoly(w, poly)), shown = f => b.faces[f.id] !== false;
+    const hid = restoring && [...back, ...front].find(f => !shown(f) && under(f));
+    if (hid) return { type: "hidden", bi, face: hid.id };
+    const f = [...front, ...back].find(f => shown(f) && under(f));
+    if (f) return { type: "body", bi, face: f.id };
   }
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
