@@ -329,6 +329,10 @@ function defaultState() {
     ],
     // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
     curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
+    // 1 as first drawn, times every rescale since (scaleDrawing). The few fixed lengths that shape a drawing
+    // scale with it: the 1-point camera's shortest focal length, and where an even-angle fan aims its rays in
+    // the curved views.
+    drawingScale: 1,
     linkRays: true, symmetric: false, lockFrame: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
@@ -398,6 +402,7 @@ function normalize(s) {
     r.back = Math.min(BACK_MAX, Math.max(BACK_MIN, r.back));
   });
   cv.panoHc = Math.max(0, cv.panoHc);
+  if (!(out.drawingScale > 0)) out.drawingScale = 1;
   if (!(cv.panoK.length === 4 && cv.panoK.every(Number.isFinite) && panoOk(cv))) cv.panoK = [0, 0, 0, 0];
   // boxes without two usable corners are dropped rather than drawn wrong
   out.vps.forEach((v, i) => {
@@ -579,7 +584,7 @@ function pinhole2(g) {
 // 1-point: looking straight at its VP. One VP doesn't fix the focal length, so it borrows the 2-point
 // setup's, which keeps box proportions steady when switching between the two.
 function pinhole1(g) {
-  const f = Math.max(200, Math.sqrt(Math.abs(state.vps[0].dist * state.vps[1].dist)) || 1000);
+  const u = state.drawingScale, f = Math.max(200 * u, Math.sqrt(Math.abs(state.vps[0].dist * state.vps[1].dist)) || 1000 * u);
   return levelPinhole(g.vp[3], f, g.u, g.n, [V3(1, 0, 0), V3(0, 0, 1)]);
 }
 const lensKey = () => (state.mode === "6pt" ? "f6" : state.mode === "5pt" ? "f5" : "f4");
@@ -819,7 +824,8 @@ function rayList(vi, g) {
       const cs = Math.cos(a), sn = Math.sin(a);
       const idx = R.from === "edge" ? i : Math.floor(Math.abs(i - (c - 1) / 2));
       const d = P(base.x * cs - base.y * sn, base.x * sn + base.y * cs);
-      out.push({ d, q: add(V, mul(d, 60)), ch: pat[idx % pat.length] });
+      // (q is where the curved views aim the ray: the great circle through the VP and q)
+      out.push({ d, q: add(V, mul(d, 60 * state.drawingScale)), ch: pat[idx % pat.length] });
     }
   }
   return out;
@@ -1225,14 +1231,27 @@ function drawDivisions(c, f, bx, k, alphaMul, near) {
   const weight = (s, i, n) => Math.max(0.5 / k, s.width * (D.hier ? Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1) : 1));
   for (let i = 1; i < nu; i++) { const s = styleAt(from(au, i, nu)); if (s) line(i / nu, 0, i / nu, 1, s, weight(s, i, nu)); }
   for (let j = 1; j < nv; j++) { const s = styleAt(from(av, j, nv)); if (s) line(0, j / nv, 1, j / nv, s, weight(s, j, nv)); }
-  const A = D.styles.A, base = Math.max(A.width, 0.5 / k);
-  if (D.diag === "face") { line(0, 0, 1, 1, A, base); line(1, 0, 0, 1, A, base); }
-  else if ((D.diag === "cells" || D.diag === "cellsOne") && nu * nv <= 4096) { // past 64×64 cells the face would just turn solid
+  const A = D.styles.A, base = Math.max(A.width, 0.5 / k), dg = D.diag;
+  // an X across each of n strips side by side along u, or stacked along v
+  const strips = (n, alongU) => {
+    for (let i = 0; i < n; i++) {
+      const a = i / n, b = (i + 1) / n;
+      if (alongU) { line(a, 0, b, 1, A, base); line(b, 0, a, 1, A, base); } else { line(0, a, 1, b, A, base); line(0, b, 1, a, A, base); }
+    }
+  };
+  if (dg === "face") strips(1, true);
+  else if (dg === "columns" || dg === "rows") {
+    // Columns stand side by side across a side, and rows are stacked up it. On the top and bottom, columns
+    // sit side by side along the first axis, as on s01 and s23, and rows along the second (the bottom's u
+    // runs along the second axis)
+    const alongU = (dg === "columns") !== (f.id === "bottom");
+    strips(alongU ? nu : nv, alongU);
+  } else if ((dg === "cells" || dg === "cellsOne" || dg === "cellsFlip") && nu * nv <= 4096) { // past 64×64 cells the face would just turn solid
     const w = base * 0.75;
     for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
       const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
-      line(u0, v0, u1, v1, A, w);
-      if (D.diag === "cells") line(u1, v0, u0, v1, A, w);
+      if (dg !== "cellsFlip") line(u0, v0, u1, v1, A, w);
+      if (dg !== "cellsOne") line(u1, v0, u0, v1, A, w);
     }
   }
   c.restore();
@@ -1325,7 +1344,7 @@ function frame() {
   cw = r.width; ch = r.height; dpr = window.devicePixelRatio || 1;
   const bw = Math.max(1, Math.round(cw * dpr)), bh = Math.max(1, Math.round(ch * dpr));
   if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
-  const desk = cssVar("--desk"), paper = cssVar("--paper"), accent = cssVar("--accent"), ink = cssVar("--ink");
+  const desk = cssVar("--desk"), paper = cssVar("--paper"), accent = cssVar("--accent"), ink = cssVar("--ink"), panel = cssVar("--panel");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = 1;
   const V = state.viewport;
@@ -1344,6 +1363,7 @@ function frame() {
     ctx.fillText(`EXPORT  ${V.w} × ${V.h}`, a.x, a.y - 7);
     ctx.fillStyle = paper;
     for (const [hx, hy] of VHANDLES) { const p = P(a.x + w * (hx + 1) / 2, a.y + h * (hy + 1) / 2); ctx.fillRect(p.x - 4, p.y - 4, 8, 8); ctx.strokeRect(p.x - 4, p.y - 4, 8, 8); }
+    drawScaleHandle(accent, ink, panel);
   }
   // horizon anchor
   if (state.horizon.show && !state.lockFrame) {
@@ -1377,6 +1397,33 @@ function frame() {
   document.getElementById("stZoom").textContent = Math.round(view.z * 100) + "%";
 }
 const VHANDLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+// The round handle just off the export area's bottom-right corner scales the whole drawing. While it is
+// dragged it follows the pointer, with a line back to the middle of the export area, which everything scales
+// around, and how far the drawing has gone.
+const SCALE_OFF = 16;
+const scaleHome = () => { const V = state.viewport, c = toS(P(V.x + V.w, V.y + V.h)); return P(c.x + SCALE_OFF, c.y + SCALE_OFF); };
+function drawScaleHandle(accent, ink, panel) {
+  const live = drag && drag.type === "vscale" && drag.moved, p = live ? drag.at : scaleHome();
+  ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.25; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  if (live) {
+    const m = toS(drag.C), t = pctText(drag.k);
+    ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(m.x - 6, m.y); ctx.lineTo(m.x + 6, m.y); ctx.moveTo(m.x, m.y - 6); ctx.lineTo(m.x, m.y + 6); ctx.stroke();
+    ctx.font = '500 11px "IBM Plex Mono", monospace';
+    const tw = ctx.measureText(t).width;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
+    ctx.fillStyle = accent; ctx.fillText(t, p.x + 15, p.y + 4);
+  } else { ctx.beginPath(); ctx.moveTo(p.x - SCALE_OFF + 4, p.y - SCALE_OFF + 4); ctx.lineTo(p.x - 5, p.y - 5); ctx.stroke(); } // a stem from the corner
+  ctx.fillStyle = live || (hover && hover.type === "vscale") ? ink : accent;
+  ctx.beginPath(); ctx.arc(p.x, p.y, 7.5, 0, Math.PI * 2); ctx.fill();
+  // a two-headed arrow, in toward the middle and out
+  const a = 3.2, e = 2.6;
+  ctx.strokeStyle = panel; ctx.lineWidth = 1.4; ctx.beginPath();
+  ctx.moveTo(p.x - a, p.y - a); ctx.lineTo(p.x + a, p.y + a);
+  ctx.moveTo(p.x - a + e, p.y - a); ctx.lineTo(p.x - a, p.y - a); ctx.lineTo(p.x - a, p.y - a + e);
+  ctx.moveTo(p.x + a - e, p.y + a); ctx.lineTo(p.x + a, p.y + a); ctx.lineTo(p.x + a, p.y + a - e);
+  ctx.stroke(); ctx.restore();
+}
 const redraw = () => { dirty = true; };
 const touch = () => { dirty = true; panelDirty = true; };
 
@@ -1870,6 +1917,53 @@ function centeredTop(bx, S, g) {
   if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; }
 }
 
+/* ---------- scaling the whole drawing ---------- */
+// The drawing `from` (a copy of the state as it was) scaled by k around page point C, written into the state:
+// the horizon's center, the VP distances, the lens and panorama sizes, guide and ray spacing, every box and
+// the drawing's scale, in every mode. Every point on the page moves k times as far from C, so lines that met
+// still meet, boxes keep their shapes and stay on their crossings, and a lens box keeps its 3D place. Angles,
+// counts, line weights and the export area stay as they are.
+function scaleDrawing(k, C, from) {
+  // (at 100% every point comes back exactly as it was)
+  const s = state, at = p => (k === 1 ? P(p.x, p.y) : P(C.x + (p.x - C.x) * k, C.y + (p.y - C.y) * k)), O = at(P(from.horizon.x, from.horizon.y));
+  s.horizon.x = O.x; s.horizon.y = O.y;
+  s.vps.forEach((v, i) => {
+    const o = from.vps[i]; v.dist = o.dist * k; v.drop = o.drop * k;
+    v.rays.spacing = o.rays.spacing * k; v.rays.measure = o.rays.measure * k;
+  });
+  s.cone.cv = from.cone.cv * k;
+  ["f4", "f5", "f6"].forEach(key => { s.curvi[key].size = from.curvi[key].size * k; });
+  s.curvi.pano = from.curvi.pano * k; s.drawingScale = from.drawingScale * k;
+  ["verticals", "horizontals"].forEach(key => { s[key].spacing = from[key].spacing * k; s[key].offset = from[key].offset * k; });
+  s.boxes.forEach((bx, i) => {
+    const o = from.boxes[i]; if (!o) return;
+    bx.b0 = at(o.b0); bx.b2 = at(o.b2); bx.h = o.h * k;
+    bx.fit = o.fit ? Object.assign(at(o.fit), { s: o.fit.s * k }) : null;
+  });
+}
+// How far the drawing can be scaled from setup `s` in one go: every lens and the panorama stay within the
+// sizes they can take (one already outside them, from a loaded file, doesn't hold the drawing back), and one
+// step never shrinks it past 1% or grows it past 100 times
+function scaleRange(s) {
+  const c = s.curvi;
+  let lo = 0.01, hi = 100;
+  for (const [v, min] of [[c.f4.size, 5], [c.f5.size, 5], [c.f6.size, 5], [c.pano, 10]]) {
+    if (v >= min) lo = Math.max(lo, min / v);
+    if (v <= 1e5) hi = Math.min(hi, 1e5 / v);
+  }
+  return { lo, hi };
+}
+// The middle of the export area, which the drawing scales around
+const exportMid = () => { const V = state.viewport; return P(V.x + V.w / 2, V.y + V.h / 2); };
+const pctText = k => (k < 0.1 ? (k * 100).toFixed(1) : String(Math.round(k * 100))) + "%";
+// The panel's Smaller and Larger buttons: one step of 10%, as far as the drawing can go
+function scaleBy(f) {
+  const r = scaleRange(state), k = Math.min(r.hi, Math.max(r.lo, f));
+  if (Math.abs(k - 1) < 1e-9) { toast(f < 1 ? "The drawing can't get any smaller" : "The drawing can't get any larger"); return; }
+  scaleDrawing(k, exportMid(), clone(state)); commit(); touch();
+  toast(`Scaled the drawing to ${pctText(k)}`);
+}
+
 /* ---------- history & persistence ---------- */
 let undoStack = [], redoStack = [], lastSaved = JSON.stringify(state);
 function persist(s) { try { localStorage.setItem(STORE_KEY, s); } catch (e) { /* storage unavailable */ } }
@@ -1986,6 +2080,10 @@ function lensInfo() {
     (rim ? ` The back rim is ${rim[0]} out on the left and ${rim[1]} on the right.` : "");
 }
 const PARTS = [[1, "None"], [2, "Halves · 1/2"], [4, "Quarters · 1/4"], [8, "Eighths · 1/8"], [16, "Sixteenths · 1/16"], [32, "1/32"], [64, "1/64"], [3, "Thirds · 1/3"], [5, "Fifths · 1/5"], [6, "Sixths · 1/6"], [10, "Tenths · 1/10"]];
+const DIAGONALS = [["none", "None"], ["face", "Corner to corner (X)"], ["columns", "Every column (X)"], ["rows", "Every row (X)"], ["cells", "Every cell (X)"], ["cellsOne", "Every cell, one way"], ["cellsFlip", "Every cell, one way (flipped)"]];
+// Which way columns and rows run on a box's top and bottom
+const diagNote = () => "On the upright faces, columns stand side by side and rows are stacked up them. On the top and bottom, columns sit side by side along the edges running " +
+  (is1() ? "across, and rows along the edges running to the VP." : `to ${axisName(0)}, and rows along the edges running to ${axisName(1)}.`);
 const schema = [
   { id: "mode", title: "Perspective", rows: [
     { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
@@ -2107,7 +2205,8 @@ const schema = [
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
     { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
     { t: "parts", bind: "boxes.$b.div.vert", label: () => (is3() ? "Lines to VP3 on sides" : radiusMode() ? "Lines to the up and down VPs on sides" : "Vertical lines on sides"), hi: 128, when: hasDiv },
-    { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: [["none", "None"], ["face", "Corner to corner (X)"], ["cells", "Every cell (X)"], ["cellsOne", "Every cell, one way"]], when: hasDiv },
+    { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: DIAGONALS, when: hasDiv },
+    { t: "readout", text: diagNote, when: () => hasDiv() && ["columns", "rows"].includes(getP("boxes.$b.div.diag")) },
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.hier", label: "Thinner lines at each finer split", when: hasDiv },
@@ -2127,6 +2226,9 @@ const schema = [
     { t: "check", bind: "viewport.lockAspect", label: "Lock aspect ratio" },
     { t: "check", bind: "viewport.dim", label: "Shade the area outside" },
     { t: "check", bind: "viewport.clip", label: "Clip guides to the export area" },
+    { t: "sub", label: "Scale the drawing" },
+    { t: "btns", items: [["Smaller", () => scaleBy(0.9), ""], ["Larger", () => scaleBy(1 / 0.9), ""]] },
+    { t: "note", html: "With the export area shown, drag the round handle off its bottom-right corner in toward the middle to shrink the whole drawing (horizon, VPs, rays, guides and boxes), or out to enlarge it. Everything scales around the middle of the export area, and the area itself and line weights stay as they are. Smaller and Larger step by 10%." },
     { t: "sub", label: "PNG output" },
     { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]] },
     { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]] },
@@ -2514,6 +2616,7 @@ function hitTest(s, restoring = false) {
   if (V.show) {
     const a = toS(P(V.x, V.y)), W = V.w * view.z, H = V.h * view.z;
     for (const [hx, hy] of VHANDLES) { const p = P(a.x + W * (hx + 1) / 2, a.y + H * (hy + 1) / 2); if (Math.abs(p.x - s.x) < 8 && Math.abs(p.y - s.y) < 8) return { type: "vresize", hx, hy }; }
+    if (len(sub(scaleHome(), s)) < 10) return { type: "vscale" };
   }
   for (let bi = state.boxes.length - 1; bi >= 0; bi--) {
     const b = state.boxes[bi], G = boxGeo(b, g), front = G.faces.filter(f => f.front), back = G.faces.filter(f => !f.front);
@@ -2543,10 +2646,11 @@ const HINTS = {
   horizon: "Drag to raise or lower eye level",
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
+  vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back"
 };
-const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", body: "move", hidden: "pointer" };
+const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held is drawn as a ghost). lastPos lets pressing or letting go of the
 // key update it without the mouse moving.
@@ -2609,6 +2713,7 @@ canvas.addEventListener("pointerdown", e => {
     drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), ci: len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? 0 : 2 };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
+  else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
   else if (hit.type === "vp" && g.cam) { drag.cv0 = state.cone.cv; drag.lens0 = clone(state.curvi); drag.cam0 = g.cam; }
   else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
@@ -2713,6 +2818,15 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "vmove": { const V = state.viewport; V.x = Math.round(drag.vp0.x + w.x - drag.w0.x); V.y = Math.round(drag.vp0.y + w.y - drag.w0.y); break; }
+    case "vscale": {
+      // the drawing scales by how much nearer to (or further from) the middle of the export area the pointer
+      // is than where the drag began, in whole percent, always from the drawing as it was
+      const d0 = len(sub(drag.w0, drag.C)); drag.at = s;
+      if (d0 < 1e-9) break;
+      const k = Math.min(drag.range.hi, Math.max(drag.range.lo, Math.round(len(sub(w, drag.C)) / d0 * 100) / 100));
+      if (k !== drag.k) { drag.k = k; scaleDrawing(k, drag.C, drag.from); }
+      break;
+    }
     case "vresize": {
       const V = state.viewport, o = drag.vp0, dx = w.x - drag.w0.x, dy = w.y - drag.w0.y;
       let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
@@ -2738,6 +2852,7 @@ function endPointer(e) {
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
   // a box you just reshaped or moved keeps this look when you switch perspective
   if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
+  if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
 }
 canvas.addEventListener("pointerup", endPointer);
