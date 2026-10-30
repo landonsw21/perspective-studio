@@ -821,14 +821,20 @@ function boxSpots({ B, H }, D, extra, { hub, wings }, upright, caps) {
   }
   return out;
 }
-// With the rays sent along the box's top and bottom instead (rayFaces "caps"), lines running along its first
-// axis (`axis` 0) or its second (1) continue the division lines on both caps: they go through the points on
-// each cap's edge along the other axis from the corner nearest you, at the caps' division spacing and `extra`
-// more past each end, counted from that corner as the caps' division lines are. Each such line runs right
-// across its cap, so the one edge serves.
-function capSpots({ B, H }, D, extra, axis) {
+// With the rays sent along the box's top and bottom instead (rayFaces "caps"), they follow one cap: the one
+// facing you (the top when you look down on the box, the bottom when you look up at it, and the bottom when eye
+// level runs through it), or the other one while that one is hidden
+function boxCapTop(bx, g) {
+  const top = boxGeo(bx, g).faces.find(f => f.id === "top").front;
+  return bx.faces[top ? "top" : "bottom"] === false ? !top : top;
+}
+// Lines running along its first axis (`axis` 0) or its second (1) continue that cap's division lines: they go
+// through the points on its edge along the other axis from the corner nearest you, at the caps' division
+// spacing and `extra` more past each end, counted from that corner as the caps' division lines are. Each such
+// line runs right across the cap, so the one edge serves.
+function capSpots({ B, H }, D, extra, axis, top) {
   const i = nearestOf(B), n = D.on && D.caps ? Math.max(1, Math.round(D.vp)) : 1, e = s3(B[axis ? i ^ 1 : i ^ 3], B[i]), out = [];
-  for (const h of [0, H]) for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(a3(B[i], m3(e, j / n)), m3(UP3, h)), j });
+  for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(a3(B[i], m3(e, j / n)), m3(UP3, top ? H : 0)), j });
   return out;
 }
 function boxRays(vi, g, bx) {
@@ -836,7 +842,7 @@ function boxRays(vi, g, bx) {
   const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
   const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
   const upright = Math.abs(d3(n3(dir), UP3)) > 0.9, extra = Math.max(0, Math.round(R.count)), onCaps = bx.rayFaces === "caps", caps = onCaps && !upright;
-  const spots = caps ? capSpots(b3, bx.div, extra, Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0) : boxSpots(b3, bx.div, extra, boxWings(bx, g, b3.B), upright, onCaps);
+  const spots = caps ? capSpots(b3, bx.div, extra, Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0, boxCapTop(bx, g)) : boxSpots(b3, bx.div, extra, boxWings(bx, g, b3.B), upright, onCaps);
   for (let { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) {
       // behind you through a flat camera. A line across the top or bottom still comes into view further along,
@@ -856,12 +862,12 @@ function boxRays(vi, g, bx) {
 // center (the panorama's center) and stand at those faces' vertical edges and division lines (or where the caps'
 // division lines meet them, with the rays sent along the top and bottom). 1-point's horizontal guides are
 // measured down from the horizon and run level with the division heights up the hub's vertical edge, or, with
-// the rays sent along the top and bottom, across both caps along the box's first axis.
+// the rays sent along the top and bottom, across the cap they follow, along the box's first axis.
 function guidesAt(G, g, upright, from, dir) {
   const fit = rayBox(), out = [];
   if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(G.offset + j * G.spacing); return out; }
   const b3 = box3(fit, g), cam = b3.cam, extra = Math.max(0, Math.round(G.count)), onCaps = fit.rayFaces === "caps";
-  const spots = !upright && onCaps ? capSpots(b3, fit.div, extra, 0) : boxSpots(b3, fit.div, extra, boxWings(fit, g, b3.B), upright, onCaps);
+  const spots = !upright && onCaps ? capSpots(b3, fit.div, extra, 0, boxCapTop(fit, g)) : boxSpots(b3, fit.div, extra, boxWings(fit, g, b3.B), upright, onCaps);
   for (const { p } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
@@ -2212,7 +2218,7 @@ const schema = [
   ]},
   { id: "rays", title: "Rays", rows: [
     { t: "seg" },
-    { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? ", following the division lines on its top and bottom" : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
+    { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${boxCapTop(b, geo()) ? "top" : "bottom"}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show" },
       { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4()) },
@@ -2245,7 +2251,7 @@ const schema = [
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
     { t: "readout", text: () => (rayBox().rayFaces === "caps"
-      ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its top and bottom, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
+      ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its ${boxCapTop(rayBox(), geo()) ? "top" : "bottom"}, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
       : `The horizontals are spaced along ${rayBox().name}, like the rays: they run level with its top, bottom and division heights and carry on above and below it. Turn that off under Boxes to space them here again.`), when: () => !!rayBox() },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
     { t: "range", bind: "horizontals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines above and below"), min: 0, max: 80, step: 1, hi: 400 },
@@ -2265,7 +2271,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
     { t: "toggle", bind: "boxes.$b.rayFaces", label: "Rays run along", options: [["sides", "Vertical faces"], ["caps", "Top and bottom"]], when: () => hasBox() && !!getP("boxes.$b.rayFit") },
-    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays continue the division lines across its top and bottom instead, and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden.", when: hasBox },
+    { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays continue the division lines across whichever of its top and bottom faces you (the bottom when eye level runs through it, and the other one while that one is hidden) instead, and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
