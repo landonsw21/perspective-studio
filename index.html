@@ -1086,9 +1086,12 @@ function makeArc(cam, A, D, full, extra) {
 function camGuides(g) {
   const cam = g.cam, arcs = [], push = a => { if (a) arcs.push(a); };
   const around = cam.kind === "pano" || cam.kind === "sphere"; // views that see all the way around need whole circles
+  // Rays spaced along a box are the box's own lines, each just half its circle, from its VP through the line to
+  // the opposite VP. (The other half is that line mirrored through the eye, behind you and across eye level.)
+  const onBox = !!rayBox();
   fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
-    rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), R.behind || around, { fam: "r" + vi, ch: r.ch })); });
+    rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), !onBox && (R.behind || around), { fam: "r" + vi, ch: r.ch })); });
   });
   if (state.horizon.show) push(makeArc(cam, V3(0, 0, 1), V3(1, 0, 0), true, { fam: "h" }));
   if (state.verticals.show && usesVerticals()) for (const t of verticalsAt(g)) {
@@ -2222,7 +2225,7 @@ const schema = [
     { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show" },
-      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4()) },
+      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || (is5() && rayBox())) },
       { bind: "linkRays", label: "Edit VP1 and VP2 together", when: () => ui.vp < 2 && fams().includes(1) }
     ] },
     { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() },
