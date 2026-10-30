@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Perspective drafting tool: 1- to 6-point perspective with patterned rays, boxes that snap to the grid and keep their proportions, perspective-correct face divisions and PNG export.">
+<meta name="description" content="Perspective drafting tool: 1- to 6-point perspective with patterned rays, boxes that snap to the grid and keep their proportions, perspective-correct face divisions and PNG, JPG and PDF export.">
 <style>*,*::before,*::after{box-sizing:border-box}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}[hidden]{display:none!important}</style>
 <title>Perspective Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -303,6 +303,8 @@ function panoOk(c) {
 // style with its own color, weight, line and opacity, "." skips a line, and the pattern repeats. The A color
 // of a ray family also colors its VP's marker.
 const DASH_NAMES = ["solid", "dashed", "dotted", "dashdot", "longdash", "dashdotdot"];
+// The file types the export area saves as, by file extension
+const EXPORT_FORMATS = { png: "PNG", jpg: "JPG", pdf: "PDF" };
 const lineStyle = (color, width, dash, opacity) => ({ color, width, dash, opacity });
 const raysDefault = (ca, cb, extra = {}) => Object.assign({
   show: true, mode: "spacing", count: 24, spacing: 40, spread: 140, rotate: 0, measure: 0, behind: false, pattern: "ABBB", from: "center",
@@ -340,7 +342,7 @@ function defaultState() {
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
     viewport: { show: true, x: -800, y: -450, w: 1600, h: 900, dim: true, clip: false, lockAspect: false },
-    export: { scale: 1, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
+    export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
 }
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
@@ -402,6 +404,9 @@ function normalize(s) {
     r.back = Math.min(BACK_MAX, Math.max(BACK_MIN, r.back));
   });
   cv.panoHc = Math.max(0, cv.panoHc);
+  const E = out.export, q = +E.quality;
+  if (!EXPORT_FORMATS[E.format]) E.format = "png";
+  E.quality = Number.isFinite(q) ? Math.min(100, Math.max(1, Math.round(q))) : 92;
   if (!(out.drawingScale > 0)) out.drawingScale = 1;
   if (!(cv.panoK.length === 4 && cv.panoK.every(Number.isFinite) && panoOk(cv))) cv.panoK = [0, 0, 0, 0];
   // boxes without two usable corners are dropped rather than drawn wrong
@@ -1190,6 +1195,8 @@ function cssVar(name) { return getComputedStyle(document.documentElement).getPro
 
 // A closed curve through screen points (a lens's rings and cone are ovals once its sides differ)
 function tracePoly(c, pts) { pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); }
+// A path to build up and stroke in one go: a Path2D on a canvas, or the PDF writer's own kind (see pdfContext)
+const newPath = c => (c.newPath ? c.newPath() : new Path2D());
 // The cone of vision: a circle of radius r, or the closed curve r when it is a list of points
 function drawCone(c, k, cv, r) {
   strokeStyle(c, { color: state.cone.color, width: 1, dash: "dashed", opacity: 0.8 }, k);
@@ -1213,7 +1220,7 @@ function drawGuides(c, k, b, inc, g) {
     }
     const strokeArcs = (list, style) => {
       if (!list.length) return;
-      const p = new Path2D();
+      const p = newPath(c);
       list.forEach(a => a.polys.forEach(pl => pl.forEach((q, i) => (i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y)))));
       strokeStyle(c, style, k); c.stroke(p);
     };
@@ -1241,7 +1248,7 @@ function drawGuides(c, k, b, inc, g) {
   // can't stretch the rest.
   const guidePath = (ts, along, d, L) => {
     if (L === undefined) { const F = farDist(g.O, b); ts = ts.filter(t => Math.abs(t) <= F); L = F + Math.max(0, ...ts.map(Math.abs)); }
-    const p = new Path2D();
+    const p = newPath(c);
     for (const t of ts) { const q = add(g.O, mul(along, t)), a = add(q, mul(d, -L)), e = add(q, mul(d, L)); p.moveTo(a.x, a.y); p.lineTo(e.x, e.y); }
     return p;
   };
@@ -1260,7 +1267,7 @@ function drawGuides(c, k, b, inc, g) {
     const VP = g.vp[vi], L = farDist(VP, b), paths = new Map();
     for (const r of rayList(vi, g)) {
       if (r.ch === ".") continue;
-      if (!paths.has(r.ch)) paths.set(r.ch, new Path2D());
+      if (!paths.has(r.ch)) paths.set(r.ch, newPath(c));
       const p = paths.get(r.ch), s = R.behind && !onBox ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
       p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
     }
@@ -2316,16 +2323,20 @@ const schema = [
     { t: "sub", label: "Scale the drawing" },
     { t: "btns", items: [["Smaller", () => scaleBy(0.9), ""], ["Larger", () => scaleBy(1 / 0.9), ""]] },
     { t: "note", html: "With the export area shown, drag the round handle off its bottom-right corner in toward the middle to shrink the whole drawing (horizon, VPs, rays, guides and boxes), or out to enlarge it. Everything scales around the middle of the export area, and the area itself and line weights stay as they are. Smaller and Larger step by 10%." },
-    { t: "sub", label: "PNG output" },
-    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]] },
-    { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]] },
+    { t: "sub", label: "Output" },
+    { t: "toggle", bind: "export.format", label: "Format", options: Object.entries(EXPORT_FORMATS) },
+    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]], when: () => state.export.format !== "pdf" },
+    { t: "range", bind: "export.quality", label: "JPG quality (%)", min: 50, max: 100, step: 1, lo: 1, hi: 100, when: () => state.export.format === "jpg" },
+    { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]], when: () => state.export.format !== "jpg" },
+    { t: "note", html: "JPG has no transparency, so the background is always white.", when: () => state.export.format === "jpg" },
+    { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area, one point for each pixel.", when: () => state.export.format === "pdf" },
     { t: "check", bind: "export.rays", label: "Include rays" },
     { t: "check", bind: "export.verticals", label: () => (is1() ? "Include vertical and horizontal guides" : "Include vertical guides") },
     { t: "check", bind: "export.horizon", label: "Include horizon line" },
     { t: "check", bind: "export.vps", label: "Include VP markers" },
     { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge" },
     { t: "check", bind: "export.boxes", label: "Include boxes" },
-    { t: "btns", items: [["Export PNG", exportPNG, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
+    { t: "btns", items: [[() => "Export " + EXPORT_FORMATS[state.export.format], exportFile, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
   ]},
   { id: "snap", title: "Snapping", open: false, rows: [
     { t: "check", bind: "snap.on", label: "Snapping on" },
@@ -2530,9 +2541,10 @@ function makeRow(r) {
     case "sub": node = el("div", { class: "sub" }, r.label); update = () => {}; break;
     case "note": node = el("div", { class: "note" }); node.innerHTML = r.html; update = () => {}; break;
     case "btns": {
-      const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, t); b.addEventListener("click", fn); return [b, en]; });
+      // a label can be worked out (the Export button names the format), like other rows' labels
+      const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, labelText({ label: t })); b.addEventListener("click", fn); return [b, en, t]; });
       node = el("div", { class: "btns" }, ...btns.map(x => x[0]));
-      update = () => btns.forEach(([b, en]) => { b.disabled = en ? !en() : false; if (b.textContent.startsWith("Reset") || b.textContent.startsWith("Click again")) b.textContent = ui.resetArm ? "Click again to reset" : "Reset everything"; });
+      update = () => btns.forEach(([b, en, t]) => { b.disabled = en ? !en() : false; if (typeof t === "function") b.textContent = t(); if (b.textContent.startsWith("Reset") || b.textContent.startsWith("Click again")) b.textContent = ui.resetArm ? "Click again to reset" : "Reset everything"; });
       break;
     }
     case "boxlist": {
@@ -2594,6 +2606,7 @@ function syncToolbar() {
   document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
   document.getElementById("tbEven").disabled = !camMode(); // only the curved views have VPs to even out
   document.getElementById("tbMode").value = modeKey();
+  document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
 
 /* ---------- export ---------- */
@@ -2604,21 +2617,151 @@ function showModal(title, body) { document.getElementById("mTitle").textContent 
 document.getElementById("mClose").addEventListener("click", () => document.getElementById("modal").hidden = true);
 document.getElementById("modal").addEventListener("click", e => { if (e.target.id === "modal") e.target.hidden = true; });
 
-function renderExport() {
+// The drawing inside the export area, with the parts ticked under Export area, at scale k
+function drawExport(c, k) {
+  const V = state.viewport, E = state.export;
+  drawScene(c, k, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
+}
+// The export area as pixels, at its resolution (kept to 64 megapixels), on white or see-through
+function renderExport(white = state.export.bg === "white") {
   const V = state.viewport, E = state.export;
   let s = E.scale; const maxPx = 64e6; if (V.w * V.h * s * s > maxPx) s = Math.sqrt(maxPx / (V.w * V.h));
   const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(V.w * s)); c.height = Math.max(1, Math.round(V.h * s));
   const x = c.getContext("2d");
-  if (E.bg === "white") { x.fillStyle = "#ffffff"; x.fillRect(0, 0, c.width, c.height); }
+  if (white) { x.fillStyle = "#ffffff"; x.fillRect(0, 0, c.width, c.height); }
   x.scale(s, s); x.translate(-V.x, -V.y);
-  drawScene(x, s, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
+  drawExport(x, s);
   return c;
+}
+// PDF export draws the export area on a stand-in for a canvas that writes PDF drawing operators instead of
+// pixels, so the rays, guides, boxes and labels stay lines and shapes, sharp at any size. It handles what
+// drawScene uses: paths of lines and circles, stroke and fill, dashes, caps and joins, opacity, save and
+// restore, and moving or scaling the drawing. Labels are set in Courier, which every PDF reader has.
+const PDF_CAPS = { butt: 0, round: 1, square: 2 }, PDF_JOINS = { miter: 0, round: 1, bevel: 2 };
+function pdfContext() {
+  const ops = [], alphas = new Map();
+  const num = v => String(Math.round(v * 1000) / 1000), pt = (x, y) => num(x) + " " + num(y);
+  const ok = (...v) => v.every(Number.isFinite); // like a canvas, skip points that aren't numbers
+  // A path being built: kept here and written out whole when it's painted
+  const pathOf = () => {
+    const p = { ops: [], at: null, from: null };
+    return Object.assign(p, {
+      moveTo(x, y) { if (ok(x, y)) { p.ops.push(pt(x, y) + " m"); p.at = p.from = { x, y }; } },
+      lineTo(x, y) { if (!ok(x, y)) return; if (!p.at) { p.moveTo(x, y); return; } p.ops.push(pt(x, y) + " l"); p.at = { x, y }; },
+      closePath() { if (p.at) { p.ops.push("h"); p.at = p.from; } },
+      rect(x, y, w, h) { if (ok(x, y, w, h)) { p.ops.push(`${pt(x, y)} ${pt(w, h)} re`); p.at = p.from = { x, y }; } },
+      // as on a canvas: a line to the arc's start, then the arc as Bézier curves of at most an eighth of a turn
+      arc(x, y, r, a0, a1, ccw = false) {
+        if (!ok(x, y, r, a0, a1) || r < 0) return;
+        const T = 2 * Math.PI; let sweep = ccw ? a0 - a1 : a1 - a0;
+        sweep = sweep >= T ? T : ((sweep % T) + T) % T;
+        p.lineTo(x + r * Math.cos(a0), y + r * Math.sin(a0));
+        const n = Math.ceil(sweep / (Math.PI / 4) - 1e-9), d = (ccw ? -sweep : sweep) / Math.max(1, n), h = 4 / 3 * Math.tan(d / 4);
+        let t = a0;
+        for (let i = 0; i < n; i++, t += d) {
+          const c0 = Math.cos(t), s0 = Math.sin(t), c1 = Math.cos(t + d), s1 = Math.sin(t + d);
+          p.ops.push(`${pt(x + r * (c0 - h * s0), y + r * (s0 + h * c0))} ${pt(x + r * (c1 + h * s1), y + r * (s1 - h * c1))} ${pt(x + r * c1, y + r * s1)} c`);
+        }
+        p.at = { x: x + r * Math.cos(t), y: y + r * Math.sin(t) };
+      }
+    });
+  };
+  const color = css => {
+    const s = String(css).trim(); let m, v = [0, 0, 0];
+    if ((m = /^#([0-9a-f]{3})$/i.exec(s))) v = [...m[1]].map(h => parseInt(h + h, 16));
+    else if ((m = /^#([0-9a-f]{6})/i.exec(s))) v = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16));
+    else if ((m = /^rgba?\(([^)]*)\)/i.exec(s))) v = m[1].split(/[\s,/]+/).slice(0, 3).map(x => Math.min(255, Math.max(0, parseFloat(x) || 0)));
+    return v.map(x => num(x / 255)).join(" ");
+  };
+  // The style a canvas would paint with, and what the PDF's graphics state holds now, so only changes are written
+  const st = { stroke: "#000000", fill: "#000000", alpha: 1, width: 1, cap: "butt", join: "miter", dash: [], font: "10px sans-serif" };
+  let pdf = {}, path = pathOf();
+  const saved = [];
+  const put = (key, val, op) => { if (pdf[key] !== val) { ops.push(op); pdf[key] = val; } };
+  const opacity = () => { const a = num(st.alpha); if (!alphas.has(a)) alphas.set(a, "A" + alphas.size); put("alpha", a, `/${alphas.get(a)} gs`); };
+  const paint = (p, fill) => {
+    if (!p.ops.length) return;
+    opacity();
+    if (fill) { const c = color(st.fill); put("fill", c, c + " rg"); }
+    else {
+      const c = color(st.stroke), d = `[${st.dash.map(num).join(" ")}] 0 d`;
+      put("stroke", c, c + " RG"); put("width", num(st.width), num(st.width) + " w");
+      put("cap", st.cap, PDF_CAPS[st.cap] + " J"); put("join", st.join, PDF_JOINS[st.join] + " j"); put("dash", d, d);
+    }
+    ops.push(p.ops.join("\n"), fill ? "f" : "S");
+  };
+  return {
+    ops, alphas,
+    get strokeStyle() { return st.stroke; }, set strokeStyle(v) { st.stroke = v; },
+    get fillStyle() { return st.fill; }, set fillStyle(v) { st.fill = v; },
+    get globalAlpha() { return st.alpha; }, set globalAlpha(v) { if (v >= 0 && v <= 1) st.alpha = v; },
+    get lineWidth() { return st.width; }, set lineWidth(v) { if (v > 0 && v < Infinity) st.width = v; },
+    get lineCap() { return st.cap; }, set lineCap(v) { if (v in PDF_CAPS) st.cap = v; },
+    get lineJoin() { return st.join; }, set lineJoin(v) { if (v in PDF_JOINS) st.join = v; },
+    get font() { return st.font; }, set font(v) { st.font = v; },
+    setLineDash(d) { if (d.every(v => v >= 0 && v < Infinity)) st.dash = d.length % 2 ? [...d, ...d] : [...d]; },
+    getLineDash() { return [...st.dash]; },
+    save() { saved.push([{ ...st }, { ...pdf }]); ops.push("q"); },
+    restore() { const s = saved.pop(); if (!s) return; Object.assign(st, s[0]); pdf = s[1]; ops.push("Q"); },
+    translate(x, y) { ops.push(`1 0 0 1 ${pt(x, y)} cm`); },
+    scale(x, y) { ops.push(`${num(x)} 0 0 ${num(y)} 0 0 cm`); },
+    beginPath() { path = pathOf(); },
+    moveTo: (x, y) => path.moveTo(x, y), lineTo: (x, y) => path.lineTo(x, y), closePath: () => path.closePath(),
+    rect: (x, y, w, h) => path.rect(x, y, w, h), arc: (...a) => path.arc(...a),
+    newPath: pathOf,
+    stroke(p) { paint(p && p.ops ? p : path, false); },
+    fill(p) { paint(p && p.ops ? p : path, true); },
+    fillRect(x, y, w, h) { const p = pathOf(); p.rect(x, y, w, h); paint(p, true); },
+    // the text matrix turns the glyphs upright again inside the page's flipped, downward y
+    fillText(text, x, y) {
+      if (!ok(x, y)) return;
+      const m = /([\d.]+)px/.exec(st.font), c = color(st.fill);
+      opacity(); put("fill", c, c + " rg");
+      ops.push(`BT /F1 ${num(m ? +m[1] : 10)} Tf 1 0 0 -1 ${pt(x, y)} Tm (${String(text).replace(/[^\x20-\x7e]/g, "?").replace(/[\\()]/g, "\\$&")}) Tj ET`);
+    }
+  };
+}
+// The export area as a one-page vector PDF, a point for each pixel
+async function exportPDF() {
+  const V = state.viewport, W = V.w, H = V.h, c = pdfContext();
+  if (state.export.bg === "white") c.ops.push(`1 1 1 rg 0 0 ${W} ${H} re f`);
+  c.ops.push(`0 0 ${W} ${H} re W n`, `1 0 0 -1 0 ${H} cm`); // keep to the page, then turn y downward like the canvas
+  c.translate(-V.x, -V.y);
+  drawExport(c, 1);
+  const text = new TextEncoder();
+  let body = text.encode(c.ops.join("\n")), filter = "";
+  // the drawing operators squeeze to a fraction of their size, where the browser can compress
+  if (typeof CompressionStream === "function") {
+    try { body = new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()); filter = " /Filter /FlateDecode"; } catch (e) { /* written uncompressed */ }
+  }
+  const gs = [...c.alphas].map(([a, name]) => `/${name} << /CA ${a} /ca ${a} >>`).join(" ");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 5 0 R >> /ExtGState << ${gs} >> >> /Contents 4 0 R >>`,
+    [`<< /Length ${body.length}${filter} >>\nstream\n`, body, "\nendstream"],
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>",
+    `<< /Title (Perspective drawing ${W} x ${H}) /Producer (Perspective Studio) >>`
+  ];
+  // a header with a few high bytes, so file transfers treat it as binary
+  const parts = [Uint8Array.of(...text.encode("%PDF-1.4\n%"), 0xe2, 0xe3, 0xcf, 0xd3, 10)], at = [];
+  let size = parts[0].length;
+  const add = b => { b = typeof b === "string" ? text.encode(b) : b; parts.push(b); size += b.length; };
+  objects.forEach((o, i) => { at.push(size); add(`${i + 1} 0 obj\n`); [].concat(o).forEach(add); add("\nendobj\n"); });
+  add(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${at.map(n => String(n).padStart(10, "0") + " 00000 n \n").join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${size}\n%%EOF\n`);
+  return new Blob(parts, { type: "application/pdf" });
 }
 async function offerFile(filename, data, fallback, note) {
   const saved = "Saved " + filename + (note ? ". " + note : "");
   if (downloads) {
     try { await downloads.save({ filename, data }); toast(saved); return; }
-    catch (e) { if (e && e.code === "declined") { toast("Save cancelled"); return; } if (e && e.code === "rate_limited") { toast("A save prompt is already open"); return; } }
+    catch (e) {
+      const code = e && e.code;
+      if (code === "declined") { toast("Save cancelled"); return; }
+      if (code === "rate_limited") { toast("A save prompt is already open"); return; }
+      if (code === "extension_not_enabled" || code === "rejected_extension") { toast(`Saving a .${filename.split(".").pop()} file isn't available here`); return; }
+      if (code === "too_large") { toast("That file is too large to save here. Try a lower resolution."); return; }
+    }
   }
   if (!window.claude) {
     // Hosted on a normal website: a plain download link works.
@@ -2628,17 +2771,23 @@ async function offerFile(filename, data, fallback, note) {
   }
   fallback();
 }
-function exportPNG() {
-  const c = renderExport();
-  const capped = c.width < Math.round(state.viewport.w * state.export.scale) - 1;
+function exportFile() {
+  const V = state.viewport, E = state.export, name = `perspective-${V.w}x${V.h}.${E.format}`;
+  if (E.format === "pdf") {
+    exportPDF().then(blob => offerFile(name, blob, () => showModal("Export PDF", el("div", { class: "note" }, "This view can't save files. Export as PNG or JPG instead, and save the picture from the preview."))), () => toast("Export failed"));
+    return;
+  }
+  const jpg = E.format === "jpg", type = jpg ? "image/jpeg" : "image/png", quality = jpg ? E.quality / 100 : undefined;
+  const c = renderExport(jpg || E.bg === "white"); // a JPG can't be see-through
+  const capped = c.width < Math.round(V.w * E.scale) - 1;
   const note = capped ? `Kept to 64 megapixels, so it is ${c.width} × ${c.height} px` : "";
   c.toBlob(blob => {
     if (!blob) { toast("Export failed. Try a lower resolution."); return; }
-    offerFile("perspective-" + state.viewport.w + "x" + state.viewport.h + ".png", blob, () => {
-      const img = el("img", { alt: "Exported perspective drawing", src: c.toDataURL("image/png") });
+    offerFile(name, blob, () => {
+      const img = el("img", { alt: "Exported perspective drawing", src: c.toDataURL(type, quality) });
       showModal(`Export ${c.width} × ${c.height} px`, el("div", { style: "display:grid;gap:8px" }, el("div", { class: "note" }, "Right-click (or long-press) the image and choose Save Image." + (note ? " " + note + "." : "")), img));
     }, note);
-  }, "image/png");
+  }, type, quality);
 }
 function saveSetup() {
   const json = JSON.stringify(state, null, 2);
@@ -2984,7 +3133,7 @@ const tbMode = document.getElementById("tbMode");
 MODES.forEach(([v, t]) => tbMode.append(el("option", { value: v }, t)));
 tbMode.addEventListener("change", () => chooseMode(tbMode.value));
 syncToolbar();
-document.getElementById("tbExport").addEventListener("click", exportPNG);
+document.getElementById("tbExport").addEventListener("click", exportFile);
 
 /* ---------- boot ---------- */
 if (freshStart) {
