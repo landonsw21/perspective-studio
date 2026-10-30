@@ -1055,7 +1055,10 @@ function snapData() {
 }
 function linearGuides(g) {
   const lines = [];
-  fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: !v.rays.behind, fam: "r" + vi }); }); });
+  // Rays spaced along a box are the box's own lines, so they stop at the VP: past it they'd be those lines
+  // mirrored through the eye, across the horizon from the real ones.
+  const onBox = !!rayBox();
+  fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
   if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
   if (state.verticals.show && state.mode !== "3pt") for (const t of verticalsAt(g)) lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
   // (a horizontal guide along the horizon itself would only repeat it)
@@ -1258,7 +1261,7 @@ function drawGuides(c, k, b, inc, g) {
     for (const r of rayList(vi, g)) {
       if (r.ch === ".") continue;
       if (!paths.has(r.ch)) paths.set(r.ch, new Path2D());
-      const p = paths.get(r.ch), s = R.behind ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
+      const p = paths.get(r.ch), s = R.behind && !onBox ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
       p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
     }
     [...paths].sort(byLayer).forEach(([ch, p]) => { strokeStyle(c, styleOf(R, ch), k); c.stroke(p); });
@@ -2225,7 +2228,7 @@ const schema = [
     { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show" },
-      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || (is5() && rayBox())) },
+      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || rayBox()) },
       { bind: "linkRays", label: "Edit VP1 and VP2 together", when: () => ui.vp < 2 && fams().includes(1) }
     ] },
     { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() },
