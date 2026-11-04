@@ -352,7 +352,7 @@ function defaultState() {
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -1128,6 +1128,54 @@ function boxVPs(bx, g) {
   });
   return out;
 }
+// The division lines a face draws, as fractions across it: those at u run along v, and those at v along u. Lines its
+// pattern skips are left out (the same count from the corner nearest you as drawDivisions).
+function faceDivisions(id, D, near) {
+  const cap = id === "top" || id === "bottom", us = [], vs = [];
+  if (!D || !D.on || (cap ? !D.caps : !D.sides)) return { us, vs };
+  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp), pat = D.pattern || "A", flip = { x: near === 1 || near === 2, y: near === 2 || near === 3, z: false }, [au, av] = FACE_AXES[id];
+  const drawn = (ax, i, n) => pat[((ax[0] === "-") !== flip[ax.slice(-1)] ? n - i : i) % pat.length] !== ".";
+  for (let i = 1; i < nu; i++) if (drawn(au, i, nu)) us.push(i / nu);
+  for (let j = 1; j < nv; j++) if (drawn(av, j, nv)) vs.push(j / nv);
+  return { us, vs };
+}
+// A turned box's own rays: the edges and division lines of its front faces, carried on from the box back to their
+// vanishing points. Through a flat camera each runs from the end of its line further into the picture to the one VP
+// its axis has, or as far as the view needs when that VP is further off. Through a lens each runs from both ends, to
+// the VPs at both ends of its axis, as far as the lens reaches. An axis square to a flat view has no VP to run to.
+// Faces you've hidden send none, and an edge two front faces share sends one. Each comes with its axis and polylines.
+function ownRays(bx, g, b) {
+  if (!turned(bx) || bx.showRays === false) return [];
+  const F = turnFrame(bx, g), { cam, B, T, ax } = F, near = nearestOf(B), seen = new Set(), out = [];
+  const size = Math.max(Math.abs(F.a), Math.abs(F.c), F.H), mid = m3([...B, ...T].reduce(a3, V3(0, 0, 0)), 1 / 8), axes = ax.map(n3);
+  const key = p => [p.x, p.y, p.z].map(v => Math.round(v / size * 1e5)).join();
+  for (const f of FACES) {
+    const q = f.v.map(s => (s[0] === "b" ? B : T)[+s[1]]), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4);
+    if (bx.faces[f.id] === false || d3(s3(fc, mid), fc) >= 0) continue;
+    const at = (u, v) => a3(q[0], a3(m3(s3(q[1], q[0]), u), m3(s3(q[3], q[0]), v))), { us, vs } = faceDivisions(f.id, bx.div, near);
+    for (const [p, r] of [...[0, ...us, 1].map(u => [at(u, 0), at(u, 1)]), ...[0, ...vs, 1].map(v => [at(0, v), at(1, v)])]) {
+      const id = [key(p), key(r)].sort().join("|"); if (seen.has(id)) continue; seen.add(id);
+      const d = n3(s3(r, p)), k = [1, 2].reduce((m, i) => (Math.abs(d3(d, axes[i])) > Math.abs(d3(d, axes[m])) ? i : m), 0);
+      if (cam.depthOf) {
+        const z = cam.depthOf(d); if (Math.abs(z) < 1e-6) continue;
+        const head = z > 0 ? r : p, to = cam.proj(z > 0 ? d : m3(d, -1)); if (!inFront(cam, head)) continue;
+        const s = cam.proj(head), l = Math.hypot(to.x - s.x, to.y - s.y); if (l < 1e-6) continue;
+        const reach = Math.min(1, farDist(P(s.x, s.y), b) / l);
+        out.push({ k, pl: [[P(s.x, s.y), P(s.x + (to.x - s.x) * reach, s.y + (to.y - s.y) * reach)]] });
+        continue;
+      }
+      const pl = [];
+      for (const [head, dir] of [[r, d], [p, m3(d, -1)]]) {
+        const h = n3(head), cs = Math.max(-1, Math.min(1, d3(h, dir))), phi = Math.acos(cs); if (phi < 1e-3) continue;
+        const W = n3(s3(h, m3(dir, cs))), n = Math.ceil(phi / (Math.PI / 60)), pts = [];
+        for (let i = 0; i <= n; i++) { const t = phi * (1 - i / n); pts.push(a3(m3(dir, Math.cos(t)), m3(W, Math.sin(t)))); }
+        pl.push(...projPath(cam, pts, true));
+      }
+      if (pl.length) out.push({ k, pl });
+    }
+  }
+  return out;
+}
 // The circle a clicked face shows: around the box's middle, square to the axis through that face, wide enough to
 // clear the box. Dragging it turns the box around that axis, which leaves the circle where it is.
 const ringFace = () => (state.rotateFaces && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
@@ -1588,11 +1636,25 @@ function drawVPs(c, k, g) {
     c.fillText(label, p.x + r + 4 / k, p.y - r - 4 / k);
   }
 }
+// Each turned box's own rays, in its axis colors, under the boxes
+function drawOwnRays(c, k, b, g) {
+  for (const bx of state.boxes) {
+    const rays = ownRays(bx, g, b);
+    for (let a = 0; a < 3; a++) {
+      const set = rays.filter(r => r.k === a); if (!set.length) continue;
+      const p = newPath(c);
+      set.forEach(r => r.pl.forEach(pl => pl.forEach((q, i) => (i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y)))));
+      strokeStyle(c, { color: AXIS_COLORS[a], width: 0.6, dash: "solid", opacity: 0.55 }, k); c.stroke(p);
+    }
+  }
+  c.globalAlpha = 1; c.setLineDash([]);
+}
 function drawScene(c, k, b, inc) {
   const g = geo(), V = state.viewport;
   c.save();
   if (V.clip && inc.clipToView) { c.beginPath(); c.rect(V.x, V.y, V.w, V.h); c.clip(); }
   drawGuides(c, k, b, inc, g);
+  if (inc.rays) drawOwnRays(c, k, b, g);
   if (inc.dots && state.snap.dots && state.snap.points) {
     const pts = snapData().pts;
     if (pts.length < 25000 && k > 0.12) {
@@ -2538,8 +2600,9 @@ const schema = [
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
+    { t: "check", bind: "boxes.$b.showRays", label: () => (isIso() ? "Show rays from its front faces" : "Show rays from its front faces to them"), when: () => hasBox() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
