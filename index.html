@@ -335,7 +335,7 @@ function defaultState() {
     // scale with it: the 1-point camera's shortest focal length, and where an even-angle fan aims its rays in
     // the curved views.
     drawingScale: 1,
-    linkRays: true, symmetric: false, lockFrame: false,
+    linkRays: true, symmetric: false, lockFrame: false, rotateClick: false,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
@@ -348,7 +348,7 @@ function defaultState() {
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -425,6 +425,8 @@ function normalize(s) {
     if (![0, 1, 2, 3].includes(b.anchor)) b.anchor = 0;
     if (!(b.h > 0)) b.h = 220;
     if (!["sides", "front", "caps"].includes(b.rayFaces)) b.rayFaces = "sides";
+    if (!b.rot || typeof b.rot !== "object") b.rot = { x: 0, y: 0, z: 0 };
+    ["x", "y", "z"].forEach(k => { if (!Number.isFinite(b.rot[k])) b.rot[k] = 0; });
     if (!(b.H > 0)) b.H = 0.3;
     if (b.fit && !(okPt(b.fit) && b.fit.s > 0)) b.fit = null;
   });
@@ -811,7 +813,7 @@ const OPPOSITE = { s01: "s23", s23: "s01", s12: "s30", s30: "s12" };
 // back ones.
 function boxWings(bx, g, B) {
   const i = nearestOf(B), ends = id => [+id[1], +id[2]];
-  let use = boxGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
+  let use = homeGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
   if (!use.length) use = Object.keys(OPPOSITE).filter(id => ends(id).includes(i));
   const back = bx.rayFaces !== "front" && use.every(id => bx.faces[id] === false);
   if (back) use = use.map(id => OPPOSITE[id]);
@@ -985,7 +987,13 @@ const FACES = [
 ];
 // Every box geometry returns screen corners B/T and, per face, fill polygons, edge polylines, a front
 // flag, and line(u0,v0,u1,v1) for drawing on the face in its own perspective (as a list of polylines).
-function boxGeo(bx, g) { return g.cam ? boxGeoCam(bx, g) : boxGeoLinear(bx, g); }
+function boxGeo(bx, g) {
+  if (!turned(bx)) return homeGeo(bx, g);
+  const F = turnFrame(bx, g);
+  return geoFrom3(F.B, F.T, F.cam, g.cam ? EDGE_N : 1);
+}
+// A box as it sits before any rotation (see turnFrame)
+function homeGeo(bx, g) { return g.cam ? boxGeoCam(bx, g) : boxGeoLinear(bx, g); }
 function boxGeoLinear(bx, g) {
   const B = bottomQuad(bx, g), T = topQuad(B, bx, g);
   const pt = s => (s[0] === "b" ? B : T)[+s[1]];
@@ -1019,24 +1027,134 @@ function readsBack(bx, B, cam, size) {
   return back.every((p, i) => l3(s3(p, m3(B[i], sc))) <= 1e-3 * size * sc);
 }
 function boxGeoCam(bx, g) {
-  const cam = g.cam, B = base3(bx, cam);
-  const T = B.map(p => a3(p, m3(UP3, bx.H)));
+  const B = base3(bx, g.cam);
+  return geoFrom3(B, B.map(p => a3(p, m3(UP3, bx.H))), g.cam, EDGE_N);
+}
+// A box's faces from its 3D corners, each edge sampled n times (a straight line needs only 1)
+function geoFrom3(B, T, cam, n) {
   const pr = p => { const s = cam.proj(p); return P(s.x, s.y); };
   const samples = (p, q, n) => { const out = []; for (let i = 0; i <= n; i++) out.push(lerp3(p, q, i / n)); return out; };
   const corner = s => (s[0] === "b" ? B : T)[+s[1]];
   const bc = m3([...B, ...T].reduce(a3, V3(0, 0, 0)), 1 / 8);
   const faces = FACES.map(f => {
     const q = f.v.map(corner), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4), ring = [];
-    for (let e = 0; e < 4; e++) { const s = samples(q[e], q[(e + 1) % 4], EDGE_N); s.pop(); ring.push(...s); }
+    for (let e = 0; e < 4; e++) { const s = samples(q[e], q[(e + 1) % 4], n); s.pop(); ring.push(...s); }
     const pieces = cam.clip ? cam.clip(ring, q) : null;
     const fills = pieces ? pieces.map(pc => pc.pts.map(p => cam.projChart(p, pc.chart))) : [ring.map(pr)];
     const at = (uu, vv) => a3(q[0], a3(m3(s3(q[1], q[0]), uu), m3(s3(q[3], q[0]), vv)));
     return {
       id: f.id, shade: f.shade, front: d3(s3(fc, bc), fc) < 0, fills, edges: projPath(cam, [...ring, ring[0]], false),
-      line: (u0, v0, u1, v1) => projPath(cam, samples(at(u0, v0), at(u1, v1), Math.max(2, Math.ceil(EDGE_N * Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0))))), false)
+      line: (u0, v0, u1, v1) => projPath(cam, samples(at(u0, v0), at(u1, v1), Math.max(2, Math.ceil(n * Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0))))), false)
     };
   });
   return { B: B.map(pr), T: T.map(pr), faces, verts: B.map((b, i) => projPath(cam, samples(b, T[i], 12), false)), B3: B };
+}
+// ---- Rotated boxes ----
+// A box stays stored square to the page's axes, its home, which sizes, moves, fitting and perspective switches all
+// work on. bx.rot then turns it about its middle: around X (the width axis), then Y (length), then Z (height), the
+// way Rhino names them, so Z alone keeps it level. Angles are degrees, kept as they're typed.
+const AXIS_NAMES = ["X", "Y", "Z"], AXIS_COLORS = ["#d8453c", "#2f9e52", "#2f6fd0"];
+const turned = bx => !!(bx.rot && (bx.rot.x || bx.rot.y || bx.rot.z));
+function rotMatrix(r) {
+  const [cx, sx, cy, sy, cz, sz] = [r.x, r.y, r.z].flatMap(a => [Math.cos(a * deg), Math.sin(a * deg)]);
+  return [[cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx], [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx], [-sy, cy * sx, cy * cx]];
+}
+// The angles that make rotation matrix M, to a hundredth of a degree
+function rotAngles(M) {
+  const sy = Math.max(-1, Math.min(1, -M[2][0])), open = Math.abs(sy) < 1 - 1e-9, r = a => Math.round(a / deg * 100) / 100 + 0;
+  return { x: r(open ? Math.atan2(M[2][1], M[2][2]) : 0), y: r(Math.asin(sy)), z: r(open ? Math.atan2(M[1][0], M[0][0]) : Math.atan2(-M[0][1], M[1][1])) };
+}
+const mulM = (A, B) => A.map(r => [0, 1, 2].map(j => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
+// A turn by angle a around axis k (0 X, 1 Y, 2 Z), carrying the next axis toward the one after it
+function axisTurn(k, a) {
+  const c = Math.cos(a), s = Math.sin(a), i = (k + 1) % 3, j = (k + 2) % 3, M = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  M[i][i] = c; M[i][j] = -s; M[j][i] = s; M[j][j] = c;
+  return M;
+}
+// A box turned in 3D through the mode's camera: its axes ax, its middle C (which turning leaves alone), its signed
+// sides a and c, its height H, and its base and top corners B and T, numbered as at home
+function turnFrame(bx, g, rot = bx.rot) {
+  const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes, E = [A1, A2, UP3], M = rotMatrix(rot);
+  const a = d3(s3(B[1], B[0]), A1), c = d3(s3(B[3], B[0]), A2), C = a3(m3(a3(B[0], B[2]), 0.5), m3(UP3, H / 2));
+  const ax = [0, 1, 2].map(k => [0, 1, 2].reduce((sum, r) => a3(sum, m3(E[r], M[r][k])), V3(0, 0, 0)));
+  const at = (x, y, z) => a3(a3(a3(C, m3(ax[0], x)), m3(ax[1], y)), m3(ax[2], z));
+  const corners = z => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => at(u * a / 2, v * c / 2, z));
+  return { cam, M, ax, C, a, c, H, B: corners(-H / 2), T: corners(H / 2) };
+}
+// Can the view show the box at these angles? Through a flat camera, every corner stays as near straight ahead as
+// editing allows (or no further out than box `was`); through a lens, every corner stays where it can be drawn.
+function turnFits(bx, g, rot = bx.rot, was = bx) {
+  const F = turnFrame(bx, g, rot), { cam, B, T, C } = F;
+  if (!g.cam) {
+    const v = f => Math.min(...[...f.B, ...f.T].map(p => cam.depthOf(p) / (l3(p) || 1))), m = v(F);
+    return m >= VIEW_EDGE || m >= v(turnFrame(was, g));
+  }
+  const q = n3(C);
+  return [...B, ...T].every(p => l3(p) > 0.02 * l3(C) && (!cam.fits || cam.fits(p, q))) && (!cam.boxOk || cam.boxOk(B, T));
+}
+// The vanishing points a turned box's edges run to, in its axis colors. An axis still on one of the page's own
+// directions has none of its own, nor does one too square to the view to meet on screen (or, in isometric, at all).
+// Each axis has one through a flat camera; through a lens, one at each end, where the view reaches.
+function boxVPs(bx, g) {
+  if (g.iso || !turned(bx) || bx.showVPs === false) return [];
+  const { cam, ax } = turnFrame(bx, g), out = [], page = [...cam.axes, UP3].map(n3);
+  const add1 = (d, k) => { const s = cam.proj(d); if (s && Number.isFinite(s.x) && Number.isFinite(s.y) && Math.hypot(s.x - g.O.x, s.y - g.O.y) < 1e6) out.push({ p: P(s.x, s.y), k, label: `${bx.name} ${AXIS_NAMES[k]}` }); };
+  ax.forEach((a, k) => {
+    const D = n3(a);
+    if (page.some(e => Math.abs(d3(D, e)) > 1 - 1e-9)) return;
+    if (cam.depthOf) { const z = cam.depthOf(D); if (Math.abs(z) > 1e-6) add1(z > 0 ? D : m3(D, -1), k); return; }
+    for (const d of [D, m3(D, -1)]) if (cam.kind === "pano" ? Math.abs(d.y) < Math.sin(80 * deg) : !cam.fits || cam.fits(d)) add1(d, k);
+  });
+  return out;
+}
+// The circle a clicked face shows: around the box's middle, square to the axis through that face, wide enough to
+// clear the box. Dragging it turns the box around that axis, which leaves the circle where it is.
+const ringFace = () => (state.rotateClick && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
+function ringOf(bx, face, g) {
+  const F = turnFrame(bx, g), k = face === "top" || face === "bottom" ? 2 : face === "s01" || face === "s23" ? 1 : 0, i = (k + 1) % 3, j = (k + 2) % 3;
+  const side = [Math.abs(F.a), Math.abs(F.c), F.H], r = 0.58 * Math.hypot(side[i], side[j]);
+  return { F, k, r, at: t => a3(F.C, a3(m3(F.ax[i], r * Math.cos(t)), m3(F.ax[j], r * Math.sin(t)))) };
+}
+// (a spot behind you through a flat camera has nowhere to go on screen)
+const inFront = (cam, p) => !cam.depthOf || cam.depthOf(p) > 0.02 * l3(p);
+function ringPaths(R) {
+  const cam = R.F.cam, pts = []; for (let i = 0; i <= 144; i++) pts.push(R.at(i / 144 * 2 * Math.PI));
+  if (!cam.depthOf) return projPath(cam, pts, false);
+  const out = []; let cur = null;
+  for (const p of pts) { if (inFront(cam, p)) { const s = cam.proj(p); if (!cur) out.push(cur = []); cur.push(P(s.x, s.y)); } else cur = null; }
+  return out;
+}
+// The angle on the circle nearest point w on screen, searching `span` either side of `from` (the whole way round
+// without one). Searching near the last angle keeps a drag on its own side of a circle seen almost edge-on.
+function ringTheta(R, w, from = 0, span = Math.PI) {
+  const cam = R.F.cam, miss = t => { const p = R.at(t); if (!inFront(cam, p)) return Infinity; const s = cam.proj(p); return s ? Math.hypot(s.x - w.x, s.y - w.y) : Infinity; };
+  let best = from, bd = miss(from), step = span / 36;
+  for (let i = -36; i <= 36; i++) { const t = from + i * step, d = miss(t); if (d < bd) { bd = d; best = t; } }
+  for (let n = 0; n < 14; n++, step /= 2) for (const t of [best - step, best + step]) { const d = miss(t); if (d < bd) { bd = d; best = t; } }
+  return best;
+}
+// Dragging a turned box's corners, along its own axes. Base corner i slides over the plane of its base with the
+// opposite corner staying put; top corner i slides up its own edge with the base staying put. F is the box as it
+// was when the drag began. Either way the new middle is the new home's middle, so the box stays turned as it was.
+function homeFrom(F, Cn, a, c, H) {
+  const [A1, A2] = F.cam.axes;
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => a3(a3(a3(Cn, m3(A1, u * a / 2)), m3(A2, v * c / 2)), m3(UP3, -H / 2)));
+}
+function dragTurnedBase(bx, F, i, S, g) {
+  const fixed = F.B[(i + 2) % 4], n = n3(c3(F.ax[0], F.ax[1])), dir = n3(F.cam.unproj(S)), dn = d3(dir, n), t = d3(fixed, n) / dn;
+  if (Math.abs(dn) < 1e-6 || !(t > 0)) return;
+  const Mi = inv3([0, 1, 2].map(r => F.ax.map(v => [v.x, v.y, v.z][r]))), v = s3(m3(dir, t), fixed), l = mat3(Mi, v);
+  const a = l.x * (i === 1 || i === 2 ? 1 : -1), c = l.y * (i === 2 || i === 3 ? 1 : -1), least = 0.01 * Math.max(Math.abs(F.a), Math.abs(F.c), F.H);
+  if (Math.abs(a) < least || Math.abs(c) < least) return;
+  const nb = boxFrom3(bx, homeFrom(F, a3(a3(fixed, m3(v, 0.5)), m3(F.ax[2], F.H / 2)), a, c, F.H), F.H, g);
+  if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
+}
+function dragTurnedTop(bx, F, i, S, g) {
+  const base = F.B[i], len2 = l3(F.ax[2]), up = n3(F.ax[2]), d = n3(F.cam.unproj(S)), b = d3(up, d), dn = 1 - b * b;
+  if (dn < 1e-6) return;
+  const H = Math.max(0.02 * F.H, (b * d3(d, base) - d3(up, base)) / dn / len2);
+  const nb = boxFrom3(bx, homeFrom(F, a3(F.C, m3(F.ax[2], (H - F.H) / 2)), F.a, F.c, H), H, g);
+  if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
 }
 // Height for a camera box whose anchor corner sits at unit direction Bu, so that the anchor's top corner
 // lands on screen point S (S's direction is projected onto that corner's vertical plane).
@@ -1061,6 +1179,7 @@ function faceLabel(id) {
   if (!bx) return id;
   const G = boxGeo(bx, geo());
   const f = G.faces.find(x => x.id === id);
+  if (turned(bx)) return `${f.front ? "Near" : "Far"} side, along ${id === "s01" || id === "s23" ? "X" : "Y"}`;
   if (state.mode === "1pt") return id === "s01" || id === "s23" ? (f.front ? "Front (faces you)" : "Back") : `${f.front ? "Near" : "Far"} side, running to the VP`;
   return `${f.front ? "Near" : "Far"} side, running to ${axisName(id === "s01" || id === "s23" ? 0 : 1)}`;
 }
@@ -1424,6 +1543,15 @@ function drawVPs(c, k, g) {
     c.fillStyle = color; c.font = `500 ${11 / k}px "IBM Plex Mono", monospace`;
     c.fillText(mk.label, p.x + r + 4 / k, p.y - r - 4 / k);
   }
+  // each rotated box's own, smaller and in its axis colors
+  for (const bx of state.boxes) for (const { p, k: axis, label } of boxVPs(bx, g)) {
+    const r = 0.75 * state.vps[0].size / k, color = AXIS_COLORS[axis];
+    c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = color; c.fillStyle = "#ffffff";
+    c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
+    c.fillStyle = color; c.font = `500 ${11 / k}px "IBM Plex Mono", monospace`;
+    c.fillText(label, p.x + r + 4 / k, p.y - r - 4 / k);
+  }
 }
 function drawScene(c, k, b, inc) {
   const g = geo(), V = state.viewport;
@@ -1497,7 +1625,8 @@ function frame() {
   // selected box handles
   const bx = state.boxes[state.sel];
   if (bx) {
-    const G = boxGeo(bx, g);
+    const G = boxGeo(bx, g), rf = ringFace();
+    if (rf) drawRing(ringOf(bx, rf, g), paper);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); G.verts.forEach(paths => paths.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }))); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
@@ -1509,6 +1638,26 @@ function frame() {
     ctx.beginPath(); ctx.arc(s.x, s.y, snapMark.kind === "line" ? 7 : 10, 0, Math.PI * 2); ctx.stroke();
   }
   document.getElementById("stZoom").textContent = Math.round(view.z * 100) + "%";
+}
+// The rotation circle, with a dashed line along its axis, and while it's being dragged how far the box has turned
+function drawRing(R, panel) {
+  const live = drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.lineWidth = live || (hover && hover.type === "ring") ? 3.5 : 2.25;
+  ctx.beginPath(); ringPaths(R).forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); })); ctx.stroke();
+  const stub = t => { const p = a3(C, m3(ax, t)); return inFront(cam, p) ? cam.proj(p) : null; }, ends = [stub(R.r), stub(-R.r)].filter(Boolean);
+  if (ends.length === 2 && ends.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))) {
+    const [a, b] = ends.map(p => toS(P(p.x, p.y)));
+    ctx.lineWidth = 1.25; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (live && drag.moved) {
+    const deg1 = drag.total / deg, t = `${AXIS_NAMES[R.k]} ${deg1 > 0 ? "+" : ""}${deg1.toFixed(1)}°`, p = drag.at;
+    ctx.font = '500 11px "IBM Plex Mono", monospace';
+    const tw = ctx.measureText(t).width;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
+    ctx.fillStyle = color; ctx.fillText(t, p.x + 15, p.y + 4);
+  }
+  ctx.restore();
 }
 const VHANDLES = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
 // The round handle just off the export area's bottom-right corner scales the whole drawing. While it is
@@ -1855,7 +2004,7 @@ function fitBox(bx, dims, target, size, g, from) { const f = solveFit(dims, targ
 // Record where a box sits on screen and how big it looks, as the target for later perspective switches
 function captureFit(bx, g) {
   try {
-    const G = boxGeo(bx, g), sb = screenBox([...G.B, ...G.T]), c = sb.c;
+    const G = homeGeo(bx, g), sb = screenBox([...G.B, ...G.T]), c = sb.c;
     if (Number.isFinite(c.x) && Number.isFinite(c.y) && sb.s > 0) bx.fit = { x: c.x, y: c.y, s: sb.s };
   } catch (e) { /* leave the old target */ }
 }
@@ -1957,10 +2106,17 @@ function boxFrom3(bx, B, H, g) {
   const nb = Object.assign({}, bx, { b0: P(p0.x, p0.y), b2: P(p2.x, p2.y) });
   if (g.cam) {
     nb.H = H / (l3(B[bx.anchor]) || 1);
-    return readsBack(nb, B, g.cam, l3(s3(T[2], B[0]))) ? nb : null;
+    return readsBack(nb, B, g.cam, l3(s3(T[2], B[0]))) && (!turned(nb) || turnFits(nb, g, nb.rot, bx)) ? nb : null;
   }
   const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); nb.h = Math.max(1e-6, dot(sub(Ta, Ba), g.up(Ba)));
-  return staysInView(nb, bx, g) ? nb : null;
+  return staysInView(nb, bx, g) && (!turned(nb) || turnFits(nb, g, nb.rot, bx)) ? nb : null;
+}
+// The panel's rotation sliders: an angle the view can't show is refused, as a size too big for it is held back
+function setBoxRot(key, v) {
+  const bx = state.boxes[state.sel]; if (!bx) return;
+  const rot = Object.assign({}, bx.rot, { [key]: v });
+  if (turnFits(bx, geo(), rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
+  touch();
 }
 function setMode(m) {
   if (m === state.mode) return;
@@ -2005,9 +2161,12 @@ function setBoxSide(k, v) {
   const bx = state.boxes[state.sel]; if (!bx) return;
   const g = geo(), s = boxSize(bx, g), [A1, A2] = s.cam.axes, from = [s.a, s.c, s.H], to = from.slice();
   to[k] = (k < 2 && from[k] < 0 ? -1 : 1) * Math.max(1e-6, v / s.px);
+  // a turned box's height grows along its own up, with its base staying put
+  const rise = turned(bx) ? s3(turnFrame(bx, g).ax[2], UP3) : null;
   const build = t => {
     const [a, c, H] = from.map((x, i) => x + (to[i] - x) * t), B0 = s3(s.mid, m3(a3(m3(A1, a), m3(A2, c)), 0.5));
     if (keptCentered(bx)) B0.y = -H / 2;
+    else if (rise) { const up = m3(rise, (H - s.H) / 2); B0.x += up.x; B0.y += up.y; B0.z += up.z; }
     return boxFrom3(bx, [B0, a3(B0, m3(A1, a)), a3(a3(B0, m3(A1, a)), m3(A2, c)), a3(B0, m3(A2, c))], H, g);
   };
   let nb = build(1);
@@ -2016,10 +2175,17 @@ function setBoxSide(k, v) {
     for (let i = 0; i < 30; i++) { const t = (lo + hi) / 2; if (build(t)) lo = t; else hi = t; }
     nb = lo > 0 ? build(lo) : null;
   }
+  // growing along its own up moves a turned box's middle, and with it the px per unit a size is read at
+  for (let i = 0; nb && rise && i < 5; i++) {
+    const z = boxSize(nb, g), got = Math.abs([z.a, z.c, z.H][k]) * z.px;
+    if (Math.abs(got - v) < 1e-6 * v) break;
+    to[k] *= v / got;
+    nb = build(1) || nb;
+  }
   if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; captureFit(bx, g); }
   touch();
 }
-const sideLabel = k => (k === 2 ? "Height" : (k ? "Length" : "Width") + (is1() ? (k ? " (toward the VP)" : " (across)") : ` (toward ${axisName(k)})`));
+const sideLabel = k => (k === 2 ? "Height" : (k ? "Length" : "Width") + (state.boxes[state.sel] && turned(state.boxes[state.sel]) ? (k ? " (along Y)" : " (along X)") : is1() ? (k ? " (toward the VP)" : " (across)") : ` (toward ${axisName(k)})`));
 // A box kept centered on the horizon (centerH) has eye level running through the middle of its height:
 // the horizon line cuts it in half and neither its top nor its bottom shows. This moves box bx straight up
 // or down in 3D to get it there, keeping its size and its place across the view; false, with the box left
@@ -2321,6 +2487,12 @@ const schema = [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "sub", label: "Rotation" },
+    { t: "check", bind: "rotateClick", label: "Rotate when a face is clicked" },
+    ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: -180, max: 180, step: 0.1, lo: -360, hi: 360, when: hasBox })),
+    { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
+    { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
+    { t: "note", html: "With the option on, click a face and a circle appears around its box, square to the axis through that face: red for X, green for Y, blue for Z. Drag the circle to turn the box around that axis. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -2899,6 +3071,8 @@ function hitTest(s, restoring = false) {
     const G = boxGeo(bx, g);
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
+    const rf = ringFace();
+    if (rf && ringPaths(ringOf(bx, rf, g)).some(pl => pl.some((p, i) => i && segDist(s, toS(pl[i - 1]), toS(p)) < 7))) return { type: "ring" };
   }
   if (!state.lockFrame) {
     for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < state.vps[mk.vi].size + 7) return { type: "vp", i: mk.vi, mk };
@@ -2939,10 +3113,11 @@ const HINTS = {
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
   vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
+  ring: "Drag around the circle to rotate the box",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back"
 };
-const CURSORS = { pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
+const CURSORS = { ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held is drawn as a ghost). lastPos lets pressing or letting go of the
 // key update it without the mouse moving.
@@ -2953,7 +3128,7 @@ function showHover(h) {
   if (key(h) !== key(hover)) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
-  document.getElementById("stHint").textContent = vd ? vd[0] : HINTS[h.type] || "";
+  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateClick ? "Click a face to rotate around it · drag to move the box" : HINTS[h.type] || "";
 }
 const restoreKeyChanged = held => { if (!drag && lastPos) showHover(hitTest(lastPos, held)); };
 // VP markers drag in different ways depending on the mode
@@ -2988,7 +3163,11 @@ canvas.addEventListener("pointerdown", e => {
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
   const rb = rayBox(), held = hit.type === "body" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
   if (rb && held === rb) drag.rays = clone(rb);
-  if (hit.type === "bottom" || hit.type === "top") {
+  if ((hit.type === "bottom" || hit.type === "top") && turned(state.boxes[state.sel])) drag.turn = turnFrame(state.boxes[state.sel], g);
+  else if (hit.type === "ring") {
+    const R = ringOf(state.boxes[state.sel], ringFace(), g);
+    Object.assign(drag, { ring: R, theta: ringTheta(R, w), total: 0, at: s });
+  } else if (hit.type === "bottom" || hit.type === "top") {
     // Re-anchor the height at the corner that stays put (the opposite base corner, or the dragged top's own base).
     const bx = state.boxes[state.sel], G = boxGeo(bx, g);
     const j = hit.type === "bottom" ? (hit.i + 2) % 4 : hit.i;
@@ -3002,7 +3181,9 @@ canvas.addEventListener("pointerdown", e => {
     // above or below eye level without warping. Every mode is read through its camera for this.
     const { cam, B, H } = box3(bx, g);
     const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8), s0 = cam.proj(c0);
-    drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), ci: len(sub(bx.b0, w)) < len(sub(bx.b2, w)) ? 0 : 2 };
+    // (snapping goes by the base corner you can see, wherever a turned box has put it)
+    const seen = turned(bx) ? turnFrame(bx, g).B : B, onScreen = i => { const p = cam.proj(seen[i]); return len(sub(P(p.x, p.y), w)); };
+    drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), seen, ci: onScreen(0) < onScreen(2) ? 0 : 2 };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
@@ -3031,6 +3212,7 @@ canvas.addEventListener("pointermove", e => {
     case "bottom": {
       const bx = state.boxes[state.sel];
       let m = w; if (useSnap) { const sp = snapPoint(w, state.sel); if (sp) { m = sp.pt; snapMark = sp; } }
+      if (drag.turn) { dragTurnedBase(bx, drag.turn, drag.i, m, g); break; }
       // A base can't cross eye level (its far edges would shoot back out of the VPs), so the dragged
       // corner stays on the same side of the horizon as the fixed one
       const sf = dot(sub(drag.fixed, g.O), g.n), sm = dot(sub(m, g.O), g.n), eps = 2 / view.z;
@@ -3039,9 +3221,17 @@ canvas.addEventListener("pointermove", e => {
       if (r && baseOk(r[0], r[1], g) && staysInView(Object.assign({}, bx, { b0: r[0], b2: r[1] }), bx, g)) { bx.b0 = r[0]; bx.b2 = r[1]; }
       break;
     }
+    case "ring": {
+      const bx = state.boxes[state.sel], R = drag.ring, t = ringTheta(R, w, drag.theta, Math.PI / 3);
+      drag.total += t - drag.theta; drag.theta = t; drag.at = s;
+      const rot = rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)));
+      if (turnFits(bx, g, rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
+      break;
+    }
     case "top": {
       const bx = state.boxes[state.sel];
-      if (keptCentered(bx)) {
+      if (drag.turn) dragTurnedTop(bx, drag.turn, drag.i, w, g);
+      else if (keptCentered(bx)) {
         // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
         let S = w;
         if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
@@ -3066,8 +3256,8 @@ canvas.addEventListener("pointermove", e => {
       else {
         if (useSnap) {
           // snap the base corner nearest the grab point, moving the whole box with it
-          const t = R.cam.proj(a3(R.B[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
-          if (sp) moves.push({ delta: s3(slideTo(R.cam, R.B[R.ci], sp.pt), R.B[R.ci]), sp });
+          const t = R.cam.proj(a3(R.seen[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
+          if (sp) moves.push({ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp });
         }
         moves.push({ delta: free });
       }
@@ -3142,6 +3332,8 @@ function endPointer(e) {
   if (pointers.size < 2) pinch = null;
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
+  // a face clicked, not dragged, shows its rotation circle; a click anywhere else puts it away
+  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) ui.ring = drag.type === "body" && state.rotateClick ? { bi: drag.bi, face: drag.face } : null;
   // a box you just reshaped or moved keeps this look when you switch perspective
   if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
