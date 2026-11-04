@@ -339,7 +339,7 @@ function defaultState() {
       { dist: 0, drop: 0, size: 8, show: true, rays: raysDefault("#8a63c4", "#c9b6e8", { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
     // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
-    curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
+    curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish", style6: "disc" },
     // 1 as first drawn, times every rescale since (scaleDrawing). The few fixed lengths that shape a drawing
     // scale with it: the 1-point camera's shortest focal length, and where an even-angle fan aims its rays in
     // the curved views.
@@ -406,6 +406,7 @@ function normalize(s) {
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
   if (!["1pt", "2pt", "3pt", "iso", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
   if (!["fish", "pano"].includes(out.curvi.style4)) out.curvi.style4 = "fish";
+  if (out.curvi.style6 !== "globe") out.curvi.style6 = "disc";
   const cv = out.curvi;
   ["f4", "f5", "f6"].forEach(k => {
     const r = cv[k];
@@ -460,6 +461,7 @@ const view = { x: 0, y: 0, z: 1 };
 // guides are straight lines in 3D, projected through a lens (or onto a panorama strip).
 const CAM_MODES = ["4pt", "5pt", "6pt"];
 const isPanoMode = () => state.mode === "4pt" && state.curvi.style4 === "pano";
+const isGlobe = () => state.mode === "6pt" && state.curvi.style6 === "globe";
 // Isometric is 3-point seen from so far away that nothing converges: its three VPs sit at the corners of an
 // equilateral triangle, too far out to matter, which weights all three axes equally. Boxes and everything that
 // reads them go through 3-point's camera unchanged, their edges parallel to within a hundredth of a pixel. The
@@ -538,7 +540,7 @@ function twoAxisLens(C, F, sides, u, n, prof, thCap) {
     return place(Math.min(Math.atan2(rho, D.z), thLim), rho > 0 ? D.x / rho : 1, rho > 0 ? D.y / rho : 0);
   };
   return {
-    reach, at, place,
+    reach, at, place, u, n,
     proj: D => map(D, Math.PI * 0.999),
     projG: D => (Math.atan2(Math.hypot(D.x, D.y), D.z) > thCap ? null : map(D, Math.PI)),
     unproj: S => {
@@ -674,7 +676,7 @@ function sphereCam(g) {
   const X = V3(1, 0, 0), Z = V3(0, 0, 1);
   // A face that covers the point straight behind you would wrap all the way around the rim when filled
   const hitsBack = q => rayHitsQuad(V3(0, 0, -1), q);
-  return {
+  const cam = {
     kind: "sphere", C, F, sides, back: rec.back, thMax, mc: C,
     axes: [X, Z], fam: { 0: X, 2: UP3, 3: Z },
     proj: lens.proj, projG: lens.projG, unproj: lens.unproj,
@@ -695,6 +697,50 @@ function sphereCam(g) {
     ],
     edges: [{ ring: lens.ring(PI2) }, { ring: lens.ring(Math.PI) }],
     cone: { center: C, radius: ang => lens.ring(Math.min(ang, Math.PI * 0.999)) }
+  };
+  return isGlobe() ? Object.assign(cam, globeParts(lens, C, azi, nearBack, hitsBack)) : cam;
+}
+// The same view as a globe the camera sits inside: nothing stops at the back. The whole rim is the one point straight
+// behind you, so what goes out through it on one side comes back in from the opposite side.
+function globeParts(lens, C, azi, nearBack, hitsBack) {
+  const rimOut = (cx, sy) => len(sub(lens.place(Math.PI, cx, sy), C));
+  // Near the back a short line sweeps a long way around the rim, so it needs more points. An outline can't break, so one
+  // passing all but through the point behind you (`arcs`) is taken around the rim across what's left of the turn.
+  const turnBetween = (p, q) => { const d = azi(q) - azi(p); return Math.atan2(Math.sin(d), Math.cos(d)); };
+  const refine = (pts, arcs) => {
+    const out = [];
+    const fillIn = (p, q, depth) => {
+      const t = turnBetween(p, q);
+      if (Math.abs(t) < 0.15 || !(nearBack(p) || nearBack(q))) return;
+      if (depth < 10) { const m = lerp3(p, q, 0.5); fillIn(p, m, depth + 1); out.push(m); fillIn(m, q, depth + 1); return; }
+      if (arcs) for (let i = 1; i < 12; i++) { const a = azi(p) + t * i / 12, s = Math.sin(Math.PI * 0.998); out.push(V3(s * Math.cos(a), s * Math.sin(a), Math.cos(Math.PI * 0.998))); }
+    };
+    pts.forEach((p, i) => { out.push(p); if (i < pts.length - 1) fillIn(p, pts[i + 1], 0); });
+    return out;
+  };
+  const area = poly => poly.reduce((sum, p, i) => { const q = poly[(i + 1) % poly.length]; return sum + p.x * q.y - q.x * p.y; }, 0);
+  const shot = p => { const s = lens.proj(p); return P(s.x, s.y); };
+  return {
+    refine,
+    boxOk: null,
+    fitsTurned: () => true,
+    // A face over the point behind you covers everything from its outline out to the rim: a ring, cut open along one
+    // line so it can fill as a single outline, with the rim running the other way round so the middle stays empty
+    clip: (ring, quad) => {
+      const loop = refine([...ring, ring[0]], true).map(shot);
+      if (!quad || !hitsBack(quad)) return [{ screen: loop }];
+      const a0 = azi(ring[0]), rim = []; for (let i = 0; i <= 180; i++) { const a = a0 + i * Math.PI / 90; rim.push(lens.place(Math.PI, Math.cos(a), Math.sin(a))); }
+      if (area(rim) * area(loop) > 0) rim.reverse();
+      return [{ screen: [...loop, ...rim] }];
+    },
+    // a spot past the rim, carried through the point behind you to where it lands on the opposite side
+    wrapS: S => {
+      const v = sub(S, C), x = dot(v, lens.u), y = -dot(v, lens.n), r = Math.hypot(x, y); if (r < 1e-9) return S;
+      const cx = x / r, sy = y / r, out = rimOut(cx, sy), other = rimOut(-cx, -sy);
+      if (r <= out) return S;
+      const d = (r + other) % (out + other) - other;
+      return lens.at(d * cx, d * sy);
+    }
   };
 }
 // 4-point panorama: a 360° cylinder. Verticals stay straight, and each horizontal direction has a VP on
@@ -783,6 +829,7 @@ function splitPoly(pts, dist) {
 // Project a sampled 3D path, breaking it where it crosses a seam (behind a panorama, or the rim between
 // the 6-point circles) and, for guides, where it leaves the lens coverage.
 function projPath(cam, pts, guide) {
+  if (cam.refine) pts = cam.refine(pts);
   const out = [];
   let cur = null, prev = null;
   for (const p of pts) {
@@ -1058,7 +1105,7 @@ function geoFrom3(B, T, cam, n) {
     const q = f.v.map(corner), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4), ring = [];
     for (let e = 0; e < 4; e++) { const s = samples(q[e], q[(e + 1) % 4], n); s.pop(); ring.push(...s); }
     const pieces = cam.clip ? cam.clip(ring, q) : null;
-    const fills = pieces ? pieces.map(pc => pc.pts.map(p => cam.projChart(p, pc.chart))) : [ring.map(pr)];
+    const fills = pieces ? pieces.map(pc => pc.screen || pc.pts.map(p => cam.projChart(p, pc.chart))) : [ring.map(pr)];
     const at = (uu, vv) => a3(q[0], a3(m3(s3(q[1], q[0]), uu), m3(s3(q[3], q[0]), vv)));
     return {
       id: f.id, shade: f.shade, front: d3(s3(fc, bc), fc) < 0, fills, edges: projPath(cam, [...ring, ring[0]], false),
@@ -2292,6 +2339,13 @@ function slideTo(cam, p, S) {
   if (cam.depthOf) { const d = cam.depthOf(p), rz = cam.depthOf(r); return rz > 1e-6 ? m3(r, d / rz) : p; }
   return m3(n3(r), l3(p));
 }
+// On the globe, the spot taken hold of stays under the pointer: the middle goes where that spot lands on the line of
+// sight through the pointer, at the same distance from the eye as before. Pieces of a box near the rim can lie far apart
+// on screen, so a pointer's distance on screen says nothing about how far the box has gone.
+function heldMiddle(R, w) {
+  const d = n3(R.cam.unproj(R.cam.wrapS(w))), b = d3(d, R.held), root = b * b + d3(R.c0, R.c0) - d3(R.held, R.held);
+  return root < 0 ? null : s3(m3(d, b + Math.sqrt(root)), R.held);
+}
 // A base is valid when both corners sit on the same side of eye level (at least `clear` away from it on
 // screen) and, through a flat camera, every corner is in front of the viewer (a corner past a vanishing
 // point would be behind you).
@@ -2341,13 +2395,32 @@ function setMode(m) {
   if (m === state.mode) return;
   reshape(() => { state.mode = m; });
 }
-// A toolbar choice: a mode, or 4-point with its style ("4pt-fish", "4pt-pano")
-const modeKey = () => (state.mode === "4pt" ? "4pt-" + state.curvi.style4 : state.mode);
+// A toolbar choice: a mode, or 4-point with its style ("4pt-fish", "4pt-pano"), or 6-point on a globe ("6pt-globe")
+const modeKey = () => (state.mode === "4pt" ? "4pt-" + state.curvi.style4 : isGlobe() ? "6pt-globe" : state.mode);
 function chooseMode(key) {
   const [m, style] = key.split("-");
   if (key === modeKey()) return;
-  if (!style) setMode(m);
+  if (m === "6pt") {
+    if (state.mode !== "6pt") { reshape(() => { state.mode = m; state.curvi.style6 = style || "disc"; }); return; }
+    // the same view either way, so every box stays put
+    state.curvi.style6 = style || "disc";
+    if (!style) leaveGlobe();
+    commit(); touch();
+  } else if (!style) setMode(m);
   else reshape(() => { state.mode = m; state.curvi.style4 = style; });
+}
+// Back in plain 6-point, a box lying over the point behind you comes forward just far enough for the view to show it
+function leaveGlobe() {
+  const g = geo();
+  state.boxes.forEach(bx => {
+    const { B, H } = box3(bx, g), C = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8), r = l3(C);
+    if (boxFrom3(bx, B, H, g)) return;
+    const th0 = offAxis(C), a = Math.atan2(C.y, C.x);
+    for (let th = th0 - 2 * deg; th > 0; th -= 2 * deg) {
+      const to = V3(r * Math.sin(th) * Math.cos(a), r * Math.sin(th) * Math.sin(a), r * Math.cos(th)), delta = s3(to, C), nb = boxFrom3(bx, B.map(p => a3(p, delta)), H, g);
+      if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; captureFit(bx, g); return; }
+    }
+  });
 }
 function flipVP3(sign) { changeGrid(() => { state.vps[2].drop = sign * Math.max(40, Math.abs(state.vps[2].drop)); }); commit(); touch(); }
 function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captureFit(bx, g); state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
@@ -2627,7 +2700,8 @@ const schema = [
     { t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
-    { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
+    { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag any point to move just that one; dragging the rim moves the back VP.", when: () => is6() && !isGlobe() },
+    { t: "note", html: "6-point as a globe around you: the same view, but nothing stops at the back. Drag a box past the rim and it goes through the point behind you and comes in from the opposite side, stretching around the rim as it passes. Drag any point to move just that one; dragging the rim moves the back VP.", when: isGlobe },
     { t: "readout", text: lensInfo, when: camMode }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
@@ -3463,6 +3537,11 @@ canvas.addEventListener("pointerdown", e => {
     // (snapping goes by the base corner you can see, wherever a turned box has put it)
     const seen = turned(bx) ? turnFrame(bx, g).B : B, onScreen = i => { const p = cam.proj(seen[i]); return len(sub(P(p.x, p.y), w)); };
     drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), seen, ci: onScreen(0) < onScreen(2) ? 0 : 2 };
+    if (isGlobe()) {
+      // the spot taken hold of, from the box's middle: where the line of sight first meets the box
+      const T = turnFrame(bx, g), d = n3(cam.unproj(w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
+      drag.rig.held = s3(m3(d, t < Infinity ? t : d3(d, c0)), c0);
+    }
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
@@ -3531,7 +3610,9 @@ canvas.addEventListener("pointermove", e => {
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
       // (a box's middle only reads at one end of a panorama's strip, so going round is what lets either end be held)
-      const aim = add(R.s0, sub(w, drag.w0)), free = s3(slideTo(R.cam, R.c0, R.cam.wrapS ? R.cam.wrapS(aim) : aim), R.c0), moves = [];
+      const aim = add(R.s0, sub(w, drag.w0)), mid = R.held ? heldMiddle(R, w) : slideTo(R.cam, R.c0, R.cam.wrapS ? R.cam.wrapS(aim) : aim);
+      if (!mid) break;
+      const free = s3(mid, R.c0), moves = [];
       if (keptCentered(bx)) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
       else {
         if (useSnap) {
@@ -3693,7 +3774,7 @@ document.getElementById("tbEven").addEventListener("click", evenVPs);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
 // The perspective dropdown on the toolbar, with 4-point's fisheye and panorama as choices of their own
-const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["iso", "Isometric"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"]];
+const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["iso", "Isometric"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"], ["6pt-globe", "6-point globe"]];
 const tbMode = document.getElementById("tbMode");
 MODES.forEach(([v, t]) => tbMode.append(el("option", { value: v }, t)));
 tbMode.addEventListener("change", () => chooseMode(tbMode.value));
