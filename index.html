@@ -431,7 +431,7 @@ function normalize(s) {
     if (!(b.h > 0)) b.h = 220;
     if (!["sides", "front", "caps"].includes(b.rayFaces)) b.rayFaces = "sides";
     if (!b.rot || typeof b.rot !== "object") b.rot = { x: 0, y: 0, z: 0 };
-    ["x", "y", "z"].forEach(k => { if (!Number.isFinite(b.rot[k])) b.rot[k] = 0; });
+    ["x", "y", "z"].forEach(k => { b.rot[k] = Number.isFinite(b.rot[k]) ? wrapAngle(b.rot[k]) : 0; });
     if (!(b.H > 0)) b.H = 0.3;
     if (b.fit && !(okPt(b.fit) && b.fit.s > 0)) b.fit = null;
   });
@@ -1064,10 +1064,26 @@ function rotMatrix(r) {
   const [cx, sx, cy, sy, cz, sz] = [r.x, r.y, r.z].flatMap(a => [Math.cos(a * deg), Math.sin(a * deg)]);
   return [[cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx], [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx], [-sy, cy * sx, cy * cx]];
 }
-// The angles that make rotation matrix M, to a hundredth of a degree
-function rotAngles(M) {
-  const sy = Math.max(-1, Math.min(1, -M[2][0])), open = Math.abs(sy) < 1 - 1e-9, r = a => Math.round(a / deg * 100) / 100 + 0;
-  return { x: r(open ? Math.atan2(M[2][1], M[2][2]) : 0), y: r(Math.asin(sy)), z: r(open ? Math.atan2(M[1][0], M[0][0]) : Math.atan2(-M[0][1], M[1][1])) };
+// Angles run from 0 to 360: past a full turn they carry on from 0, and below 0 they count back down from 360
+function wrapAngle(a) { return a < 0 || a > 360 ? Math.round(((a % 360) + 360) % 360 * 1e6) / 1e6 : a; }
+// The angles that make rotation matrix M, to a hundredth of a degree. Any matrix reads as two sets of angles, each
+// give or take full turns (one straight up or down, as any number of pairs); `near` picks those closest to the
+// angles before, so a turn counts smoothly round through 360 and 0, with the other two angles left alone.
+function rotAngles(M, near = { x: 0, y: 0, z: 0 }) {
+  const sy = Math.max(-1, Math.min(1, -M[2][0])), y = Math.asin(sy);
+  let sets;
+  if (Math.abs(sy) < 1 - 1e-9) {
+    const x = Math.atan2(M[2][1], M[2][2]), z = Math.atan2(M[1][0], M[0][0]);
+    sets = [[x, y, z], [x + Math.PI, Math.PI - y, z + Math.PI]];
+  } else {
+    const x = near.x * deg;
+    sets = [[x, y, sy > 0 ? x - Math.atan2(M[0][1], M[1][1]) : Math.atan2(-M[0][1], M[1][1]) - x]];
+  }
+  const toward = (a, to) => { const d = a / deg; return d + 360 * Math.round((to - d) / 360); };
+  const read = sets.map(([x, yy, z]) => [toward(x, near.x), toward(yy, near.y), toward(z, near.z)]);
+  const off = v => Math.abs(v[0] - near.x) + Math.abs(v[1] - near.y) + Math.abs(v[2] - near.z), [ax, ay, az] = read.reduce((m, v) => (off(v) < off(m) ? v : m));
+  const r = a => wrapAngle(Math.round(a * 100) / 100 + 0);
+  return { x: r(ax), y: r(ay), z: r(az) };
 }
 const mulM = (A, B) => A.map(r => [0, 1, 2].map(j => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
 // A turn by angle a around axis k (0 X, 1 Y, 2 Z), carrying the next axis toward the one after it
@@ -1143,9 +1159,10 @@ function ringArrows(R) {
   return out;
 }
 // The angle on the circle nearest point w on screen, searching `span` either side of `from` (the whole way round
-// without one). Searching near the last angle keeps a drag on its own side of a circle seen almost edge-on.
+// without one). Searching near the last angle, and favoring it by a few pixels per radian, keeps a drag on its own
+// side of a circle seen almost edge-on, where the far side passes right under the near one going the other way.
 function ringTheta(R, w, from = 0, span = Math.PI) {
-  const cam = R.F.cam, miss = t => { const p = R.at(t); if (!inFront(cam, p)) return Infinity; const s = cam.proj(p); return s ? Math.hypot(s.x - w.x, s.y - w.y) : Infinity; };
+  const cam = R.F.cam, stay = span < Math.PI ? 3 : 0, miss = t => { const p = R.at(t); if (!inFront(cam, p)) return Infinity; const s = cam.proj(p); return s ? Math.hypot(s.x - w.x, s.y - w.y) + stay * Math.abs(t - from) : Infinity; };
   let best = from, bd = miss(from), step = span / 36;
   for (let i = -36; i <= 36; i++) { const t = from + i * step, d = miss(t); if (d < bd) { bd = d; best = t; } }
   for (let n = 0; n < 14; n++, step /= 2) for (const t of [best - step, best + step]) { const d = miss(t); if (d < bd) { bd = d; best = t; } }
@@ -1658,6 +1675,11 @@ function frame() {
   }
   document.getElementById("stZoom").textContent = Math.round(view.z * 100) + "%";
 }
+// How far a drag has turned the box, back round to 0 after each full turn
+function ringLabel(k, total) {
+  const t = (total / deg % 360).toFixed(1);
+  return `${AXIS_NAMES[k]} ${t === "0.0" || t === "-0.0" ? "0.0" : (+t > 0 ? "+" : "") + t}°`;
+}
 // The rotation circle, with a dashed line along its axis, and while it's being dragged how far the box has turned
 function drawRing(R, panel, ghosted = false) {
   const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
@@ -1676,7 +1698,7 @@ function drawRing(R, panel, ghosted = false) {
     ctx.lineWidth = 1.25; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
   if (live && drag.moved) {
-    const deg1 = drag.total / deg, t = `${AXIS_NAMES[R.k]} ${deg1 > 0 ? "+" : ""}${deg1.toFixed(1)}°`, p = drag.at;
+    const t = ringLabel(R.k, drag.total), p = drag.at;
     ctx.font = '500 11px "IBM Plex Mono", monospace';
     const tw = ctx.measureText(t).width;
     ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
@@ -2514,7 +2536,7 @@ const schema = [
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
-    ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: -180, max: 180, step: 0.1, lo: -360, hi: 360, when: hasBox })),
+    ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
     { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
@@ -2617,11 +2639,12 @@ function makeRow(r) {
       // and the scale (remembered per edited value) stretches to fit them.
       const lo = r.lo !== undefined ? r.lo : r.min >= 0 ? 0 : -1e6, hi = r.hi !== undefined ? r.hi : 1e6;
       const lab = el("label", { for: id + "-n" });
-      const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step), min: String(lo), max: String(hi) });
+      // (an angle has no limits for its box to stop at: past either end it carries on round)
+      const num = el("input", { class: "num", type: "number", id: id + "-n", step: String(r.step), ...(r.wrap ? {} : { min: String(lo), max: String(hi) }) });
       const rng = el("input", { type: "range", id, min: String(r.min), max: String(r.max), step: String(r.step), "aria-label": labelText(r) });
       // r.get and r.set stand in for the bound value when it is worked out rather than stored (a box's size)
       const read = () => (r.get ? r.get() : getP(r.bind));
-      const set = v => { if (!Number.isFinite(v)) return; v = Math.min(hi, Math.max(lo, v)); if (r.set) { r.set(v); return; } setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
+      const set = v => { if (!Number.isFinite(v)) return; v = Math.min(hi, Math.max(lo, r.wrap ? wrapAngle(v) : v)); if (r.set) { r.set(v); return; } setP(r.bind, v); if (r.also) [].concat(r.also).forEach(p => setP(p, v)); };
       const scale = () => ui.scales[resolve(r.bind)] || { min: r.min, max: r.max };
       const grow = (sc, v) => {
         let { min, max } = sc;
@@ -2630,7 +2653,11 @@ function makeRow(r) {
         return { min, max };
       };
       rng.addEventListener("input", () => set(+rng.value));
-      num.addEventListener("input", () => { if (num.value !== "") set(+num.value); });
+      num.addEventListener("input", e => {
+        if (num.value === "") return;
+        set(+num.value);
+        if (r.wrap && !e.inputType && wrapAngle(+num.value) !== +num.value) num.value = fmt(read(), r.step); // stepped past either end, not typed
+      });
       rng.addEventListener("change", () => {
         // Letting go at the end of the slider doubles its scale so it can keep going.
         const sc = scale(), v = +rng.value; let ext = null;
@@ -3250,7 +3277,7 @@ canvas.addEventListener("pointermove", e => {
     case "ring": {
       const bx = state.boxes[state.sel], R = drag.ring, t = ringTheta(R, w, drag.theta, Math.PI / 3);
       drag.total += t - drag.theta; drag.theta = t; drag.at = s;
-      const rot = rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)));
+      const rot = rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)), bx.rot);
       if (turnFits(bx, g, rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
       break;
     }
@@ -3386,8 +3413,7 @@ const closeRingEntry = () => { ringEntry.hidden = true; };
 function applyRingEntry() {
   const v = parseFloat(ringDeg.value), bx = state.boxes[state.sel], face = ringFace();
   if (Number.isFinite(v) && bx && face) {
-    // (past a full turn, as the same angle within one, the range of its slider)
-    const g = geo(), key = AXIS_KEYS[ringOf(bx, face, g).k], to = Math.abs(v) > 360 ? v % 360 + 0 : v, rot = Object.assign({}, bx.rot, { [key]: to });
+    const g = geo(), key = AXIS_KEYS[ringOf(bx, face, g).k], to = wrapAngle(v), rot = Object.assign({}, bx.rot, { [key]: to });
     if (to !== bx.rot[key]) {
       if (!turnFits(bx, g, rot)) { toast("The view can't show this box at that angle"); return; }
       bx.rot = rot; commit(); touch();
