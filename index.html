@@ -335,7 +335,7 @@ function defaultState() {
     // scale with it: the 1-point camera's shortest focal length, and where an even-angle fan aims its rays in
     // the curved views.
     drawingScale: 1,
-    linkRays: true, symmetric: false, lockFrame: false, rotateClick: false,
+    linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true,
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
@@ -391,6 +391,7 @@ function normalize(s) {
   const d = defaultState();
   migrateLens(s);
   const out = deepMerge(d, s || {});
+  delete out.rotateClick; // the setting's name while it started off
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
   if (!["1pt", "2pt", "3pt", "iso", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
@@ -1109,7 +1110,9 @@ function boxVPs(bx, g) {
 }
 // The circle a clicked face shows: around the box's middle, square to the axis through that face, wide enough to
 // clear the box. Dragging it turns the box around that axis, which leaves the circle where it is.
-const ringFace = () => (state.rotateClick && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
+const ringFace = () => (state.rotateFaces && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
+// Before that, a selected box's face under the pointer shows its circle ghosted, to look at but not to grab
+const ghostFace = () => (state.rotateFaces && !drag && hover && hover.type === "body" && hover.bi === state.sel ? hover.face : null);
 function ringOf(bx, face, g) {
   const F = turnFrame(bx, g), k = face === "top" || face === "bottom" ? 2 : face === "s01" || face === "s23" ? 1 : 0, i = (k + 1) % 3, j = (k + 2) % 3;
   const side = [Math.abs(F.a), Math.abs(F.c), F.H], r = 0.58 * Math.hypot(side[i], side[j]);
@@ -1625,8 +1628,9 @@ function frame() {
   // selected box handles
   const bx = state.boxes[state.sel];
   if (bx) {
-    const G = boxGeo(bx, g), rf = ringFace();
-    if (rf) drawRing(ringOf(bx, rf, g), paper);
+    const G = boxGeo(bx, g), rf = ringFace(), gf = ghostFace(), solid = rf && ringOf(bx, rf, g), ghost = gf && ringOf(bx, gf, g);
+    if (ghost && !(solid && solid.k === ghost.k)) drawRing(ghost, paper, true); // (a face on the same axis has the same circle)
+    if (solid) drawRing(solid, paper);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); G.verts.forEach(paths => paths.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }))); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
@@ -1640,10 +1644,11 @@ function frame() {
   document.getElementById("stZoom").textContent = Math.round(view.z * 100) + "%";
 }
 // The rotation circle, with a dashed line along its axis, and while it's being dragged how far the box has turned
-function drawRing(R, panel) {
-  const live = drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
+function drawRing(R, panel, ghosted = false) {
+  const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
   ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
-  ctx.lineWidth = live || (hover && hover.type === "ring") ? 3.5 : 2.25;
+  if (ghosted) ctx.globalAlpha = 0.4;
+  ctx.lineWidth = live || (!ghosted && hover && hover.type === "ring") ? 3.5 : 2.25;
   ctx.beginPath(); ringPaths(R).forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); })); ctx.stroke();
   const stub = t => { const p = a3(C, m3(ax, t)); return inFront(cam, p) ? cam.proj(p) : null; }, ends = [stub(R.r), stub(-R.r)].filter(Boolean);
   if (ends.length === 2 && ends.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))) {
@@ -2488,11 +2493,11 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Rotation" },
-    { t: "check", bind: "rotateClick", label: "Rotate when a face is clicked" },
+    { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: -180, max: 180, step: 0.1, lo: -360, hi: 360, when: hasBox })),
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "With the option on, click a face and a circle appears around its box, square to the axis through that face: red for X, green for Y, blue for Z. Drag the circle to turn the box around that axis. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -3128,7 +3133,7 @@ function showHover(h) {
   if (key(h) !== key(hover)) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
-  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateClick ? "Click a face to rotate around it · drag to move the box" : HINTS[h.type] || "";
+  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? "Click this face to grab its rotation circle · drag to move the box" : "Click to select this box · drag to move it") : HINTS[h.type] || "";
 }
 const restoreKeyChanged = held => { if (!drag && lastPos) showHover(hitTest(lastPos, held)); };
 // VP markers drag in different ways depending on the mode
@@ -3160,7 +3165,7 @@ canvas.addEventListener("pointerdown", e => {
     const b = state.boxes[hit.bi]; b.faces[hit.face] = hit.type === "hidden"; state.sel = hit.bi; commit(); touch();
     showHover(hitTest(s, restoreKey(e))); return;
   }
-  drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view } };
+  drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view }, wasSel: state.sel === hit.bi };
   const rb = rayBox(), held = hit.type === "body" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
   if (rb && held === rb) drag.rays = clone(rb);
   if ((hit.type === "bottom" || hit.type === "top") && turned(state.boxes[state.sel])) drag.turn = turnFrame(state.boxes[state.sel], g);
@@ -3332,8 +3337,9 @@ function endPointer(e) {
   if (pointers.size < 2) pinch = null;
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
-  // a face clicked, not dragged, shows its rotation circle; a click anywhere else puts it away
-  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) ui.ring = drag.type === "body" && state.rotateClick ? { bi: drag.bi, face: drag.face } : null;
+  // the first click on a box selects it; clicking a face of the selected box, not dragging it, makes that face's
+  // rotation circle solid; a click anywhere else puts the circle away
+  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) ui.ring = drag.type === "body" && state.rotateFaces && drag.wasSel ? { bi: drag.bi, face: drag.face } : null;
   // a box you just reshaped or moved keeps this look when you switch perspective
   if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
@@ -3350,7 +3356,7 @@ canvas.addEventListener("wheel", e => {
 }, { passive: false });
 
 window.addEventListener("keyup", e => { if (e.key === "Meta" || e.key === "Control") restoreKeyChanged(false); });
-canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && hover.type === "hidden") { hover = null; redraw(); } });
+canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && (hover.type === "hidden" || hover.type === "body")) { hover = null; redraw(); } });
 // on a Mac, Ctrl-click would also open the context menu
 canvas.addEventListener("contextmenu", e => { if (e.ctrlKey && hover && hover.type === "hidden") e.preventDefault(); });
 window.addEventListener("keydown", e => {
