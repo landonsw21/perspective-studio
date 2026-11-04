@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Perspective drafting tool: 1- to 6-point perspective with patterned rays, boxes that snap to the grid and keep their proportions, perspective-correct face divisions and PNG, JPG and PDF export.">
+<meta name="description" content="Perspective drafting tool: 1- to 6-point perspective and isometric with patterned rays, boxes that snap to the grid and keep their proportions, perspective-correct face divisions and PNG, JPG and PDF export.">
 <style>*,*::before,*::after{box-sizing:border-box}:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}[hidden]{display:none!important}</style>
 <title>Perspective Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -172,7 +172,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
   <aside class="panel" id="panel">
     <div class="ph">
       <h1>Perspective Studio</h1>
-      <p>Choose 1- to 6-point perspective on the toolbar, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
+      <p>Choose 1- to 6-point perspective or isometric on the toolbar, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
       <p class="tip">Number boxes take values past the end of their sliders, and the slider stretches to fit. Let go of a slider at its end to double its range.</p>
     </div>
     <div id="sections"></div>
@@ -393,7 +393,7 @@ function normalize(s) {
   const out = deepMerge(d, s || {});
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
-  if (!["1pt", "2pt", "3pt", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
+  if (!["1pt", "2pt", "3pt", "iso", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
   if (!["fish", "pano"].includes(out.curvi.style4)) out.curvi.style4 = "fish";
   const cv = out.curvi;
   ["f4", "f5", "f6"].forEach(k => {
@@ -447,17 +447,26 @@ const view = { x: 0, y: 0, z: 1 };
 // guides are straight lines in 3D, projected through a lens (or onto a panorama strip).
 const CAM_MODES = ["4pt", "5pt", "6pt"];
 const isPanoMode = () => state.mode === "4pt" && state.curvi.style4 === "pano";
+// Isometric is 3-point seen from so far away that nothing converges: its three VPs sit at the corners of an
+// equilateral triangle, too far out to matter, which weights all three axes equally. Boxes and everything that
+// reads them go through 3-point's camera unchanged, their edges parallel to within a hundredth of a pixel. The
+// rays are exactly parallel. The horizon's center point is just the middle of the grid; the horizon itself
+// is out of sight.
+const isIso = () => state.mode === "iso";
+const ISO_FAR = 1e8, ISO_AXES = [P(-Math.sqrt(3) / 2, -0.5), P(Math.sqrt(3) / 2, -0.5), P(0, 1)];
+const keptCentered = bx => bx.centerH && !isIso(); // no box can be centered on a horizon that far away
 function geo() {
-  const h = state.horizon, a = h.tilt * deg;
+  const h = state.horizon, iso = isIso(), a = iso ? 0 : h.tilt * deg;
   const u = P(Math.cos(a), Math.sin(a)), n = P(-u.y, u.x);
-  const O = P(h.x, h.y);
-  const vp = state.vps.map((v, i) => add(add(O, mul(u, v.dist)), mul(n, i === 2 ? v.drop : 0)));
+  const O = iso ? P(h.x, h.y - ISO_FAR / 2) : P(h.x, h.y);
+  const vp = iso ? [...ISO_AXES, ISO_AXES[2]].map(d => add(P(h.x, h.y), mul(d, ISO_FAR))) : state.vps.map((v, i) => add(add(O, mul(u, v.dist)), mul(n, i === 2 ? v.drop : 0)));
   const g = { O, u, n, vp, mode: state.mode };
+  if (iso) { g.iso = ISO_AXES; g.mc = P(h.x, h.y); }
   // "Up" along a vertical edge standing at B: straight up in 2-point. In 3-point it runs along the line to
   // VP3: away from VP3 when VP3 is below the horizon (looking down), toward it when VP3 is above. That
   // holds on both sides of VP3, so a corner past VP3 still gets its top on the correct side.
-  g.up = state.mode === "3pt"
-    ? B => { const t = sub(vp[2], B); if (len(t) < 1e-6) return mul(n, -1); const d = norm(t); return state.vps[2].drop > 0 ? mul(d, -1) : d; }
+  g.up = state.mode === "3pt" || iso
+    ? B => { const t = sub(vp[2], B); if (len(t) < 1e-6) return mul(n, -1); const d = norm(t); return iso || state.vps[2].drop > 0 ? mul(d, -1) : d; }
     : () => mul(n, -1);
   // Box axes on screen: 2- and 3-point boxes run toward VP1 and VP2. In 1-point, widths run along the
   // horizon (their VP is at infinity) and depths run to the one VP.
@@ -474,13 +483,14 @@ function geo() {
 function fams() {
   switch (state.mode) {
     case "1pt": return [3];
-    case "3pt": return [0, 1, 2];
+    case "3pt": case "iso": return [0, 1, 2];
     case "4pt": return isPanoMode() ? [0, 1] : [0, 1, 2];
     case "5pt": case "6pt": return [0, 3, 2];
     default: return [0, 1];
   }
 }
 function famName(vi) {
+  if (isIso()) return vi === 2 ? "vertical" : "axis " + (vi + 1);
   if (state.mode === "1pt") return "VP";
   if (isPanoMode()) return vi === 0 ? "VP1 and VP3" : "VP2 and VP4";
   if (state.mode === "4pt") return vi === 2 ? "up and down" : "VP" + (vi + 1);
@@ -887,6 +897,15 @@ const horizontalsAt = g => guidesAt(state.horizontals, g, false, g.O, g.n);
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
   const pat = R.pattern || "A", fit = rayBox();
+  if (g.iso) {
+    // Parallel lines. All three axes share one spacing and count, measured square to the lines, so the lines
+    // through the middle of the grid and every other crossing meet in threes.
+    const d = g.iso[vi];
+    if (fit) return boxRays(vi, g, fit).map(r => Object.assign(r, { d }));
+    const G = state.vps[0].rays, c = Math.max(0, Math.round(G.count)), side = P(-d.y, d.x);
+    for (let k = -c; k <= c; k++) out.push({ d, q: add(anchor, mul(side, k * G.spacing + R.measure)), ch: pat[(R.from === "edge" ? k + c : Math.abs(k)) % pat.length] });
+    return out;
+  }
   if (fit) return boxRays(vi, g, fit);
   if (R.mode === "spacing") {
     // VP1/VP2 measure along a vertical line; VP3, up/down and center rays measure along a horizontal one.
@@ -1029,6 +1048,7 @@ function topFromScreen(Bu, S, g) {
   return Math.max(1e-9, Math.min(50, hl * Dm.y / dmx - Bu.y));
 }
 function axisName(a) {
+  if (isIso()) return "axis " + (a + 1);
   if (isPanoMode()) return a ? "VP2 and VP4" : "VP1 and VP3";
   if (state.mode === "4pt") return a ? "VP2" : "VP1";
   if (["5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
@@ -1064,9 +1084,9 @@ function linearGuides(g) {
   // Rays spaced along a box are the box's own lines, so they stop at the VP: past it they'd be those lines
   // mirrored through the eye, across the horizon from the real ones.
   const onBox = !!rayBox();
-  fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push({ p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
-  if (state.horizon.show) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
-  if (state.verticals.show && state.mode !== "3pt") for (const t of verticalsAt(g)) lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
+  fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push(g.iso ? { p: r.q, d: r.d, fwd: false, fam: "r" + vi } : { p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
+  if (state.horizon.show && !g.iso) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
+  if (state.verticals.show && state.mode !== "3pt" && !g.iso) for (const t of verticalsAt(g)) lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
   // (a horizontal guide along the horizon itself would only repeat it)
   if (state.horizontals.show && state.mode === "1pt") for (const s of horizontalsAt(g)) if (Math.abs(s) > 1e-9) lines.push({ p: add(g.O, mul(g.n, s)), d: g.u, fwd: false, fam: "x" });
   const pts = [], LIM = 4e4;
@@ -1076,7 +1096,7 @@ function linearGuides(g) {
     if (A.fam === Bl.fam) continue;
     const r = isect(A.p, A.d, Bl.p, Bl.d);
     if (!r || (A.fwd && r.t < -1e-6) || (Bl.fwd && r.u < -1e-6)) continue;
-    if (Math.abs(r.x - g.O.x) > LIM || Math.abs(r.y - g.O.y) > LIM) continue;
+    const M = g.mc || g.O; if (Math.abs(r.x - M.x) > LIM || Math.abs(r.y - M.y) > LIM) continue;
     pts.push(P(r.x, r.y));
   }
   return { lines, arcs: [], pts };
@@ -1254,7 +1274,7 @@ function drawGuides(c, k, b, inc, g) {
     return p;
   };
   const onBox = !!rayBox();
-  if (inc.verticals && V.show && state.mode !== "3pt") {
+  if (inc.verticals && V.show && state.mode !== "3pt" && !g.iso) {
     const L = onBox ? undefined : farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
     strokeStyle(c, V, k); c.stroke(guidePath(verticalsAt(g), g.u, g.n, L));
   }
@@ -1266,15 +1286,18 @@ function drawGuides(c, k, b, inc, g) {
   if (inc.rays) fams().forEach(vi => {
     const R = state.vps[vi].rays; if (!R.show) return;
     const VP = g.vp[vi], L = farDist(VP, b), paths = new Map();
+    // isometric rays are drawn just across the view, from their own line rather than from a VP so far away
+    const mid = P(b.x + b.w / 2, b.y + b.h / 2), reach = farDist(mid, b);
     for (const r of rayList(vi, g)) {
       if (r.ch === ".") continue;
       if (!paths.has(r.ch)) paths.set(r.ch, newPath(c));
-      const p = paths.get(r.ch), s = R.behind && !onBox ? add(VP, mul(r.d, -L)) : VP, e = add(VP, mul(r.d, L));
+      const at = g.iso && add(r.q, mul(r.d, dot(sub(mid, r.q), r.d)));
+      const p = paths.get(r.ch), s = g.iso ? add(at, mul(r.d, -reach)) : R.behind && !onBox ? add(VP, mul(r.d, -L)) : VP, e = g.iso ? add(at, mul(r.d, reach)) : add(VP, mul(r.d, L));
       p.moveTo(s.x, s.y); p.lineTo(e.x, e.y);
     }
     [...paths].sort(byLayer).forEach(([ch, p]) => { strokeStyle(c, styleOf(R, ch), k); c.stroke(p); });
   });
-  if (inc.horizon && H.show) {
+  if (inc.horizon && H.show && !g.iso) {
     const L = farDist(g.O, b), a = add(g.O, mul(g.u, -L)), e = add(g.O, mul(g.u, L));
     strokeStyle(c, H, k); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(e.x, e.y); c.stroke();
   }
@@ -1385,6 +1408,7 @@ function drawBox(c, bx, g, k) {
 }
 // Every VP marker on screen: plain VPs in 2- and 3-point, the camera's points (some shown twice) otherwise
 function vpMarkers(g) {
+  if (g.iso) return [];
   if (g.cam) return g.cam.markers;
   if (state.mode === "1pt") return [marker(g.vp[3], "VP", 3, "anywhere")];
   return fams().map(i => marker(g.vp[i], "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
@@ -1456,7 +1480,7 @@ function frame() {
     drawScaleHandle(accent, ink, panel);
   }
   // horizon anchor
-  if (state.horizon.show && !state.lockFrame) {
+  if (state.horizon.show && !state.lockFrame && !g.iso) {
     const o = toS(g.O); ctx.fillStyle = paper; ctx.strokeStyle = ink; ctx.lineWidth = 1.25;
     ctx.beginPath(); ctx.moveTo(o.x, o.y - 6); ctx.lineTo(o.x + 6, o.y); ctx.lineTo(o.x, o.y + 6); ctx.lineTo(o.x - 6, o.y); ctx.closePath(); ctx.fill(); ctx.stroke();
   }
@@ -1531,7 +1555,10 @@ function makeBox(g, slot = 0) {
     bx.b0 = P(p0.x, p0.y); bx.b2 = P(p2.x, p2.y); bx.h = 240; bx.H = 0.3 / (l3(B0) || 1);
     return bx;
   }
-  if (state.mode === "1pt") {
+  if (g.iso) {
+    const below = add(g.mc, mul(g.n, 200 + 150 * Math.ceil(slot / 2))), side = mul(g.u, 330 * (slot % 2 ? 1 : slot ? -1 : 0)), b0 = add(below, side);
+    bx.b0 = b0; bx.b2 = add(add(b0, mul(g.iso[0], 200)), mul(g.iso[1], 200)); bx.h = 200;
+  } else if (state.mode === "1pt") {
     const V = g.vp[3], b0 = add(V, add(mul(g.n, 300), mul(g.u, -260)));
     const b1 = add(b0, mul(g.u, 240)), b3 = add(b0, mul(sub(V, b0), 0.28));
     const b2 = meetAx(g, b1, 1, b3, 0) || add(b0, mul(g.u, 120));
@@ -1674,7 +1701,7 @@ const mat3 = (m, v) => V3(m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z, m[1][0]
 function pinhole3(g) {
   const o = ortho3(g), c = o ? { C: o.H, f: o.f } : center2(g), [V1, V2, V3p] = g.vp;
   const wt = V => c.f / Math.hypot(V.x - c.C.x, V.y - c.C.y, c.f);
-  const w1 = wt(V1), w2 = wt(V2), w3 = (state.vps[2].drop > 0 ? -1 : 1) * wt(V3p); // looking down, up heads away from VP3
+  const w1 = wt(V1), w2 = wt(V2), w3 = (g.iso || state.vps[2].drop > 0 ? -1 : 1) * wt(V3p); // looking down, up heads away from VP3
   const M = [[w1 * V1.x, w3 * V3p.x, w2 * V2.x], [w1 * V1.y, w3 * V3p.y, w2 * V2.y], [w1, w3, w2]], Mi = inv3(M);
   const ahead = n3(V3(w1, w3, w2)), depthOf = p => d3(p, ahead);
   const proj = W => { const p = mat3(M, W), w = Math.max(p.z, 1e-6); return P(p.x / w, p.y / w); };
@@ -1694,7 +1721,7 @@ function pinhole3(g) {
 }
 function convCam(g) {
   if (g.cam) return g.cam;
-  return state.mode === "1pt" ? pinhole1(g) : state.mode === "3pt" ? pinhole3(g) : pinhole2(g);
+  return state.mode === "1pt" ? pinhole1(g) : state.mode === "3pt" || g.iso ? pinhole3(g) : pinhole2(g);
 }
 // A box read as 3D through the mode's camera: its base corners and its height
 function box3(bx, g) {
@@ -1725,7 +1752,8 @@ function boxPlace(bx, g) {
 // leaves them alone. They don't depend on which corner is the box's anchor.
 function boxSize(bx, g) {
   const { cam, B, H } = box3(bx, g), [A1, A2] = cam.axes, mid = m3(a3(B[0], B[2]), 0.5);
-  const px = cam.depthOf ? cam.f / cam.depthOf(mid) : cam.F / l3(mid);
+  // (an isometric view draws every edge at √⅔ of its 3D length, so there a size is simply the edge's length on the page)
+  const px = (cam.depthOf ? cam.f / cam.depthOf(mid) : cam.F / l3(mid)) * (isIso() ? Math.sqrt(2 / 3) : 1);
   return { cam, B, H, mid, a: d3(s3(B[1], B[0]), A1), c: d3(s3(B[3], B[0]), A2), px };
 }
 function screenBox(pts) {
@@ -1860,7 +1888,7 @@ function boxPlans(g) {
     } catch (e) { return null; }
   });
 }
-function refitBoxes(plans, g) { state.boxes.forEach((bx, i) => { const p = plans[i]; if (p) fitBox(bx, p.dims, p.c, p.s, g, p.place); if (bx.centerH) centerOnHorizon(bx, g); }); }
+function refitBoxes(plans, g) { state.boxes.forEach((bx, i) => { const p = plans[i]; if (p) fitBox(bx, p.dims, p.c, p.s, g, p.place); if (keptCentered(bx)) centerOnHorizon(bx, g); }); }
 // In 1-, 2- and 3-point, moving the horizon or a VP re-fits every box, so each keeps its place, size and
 // proportions and lines up with the new grid. (A box pinned to screen points could otherwise end up with
 // its base straddling the horizon, which sends its edges shooting out of the VPs.) In the lens modes the
@@ -1958,7 +1986,7 @@ function dupBox() {
     const p0 = g.cam.proj(B[0]), p2 = g.cam.proj(B[2]);
     c.b0 = P(p0.x, p0.y); c.b2 = P(p2.x, p2.y); c.H = bx.H / (l3(B[bx.anchor]) || 1);
   } else { const d = mul(g.u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); }
-  if (c.centerH) centerOnHorizon(c, g);
+  if (keptCentered(c)) centerOnHorizon(c, g);
   c.rayFit = false; // the rays stay with the original
   captureFit(c, g);
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
@@ -1979,7 +2007,7 @@ function setBoxSide(k, v) {
   to[k] = (k < 2 && from[k] < 0 ? -1 : 1) * Math.max(1e-6, v / s.px);
   const build = t => {
     const [a, c, H] = from.map((x, i) => x + (to[i] - x) * t), B0 = s3(s.mid, m3(a3(m3(A1, a), m3(A2, c)), 0.5));
-    if (bx.centerH) B0.y = -H / 2;
+    if (keptCentered(bx)) B0.y = -H / 2;
     return boxFrom3(bx, [B0, a3(B0, m3(A1, a)), a3(a3(B0, m3(A1, a)), m3(A2, c)), a3(B0, m3(A2, c))], H, g);
   };
   let nb = build(1);
@@ -2119,7 +2147,7 @@ function setP(path, val) {
 const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"], ["longdash", "Long dash"], ["dashdotdot", "Dash-dot-dot"]];
 const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["ABC", "Three styles: A, B, C"], ["ABCD", "Four styles: A to D"], ["ABAC", "A, then B and C in turn"], ["custom", "Custom…"]];
 const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"]];
-const isSpacing = () => getP("vps.$v.rays.mode") === "spacing";
+const isSpacing = () => getP("vps.$v.rays.mode") === "spacing" || isIso();
 // A new ray pattern gives any letter it adds a style of its own. VP1 and VP2 rays edited together share the
 // pattern, and a letter new to the other family copies the edited family's weight, line and opacity in a
 // color of its own
@@ -2186,6 +2214,7 @@ const schema = [
     { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
     { t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP anywhere and the horizon moves with it, and set its rays under Rays.", when: is1 },
     { t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
+    { t: "note", html: "No vanishing points and no horizon. Every set of box edges stays parallel, at 30° either side of level and straight up and down, and nothing shrinks with distance, so sizes can be measured anywhere on the page. The three sets of rays make a grid of equal triangles.", when: isIso },
     { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
     { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
     { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
@@ -2244,18 +2273,21 @@ const schema = [
     { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show" },
-      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || rayBox()) },
-      { bind: "linkRays", label: "Edit VP1 and VP2 together", when: () => ui.vp < 2 && fams().includes(1) }
+      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || isIso() || rayBox()) },
+      { bind: "linkRays", label: () => (isIso() ? "Edit axes 1 and 2 together" : "Edit VP1 and VP2 together"), when: () => ui.vp < 2 && fams().includes(1) }
     ] },
-    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() },
+    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() && !isIso() },
     { t: "range", bind: "vps.$v.rays.count", label: () => rayBox() ? "Rays past the box at each end" : isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
-    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isSpacing() && !rayBox() },
-    { t: "range", bind: "vps.$v.rays.measure", label: () => (ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: () => isSpacing() && !rayBox() },
+    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isSpacing() && !rayBox() && !isIso() },
+    { t: "range", bind: "vps.0.rays.count", uid: "iso", label: "Lines each side of the middle (all three axes)", min: 0, max: 80, step: 1, hi: 400, when: () => isIso() && !rayBox() },
+    { t: "range", bind: "vps.0.rays.spacing", uid: "iso", label: "Grid spacing (all three axes)", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isIso() && !rayBox() },
+    { t: "range", bind: "vps.$v.rays.measure", label: () => (isIso() ? "Offset" : ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: () => isSpacing() && !rayBox() },
     { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() && !rayBox() },
     { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() && !rayBox() },
     { t: "sub", label: "Pattern and styles" },
     { t: "pattern", of: RAY_PATTERN },
-    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() },
+    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() && !isIso() },
+    { t: "toggle", bind: "vps.$v.rays.from", uid: "iso", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !rayBox() && isIso() },
     { t: "styles", of: RAY_PATTERN },
     { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
   ]},
@@ -2291,7 +2323,7 @@ const schema = [
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
-    { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: hasBox },
+    { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
     { t: "select", bind: "boxes.$b.rayFaces", label: "Rays run along", options: [["sides", "Vertical faces"], ["front", "Front faces, even hidden"], ["caps", "Top and bottom"]], when: () => hasBox() && !!getP("boxes.$b.rayFit") },
     { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays below the horizon continue the division lines across its bottom instead, and the rays above it the ones across its top (a box below eye level has only the first, one above it only the second), and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden. Front faces, even hidden, works like Vertical faces but stays on the front faces when they're hidden.", when: hasBox },
@@ -2325,7 +2357,7 @@ const schema = [
     { t: "pair", items: [{ bind: "viewport.w", label: "W" }, { bind: "viewport.h", label: "H" }] },
     { t: "pair", items: [{ bind: "viewport.x", label: "X" }, { bind: "viewport.y", label: "Y" }] },
     { t: "sizepreset" },
-    { t: "btns", items: [["Center on horizon", () => { const g = geo(), V = state.viewport; V.x = Math.round(g.O.x - V.w / 2); V.y = Math.round(g.O.y - V.h / 2); commit(); touch(); }, ""], ["Swap W / H", () => { const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; [V.w, V.h] = [V.h, V.w]; V.x = Math.round(cx - V.w / 2); V.y = Math.round(cy - V.h / 2); commit(); touch(); }, ""]] },
+    { t: "btns", items: [["Center on horizon", () => { const g = geo(), V = state.viewport; V.x = Math.round(g.O.x - V.w / 2); V.y = Math.round(g.O.y - V.h / 2); commit(); touch(); }, "", () => !isIso()], ["Swap W / H", () => { const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; [V.w, V.h] = [V.h, V.w]; V.x = Math.round(cx - V.w / 2); V.y = Math.round(cy - V.h / 2); commit(); touch(); }, ""]] },
     { t: "check", bind: "viewport.lockAspect", label: "Lock aspect ratio" },
     { t: "check", bind: "viewport.dim", label: "Shade the area outside" },
     { t: "check", bind: "viewport.clip", label: "Clip guides to the export area" },
@@ -2340,10 +2372,10 @@ const schema = [
     { t: "note", html: "JPG has no transparency, so the background is always white.", when: () => state.export.format === "jpg" },
     { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area, one point for each pixel.", when: () => state.export.format === "pdf" },
     { t: "check", bind: "export.rays", label: "Include rays" },
-    { t: "check", bind: "export.verticals", label: () => (is1() ? "Include vertical and horizontal guides" : "Include vertical guides") },
-    { t: "check", bind: "export.horizon", label: "Include horizon line" },
-    { t: "check", bind: "export.vps", label: "Include VP markers" },
-    { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge" },
+    { t: "check", bind: "export.verticals", label: () => (is1() ? "Include vertical and horizontal guides" : "Include vertical guides"), when: () => !isIso() },
+    { t: "check", bind: "export.horizon", label: "Include horizon line", when: () => !isIso() },
+    { t: "check", bind: "export.vps", label: "Include VP markers", when: () => !isIso() },
+    { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge", when: () => !isIso() },
     { t: "check", bind: "export.boxes", label: "Include boxes" },
     { t: "btns", items: [[() => "Export " + EXPORT_FORMATS[state.export.format], exportFile, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
   ]},
@@ -2363,6 +2395,19 @@ function idFor(bind) { return "f-" + bind.replace(/[$.]/g, "-"); }
 function fmt(v, step) { const d = (String(step).split(".")[1] || "").length; return (+v).toFixed(d); }
 const fmtScale = v => String(Math.round(v * 1000) / 1000);
 function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v); } kids.forEach(k => e.append(k)); return e; }
+// What isometric doesn't have: its horizon and VPs (only the page-centering button still means something, for
+// the middle of the grid), and vertical guides, which its vertical rays stand in for. One count serves all
+// three axes there, except past a box the rays are spaced along.
+function isoOnly(id, html, keep = () => false) {
+  const sec = schema.find(s => s.id === id);
+  sec.rows.forEach(r => { if (keep(r)) return; const w = r.when; r.when = () => !isIso() && (!w || w()); });
+  sec.rows.unshift({ t: "note", html, when: isIso });
+}
+isoOnly("horizon", "An isometric view has no horizon. Center on page puts the middle of the grid in the middle of the export area.", r => r.t === "btns");
+isoOnly("vps", "An isometric view has no vanishing points: its three sets of lines stay parallel. Set them under Rays.");
+isoOnly("verticals", "In isometric, vertical lines are the vertical axis under Rays.");
+{ const r = schema.find(s => s.id === "rays").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!rayBox()) && (!w || w()); }
+
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
 function makeRow(r) {
@@ -2447,10 +2492,11 @@ function makeRow(r) {
       const items = r.items.map(it => {
         const iid = idFor(it.bind), inp = el("input", { type: "checkbox", id: iid });
         inp.addEventListener("change", () => { setP(it.bind, inp.checked); commit(); });
-        return { it, inp, cell: el("span", { class: "chk" }, inp, el("label", { for: iid }, it.label)) };
+        const lab = el("label", { for: iid }, labelText(it));
+        return { it, inp, lab, cell: el("span", { class: "chk" }, inp, lab) };
       });
       node = el("div", { class: "checks" }, ...items.map(x => x.cell));
-      update = () => items.forEach(({ it, inp, cell }) => { cell.hidden = !!it.when && !it.when(); inp.checked = !!getP(it.bind); });
+      update = () => items.forEach(({ it, inp, lab, cell }) => { cell.hidden = !!it.when && !it.when(); inp.checked = !!getP(it.bind); lab.textContent = labelText(it); });
       break;
     }
     case "toggle": {
@@ -2596,6 +2642,7 @@ function buildPanel() {
 }
 function rayTabs() {
   if (is1()) return [[3, "VP"]];
+  if (isIso()) return [[0, "Axis 1"], [1, "Axis 2"], [2, "Vertical"]];
   if (isPano()) return [[0, "VP1 & VP3"], [1, "VP2 & VP4"]];
   if (isFish4()) return [[0, "VP1"], [1, "VP2"], [2, "Up & down"]];
   if (radiusMode()) return [[0, "Left & right"], [3, is6() ? "Front & back" : "Center"], [2, "Up & down"]];
@@ -2994,7 +3041,7 @@ canvas.addEventListener("pointermove", e => {
     }
     case "top": {
       const bx = state.boxes[state.sel];
-      if (bx.centerH) {
+      if (keptCentered(bx)) {
         // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
         let S = w;
         if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
@@ -3015,7 +3062,7 @@ canvas.addEventListener("pointermove", e => {
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
       const free = s3(slideTo(R.cam, R.c0, add(R.s0, sub(w, drag.w0))), R.c0), moves = [];
-      if (bx.centerH) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
+      if (keptCentered(bx)) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
       else {
         if (useSnap) {
           // snap the base corner nearest the grab point, moving the whole box with it
@@ -3137,7 +3184,7 @@ document.getElementById("tbEven").addEventListener("click", evenVPs);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
 // The perspective dropdown on the toolbar, with 4-point's fisheye and panorama as choices of their own
-const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"]];
+const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["iso", "Isometric"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"]];
 const tbMode = document.getElementById("tbMode");
 MODES.forEach(([v, t]) => tbMode.append(el("option", { value: v }, t)));
 tbMode.addEventListener("change", () => chooseMode(tbMode.value));
