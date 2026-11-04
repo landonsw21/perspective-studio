@@ -1114,10 +1114,10 @@ function rotMatrix(r) {
 }
 // Angles run from 0 to 360: past a full turn they carry on from 0, and below 0 they count back down from 360
 function wrapAngle(a) { return a < 0 || a > 360 ? Math.round(((a % 360) + 360) % 360 * 1e6) / 1e6 : a; }
-// The angles that make rotation matrix M, to a hundredth of a degree. Any matrix reads as two sets of angles, each
+// The angles that make rotation matrix M, to a hundredth of a degree (or 1/`per`). Any matrix reads as two sets of angles, each
 // give or take full turns (one straight up or down, as any number of pairs); `near` picks those closest to the
 // angles before, so a turn counts smoothly round through 360 and 0, with the other two angles left alone.
-function rotAngles(M, near = { x: 0, y: 0, z: 0 }) {
+function rotAngles(M, near = { x: 0, y: 0, z: 0 }, per = 100) {
   const sy = Math.max(-1, Math.min(1, -M[2][0])), y = Math.asin(sy);
   let sets;
   if (Math.abs(sy) < 1 - 1e-9) {
@@ -1130,10 +1130,19 @@ function rotAngles(M, near = { x: 0, y: 0, z: 0 }) {
   const toward = (a, to) => { const d = a / deg; return d + 360 * Math.round((to - d) / 360); };
   const read = sets.map(([x, yy, z]) => [toward(x, near.x), toward(yy, near.y), toward(z, near.z)]);
   const off = v => Math.abs(v[0] - near.x) + Math.abs(v[1] - near.y) + Math.abs(v[2] - near.z), [ax, ay, az] = read.reduce((m, v) => (off(v) < off(m) ? v : m));
-  const r = a => wrapAngle(Math.round(a * 100) / 100 + 0);
+  const r = a => wrapAngle(Math.round(a * per) / per + 0);
   return { x: r(ax), y: r(ay), z: r(az) };
 }
 const mulM = (A, B) => A.map(r => [0, 1, 2].map(j => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
+// Rotation M after the least turn that sets its axis k along unit direction d, or null when d is straight opposite,
+// where no one turn is the least
+function aimedRot(cam, M, k, d) {
+  const a = M.map(r => r[k]), b = [...cam.axes, UP3].map(e => d3(e, d)), c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (1 + c < 1e-9) return null;
+  const v = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const K = [[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]], K2 = mulM(K, K);
+  return mulM([0, 1, 2].map(i => [0, 1, 2].map(j => (i === j ? 1 : 0) + K[i][j] + K2[i][j] / (1 + c))), M);
+}
 // A turn by angle a around axis k (0 X, 1 Y, 2 Z), carrying the next axis toward the one after it
 function axisTurn(k, a) {
   const c = Math.cos(a), s = Math.sin(a), i = (k + 1) % 3, j = (k + 2) % 3, M = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -1167,7 +1176,7 @@ function turnFits(bx, g, rot = bx.rot, was = bx) {
 function boxVPs(bx, g) {
   if (g.iso || !turned(bx) || bx.showVPs === false) return [];
   const { cam, ax } = turnFrame(bx, g), out = [], page = [...cam.axes, UP3].map(n3);
-  const add1 = (d, k) => { const s = cam.proj(d); if (s && Number.isFinite(s.x) && Number.isFinite(s.y) && Math.hypot(s.x - g.O.x, s.y - g.O.y) < 1e6) out.push({ p: P(s.x, s.y), k, label: `${bx.name} ${AXIS_NAMES[k]}` }); };
+  const add1 = (d, k) => { const s = cam.proj(d); if (s && Number.isFinite(s.x) && Number.isFinite(s.y) && Math.hypot(s.x - g.O.x, s.y - g.O.y) < 1e6) out.push({ p: P(s.x, s.y), k, d, label: `${bx.name} ${AXIS_NAMES[k]}` }); };
   ax.forEach((a, k) => {
     const D = n3(a);
     if (page.some(e => Math.abs(d3(D, e)) > 1 - 1e-9)) return;
@@ -2764,7 +2773,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "check", bind: "boxes.$b.showRays", label: () => (isIso() ? "Show rays from its front faces" : "Show rays from its front faces to them"), when: () => hasBox() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Select a box, then hover over a face, hidden or not, to ghost it and its rotation circle, square to the axis through that face: red for X, green for Y, blue for Z. Hold Alt (⌥) for the face behind it. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Select a box, then hover over a face, hidden or not, to ghost it and its rotation circle, square to the axis through that face: red for X, green for Y, blue for Z. Hold Alt (⌥) for the face behind it. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -3383,17 +3392,20 @@ const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX
 function hitTest(s, reach = "") {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
+  const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * state.vps[0].size + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
   if (bx) {
     const G = boxGeo(bx, g);
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
     const rf = ringFace();
     if (rf && ringPaths(ringOf(bx, rf, g)).some(pl => pl.some((p, i) => i && segDist(s, toS(pl[i - 1]), toS(p)) < 7))) return { type: "ring" };
+    const own = vpOf(state.sel); if (own) return own; // (its own before the page's, which move far more)
   }
   if (!state.lockFrame) {
     for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < state.vps[mk.vi].size + 7) return { type: "vp", i: mk.vi, mk };
     if (state.horizon.show && len(sub(toS(g.O), s)) < 9) return { type: "anchor" };
   }
+  for (let bi = 0; bi < state.boxes.length; bi++) { const h = bi !== state.sel && vpOf(bi); if (h) return h; }
   const V = state.viewport;
   if (V.show) {
     const a = toS(P(V.x, V.y)), W = V.w * view.z, H = V.h * view.z;
@@ -3434,10 +3446,11 @@ const HINTS = {
   vmove: "Drag the edge to move the export area",
   vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
   ring: "Drag around the circle to rotate the box · click it to set the angle",
+  boxvp: "Drag to turn the box, its edges following this point · it catches on the horizon, hold Alt to stop that",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back"
 };
-const CURSORS = { ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
+const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held is drawn as a ghost). lastPos lets pressing or letting go of the
 // key update it without the mouse moving.
@@ -3488,6 +3501,12 @@ canvas.addEventListener("pointerdown", e => {
   else if (hit.type === "ring") {
     const R = ringOf(state.boxes[state.sel], ringFace(), g);
     Object.assign(drag, { ring: R, theta: ringTheta(R, w), total: 0, at: s });
+  } else if (hit.type === "boxvp") {
+    state.sel = hit.bi;
+    const bx = state.boxes[hit.bi], F = turnFrame(bx, g);
+    // (always measured from the turn it started at, so the box ends up the same however the pointer got there)
+    Object.assign(drag, { M0: F.M, rot0: bx.rot, off: sub(hit.p, w), end: d3(hit.d, F.ax[hit.k]) > 0 ? 1 : -1 });
+    touch();
   } else if (hit.type === "bottom" || hit.type === "top") {
     // Re-anchor the height at the corner that stays put (the opposite base corner, or the dragged top's own base).
     const bx = state.boxes[state.sel], G = boxGeo(bx, g);
@@ -3551,6 +3570,18 @@ canvas.addEventListener("pointermove", e => {
       const bx = state.boxes[state.sel], R = drag.ring, t = ringTheta(R, w, drag.theta, Math.PI / 3);
       drag.total += t - drag.theta; drag.theta = t; drag.at = s;
       const rot = rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)), bx.rot);
+      if (turnFits(bx, g, rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
+      break;
+    }
+    case "boxvp": {
+      const bx = state.boxes[drag.bi], cam = convCam(g);
+      let S = add(w, drag.off);
+      // the horizon catches it, which keeps a level box level
+      const h = dot(sub(S, g.O), g.n);
+      if (useSnap && Math.abs(h) * view.z < 10) { S = sub(S, mul(g.n, h)); snapMark = { pt: S, kind: "line" }; }
+      const M = aimedRot(cam, drag.M0, drag.k, m3(n3(cam.unproj(cam.wrapS ? cam.wrapS(S) : S)), drag.end));
+      if (!M) break;
+      const rot = rotAngles(M, drag.rot0, 1e4);
       if (turnFits(bx, g, rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
       break;
     }
