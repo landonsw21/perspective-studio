@@ -1872,6 +1872,13 @@ function changeGrid(mutate) {
   mutate();
   refitBoxes(plans, geo());
 }
+// Puts the horizon's center point in the middle of the export area, with the boxes kept as for any horizon move
+function centerHorizonOnPage() {
+  const V = state.viewport, x = V.x + V.w / 2, y = V.y + V.h / 2;
+  if (state.horizon.x === x && state.horizon.y === y) return;
+  changeGrid(() => { state.horizon.x = x; state.horizon.y = y; });
+  commit(); touch();
+}
 // Changing the perspective keeps each box's size and place on screen and its real proportions, then
 // rebuilds it under the new rules, so nothing needs re-zooming or re-placing after a switch.
 function reshape(mutate) {
@@ -2206,6 +2213,7 @@ const schema = [
     { t: "range", bind: "horizon.y", label: "Eye level (Y)", min: -3000, max: 3000, step: 1 },
     { t: "range", bind: "horizon.x", label: "Center point (X)", min: -3000, max: 3000, step: 1 },
     { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1, lo: -180, hi: 180 },
+    { t: "btns", items: [["Center on page", centerHorizonOnPage, ""]] },
     { t: "color", bind: "horizon.color", label: "Color" },
     { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25, hi: 500 },
     { t: "select", bind: "horizon.dash", label: "Line style", options: DASH },
