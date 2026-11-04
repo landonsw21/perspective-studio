@@ -1058,7 +1058,7 @@ function geoFrom3(B, T, cam, n) {
 // A box stays stored square to the page's axes, its home, which sizes, moves, fitting and perspective switches all
 // work on. bx.rot then turns it about its middle: around X (the width axis), then Y (length), then Z (height), the
 // way Rhino names them, so Z alone keeps it level. Angles are degrees, kept as they're typed.
-const AXIS_NAMES = ["X", "Y", "Z"], AXIS_COLORS = ["#d8453c", "#2f9e52", "#2f6fd0"];
+const AXIS_KEYS = ["x", "y", "z"], AXIS_NAMES = ["X", "Y", "Z"], AXIS_COLORS = ["#d8453c", "#2f9e52", "#2f6fd0"];
 const turned = bx => !!(bx.rot && (bx.rot.x || bx.rot.y || bx.rot.z));
 function rotMatrix(r) {
   const [cx, sx, cy, sy, cz, sz] = [r.x, r.y, r.z].flatMap(a => [Math.cos(a * deg), Math.sin(a * deg)]);
@@ -2517,7 +2517,7 @@ const schema = [
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: -180, max: 180, step: 0.1, lo: -360, hi: 360, when: hasBox })),
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it and type how many degrees to turn. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Select a box, then hover over a face to see its rotation circle, ghosted, square to the axis through that face: red for X, green for Y, blue for Z. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -3138,7 +3138,7 @@ const HINTS = {
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
   vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
-  ring: "Drag around the circle to rotate the box · click it to type an angle",
+  ring: "Drag around the circle to rotate the box · click it to set the angle",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back"
 };
@@ -3367,27 +3367,31 @@ function endPointer(e) {
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
 }
-// Clicking the solid circle, rather than dragging it, opens a box for typing how far to turn the box, in the
-// direction the arrows point. It opens on the click, which comes after everything a tap sends, so nothing that
-// follows the tap takes the focus straight back. Enter turns the box; Escape or clicking elsewhere leaves it.
+// Clicking the solid circle, rather than dragging it, opens a box for the angle around that axis, measured from the
+// box's default and the same one that axis's slider sets. It starts filled in and selected, so typing replaces it.
+// It opens on the click, which comes after everything a tap sends, so nothing that follows the tap takes the focus
+// straight back. Enter sets the angle; Escape or clicking elsewhere leaves it.
 const ringEntry = document.getElementById("ringEntry"), ringDeg = document.getElementById("ringDeg");
 function openRingEntry(s) {
   const bx = state.boxes[state.sel], face = ringFace(); if (!bx || !face) return;
   const k = ringOf(bx, face, geo()).k, lab = document.getElementById("ringLab");
-  lab.textContent = `Rotate ${AXIS_NAMES[k]} by`; lab.style.color = AXIS_COLORS[k];
-  ringDeg.value = ""; ringEntry.hidden = false;
+  lab.textContent = `Rotate ${AXIS_NAMES[k]} to`; lab.style.color = AXIS_COLORS[k];
+  ringDeg.value = String(Math.round(bx.rot[AXIS_KEYS[k]] * 100) / 100); ringEntry.hidden = false;
   const st = document.getElementById("stage"), m = 8;
   ringEntry.style.left = Math.max(m, Math.min(st.clientWidth - ringEntry.offsetWidth - m, s.x + 12)) + "px";
   ringEntry.style.top = Math.max(m, Math.min(st.clientHeight - ringEntry.offsetHeight - m, s.y + 12)) + "px";
-  ringDeg.focus({ preventScroll: true });
+  ringDeg.focus({ preventScroll: true }); ringDeg.select();
 }
 const closeRingEntry = () => { ringEntry.hidden = true; };
 function applyRingEntry() {
   const v = parseFloat(ringDeg.value), bx = state.boxes[state.sel], face = ringFace();
-  if (Number.isFinite(v) && v !== 0 && bx && face) {
-    const g = geo(), R = ringOf(bx, face, g), rot = rotAngles(mulM(R.F.M, axisTurn(R.k, v * deg)));
-    if (!turnFits(bx, g, rot)) { toast("The view can't show this box at that angle"); return; }
-    bx.rot = rot; commit(); touch();
+  if (Number.isFinite(v) && bx && face) {
+    // (past a full turn, as the same angle within one, the range of its slider)
+    const g = geo(), key = AXIS_KEYS[ringOf(bx, face, g).k], to = Math.abs(v) > 360 ? v % 360 + 0 : v, rot = Object.assign({}, bx.rot, { [key]: to });
+    if (to !== bx.rot[key]) {
+      if (!turnFits(bx, g, rot)) { toast("The view can't show this box at that angle"); return; }
+      bx.rot = rot; commit(); touch();
+    }
   }
   closeRingEntry(); canvas.focus({ preventScroll: true });
 }
