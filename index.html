@@ -117,6 +117,11 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .btn { font: 500 12px/1 var(--f-ui); padding: 7px 10px; border-radius: 5px; border: 1px solid var(--rule); background: var(--chrome); color: var(--ink); cursor: pointer; }
 .btn:hover { border-color: var(--accent); }
 .btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.boxlist { position: relative; align-items: center; }
+.boxlist .btn { touch-action: none; user-select: none; -webkit-user-select: none; }
+.boxlist .btn.lifted { opacity: 0.45; cursor: grabbing; }
+.boxlist .stack-end { font-size: 11px; color: var(--muted); }
+.box-slot { position: absolute; width: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
 .btn.warn { color: var(--danger); }
 .btn.solid { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -339,7 +344,7 @@ function defaultState() {
     // scale with it: the 1-point camera's shortest focal length, and where an even-angle fan aims its rays in
     // the curved views.
     drawingScale: 1,
-    linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true,
+    linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true, boxOrder: "distance",
     verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
@@ -396,6 +401,7 @@ function normalize(s) {
   migrateLens(s);
   const out = deepMerge(d, s || {});
   delete out.rotateClick; // the setting's name while it started off
+  if (out.boxOrder !== "custom") out.boxOrder = "distance";
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
   if (!["1pt", "2pt", "3pt", "iso", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
@@ -1571,6 +1577,100 @@ function drawDivisions(c, f, bx, k, alphaMul, near) {
   }
   c.restore();
 }
+// The boxes as solids in one space, with the eye at its origin. A drawing only fixes each box's direction from the
+// eye, not how far off it is, so they share one ground, a level below the eye: the nearer the horizon, the further away.
+// A level box whose base sits inside the top of another stands on that one instead, and a box wholly above eye level
+// hangs the same height above it.
+function boxSolids(g) {
+  const F = state.boxes.map(bx => turnFrame(bx, g)), foot = f => f.C.y - Math.abs(f.H) / 2, level = f => Math.abs(f.ax[2].y) > 0.999;
+  const ground = F.map(f => 1 / Math.max(Math.abs(foot(f)), 1e-6)), k = [...ground];
+  const standing = (f, i) => {
+    const sole = f.B[0].y <= f.T[0].y ? f.B : f.T;
+    let best = -Infinity, kept = ground[i];
+    F.forEach((o, j) => {
+      if (j === i || !level(o)) return;
+      const top = (o.C.y + Math.abs(o.H) / 2) * k[j]; if (top >= 0 || top <= best) return;
+      const C = m3(o.C, k[j]), hx = Math.abs(o.a) / 2 * k[j], hy = Math.abs(o.c) / 2 * k[j], m = 0.02 * Math.max(hx, hy);
+      const on = sole.every(p => { if (p.y >= 0) return false; const q = s3(m3(p, top / p.y), C); return Math.abs(d3(q, o.ax[0])) <= hx + m && Math.abs(d3(q, o.ax[1])) <= hy + m; });
+      if (on) { best = top; kept = top / sole[0].y; }
+    });
+    return kept;
+  };
+  // (a stack settles from the bottom up, one level each time round)
+  for (let pass = 0, moved = true; moved && pass < F.length; pass++) {
+    moved = false;
+    F.forEach((f, i) => { if (!level(f) || foot(f) >= 0) return; const v = standing(f, i); if (Math.abs(v - k[i]) > 1e-9 * k[i]) { k[i] = v; moved = true; } });
+  }
+  return F.map((f, i) => {
+    const C = m3(f.C, k[i]);
+    return { C, ax: f.ax, half: [f.a, f.c, f.H].map(v => Math.abs(v) / 2 * k[i]), pts: [...f.B, ...f.T].map(p => m3(p, k[i])), far: l3(C) };
+  });
+}
+const BOX_EDGES = [0, 1, 2, 3].flatMap(i => [[i, (i + 1) % 4], [i + 4, (i + 1) % 4 + 4], [i, i + 4]]);
+// Can one line of sight from the eye meet both boxes? Not if a plane through the eye has one box each side of it.
+function sharedSight(A, B) {
+  const eps = 1e-9 * Math.max(A.far, B.far);
+  for (const S of [A, B]) for (const [i, j] of BOX_EDGES) {
+    const c = c3(S.pts[i], S.pts[j]); if (l3(c) < 1e-30) continue;
+    const n = n3(c); let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const p of A.pts) { const v = d3(p, n); a0 = Math.min(a0, v); a1 = Math.max(a1, v); }
+    for (const p of B.pts) { const v = d3(p, n); b0 = Math.min(b0, v); b1 = Math.max(b1, v); }
+    if ((a1 <= eps && b0 >= -eps) || (a0 >= -eps && b1 <= eps)) return false;
+  }
+  return true;
+}
+// How far along a line of sight a box first shows. From inside it, that's the far wall.
+function sightHit(S, d) {
+  let t0 = -Infinity, t1 = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const o = d3(S.ax[i], S.C), v = d3(S.ax[i], d), h = S.half[i];
+    if (Math.abs(v) < 1e-12) { if (Math.abs(o) > h) return Infinity; continue; }
+    t0 = Math.max(t0, Math.min((o - h) / v, (o + h) / v)); t1 = Math.min(t1, Math.max((o - h) / v, (o + h) / v));
+  }
+  return t1 < Math.max(t0, 0) ? Infinity : t0 > 0 ? t0 : t1;
+}
+// Which of two boxes is in front where they overlap: 1 for A, -1 for B, 0 if there's no telling. With any plane between
+// them, only the box on the eye's side of it can hide the other. Boxes that pass through each other have no such plane,
+// so it goes by whichever is nearer along most of the lines of sight that meet both.
+function whichFront(A, B) {
+  const tol = 1e-6 * Math.min(l3(V3(...A.half)), l3(V3(...B.half))), reach = (S, n) => S.half.reduce((sum, h, i) => sum + h * Math.abs(d3(S.ax[i], n)), 0);
+  const axes = [...A.ax, ...B.ax];
+  for (const u of A.ax) for (const v of B.ax) { const c = c3(u, v); if (l3(c) > 1e-6) axes.push(n3(c)); }
+  for (const n of axes) {
+    const a = d3(A.C, n), ra = reach(A, n), b = d3(B.C, n), rb = reach(B, n);
+    if (a + ra <= b - rb + tol) return b - rb > 0 ? (a + ra < 0 ? 0 : 1) : -1;
+    if (b + rb <= a - ra + tol) return a - ra > 0 ? (b + rb < 0 ? 0 : -1) : 1;
+  }
+  const at = [-1, -0.5, 0, 0.5, 1]; let votes = 0;
+  for (const S of [A, B]) for (const x of at) for (const y of at) for (const z of at) {
+    const d = S.ax.reduce((p, ax, i) => a3(p, m3(ax, [x, y, z][i] * S.half[i])), S.C), ta = sightHit(A, d), tb = sightHit(B, d);
+    if (ta < Infinity && tb < Infinity && ta !== tb) votes += ta < tb ? 1 : -1;
+  }
+  return Math.sign(votes);
+}
+// The order to draw the boxes in, back to front: the list as it stands in a custom order; by distance, every box after
+// the ones it can hide, and otherwise the furthest first. (Boxes that hide each other in a ring go furthest first too.)
+function drawOrder(g) {
+  const n = state.boxes.length, list = state.boxes.map((b, i) => i);
+  if (state.boxOrder === "custom" || n < 2) return list;
+  const S = boxSolids(g), hides = S.map(() => []);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (!sharedSight(S[i], S[j])) continue;
+    const w = whichFront(S[i], S[j]);
+    if (w > 0) hides[i].push(j); else if (w < 0) hides[j].push(i);
+  }
+  const left = new Set(list), order = [];
+  while (left.size) {
+    let ready = -1, any = -1;
+    for (const i of left) {
+      if (any < 0 || S[i].far > S[any].far) any = i;
+      if (hides[i].some(j => left.has(j))) continue;
+      if (ready < 0 || S[i].far > S[ready].far) ready = i;
+    }
+    const pick = ready >= 0 ? ready : any; order.push(pick); left.delete(pick);
+  }
+  return order;
+}
 function drawBox(c, bx, g, k) {
   const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill);
   const near = bx.div && bx.div.on ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
@@ -1665,7 +1765,7 @@ function drawScene(c, k, b, inc) {
     }
   }
   c.restore();
-  if (inc.boxes) state.boxes.forEach(bx => drawBox(c, bx, g, k));
+  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k));
   if (inc.vps) drawVPs(c, k, g);
 }
 
@@ -2259,6 +2359,14 @@ function dupBox() {
   captureFit(c, g);
   c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
+// Stacks the boxes as given, front first, and makes that the custom order: the list of boxes itself, back box first
+function stackBoxes(frontFirst) {
+  const sel = state.boxes[state.sel], ring = ui.ring && state.boxes[ui.ring.bi];
+  state.boxes = [...frontFirst].reverse().map(i => state.boxes[i]);
+  state.sel = state.boxes.indexOf(sel);
+  if (ring) ui.ring.bi = state.boxes.indexOf(ring);
+  state.boxOrder = "custom"; hover = null; commit(); touch();
+}
 function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
 // The selected box's width (k = 0), length (1) or height (2), in px where the middle of its base sits
 function boxSide(k) {
@@ -2598,6 +2706,8 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
+    { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
+    { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
@@ -2893,11 +3003,48 @@ function makeRow(r) {
       break;
     }
     case "boxlist": {
-      node = el("div", { class: "btns" }); let sig = "";
+      node = el("div", { class: "btns boxlist" }); let sig = "", refocus = null, dragged = false;
       update = () => {
-        const s = JSON.stringify([state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
+        const order = drawOrder(geo()).reverse(), many = order.length > 1;
+        const s = JSON.stringify([order, state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
         if (!state.boxes.length) { node.append(el("div", { class: "note" }, "No boxes yet. Add one and it lands below the horizon, ready to drag.")); return; }
-        state.boxes.forEach((b, i) => { const sw = el("span", { class: "swatch" }); sw.style.background = b.fill; sw.style.outline = "1px solid " + b.stroke; const btn = el("button", { type: "button", class: "btn" + (i === state.sel ? " on" : ""), "aria-pressed": String(i === state.sel) }, sw, b.name); btn.addEventListener("click", () => { state.sel = i; touch(); redraw(); }); node.append(btn); });
+        const put = (at, slot) => { const list = [...order], [i] = list.splice(at, 1); list.splice(slot > at ? slot - 1 : slot, 0, i); if (list.join() !== order.join()) stackBoxes(list); };
+        if (many) node.append(el("span", { class: "stack-end" }, "Front"));
+        order.forEach((i, at) => {
+          const b = state.boxes[i], sw = el("span", { class: "swatch" }); sw.style.background = b.fill; sw.style.outline = "1px solid " + b.stroke;
+          const btn = el("button", { type: "button", class: "btn" + (i === state.sel ? " on" : ""), "aria-pressed": String(i === state.sel) }, sw, b.name);
+          if (many) btn.title = "Click to select. Drag in front of or behind another box, or use Alt and the arrow keys.";
+          btn.addEventListener("click", () => { if (dragged) { dragged = false; return; } state.sel = i; touch(); redraw(); });
+          btn.addEventListener("keydown", e => {
+            if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+            e.preventDefault(); const to = e.key === "ArrowLeft" ? at - 1 : at + 2;
+            if (to >= 0 && to <= order.length) { refocus = b; put(at, to); }
+          });
+          btn.addEventListener("pointerdown", e => {
+            dragged = false; if (e.button || !many) return;
+            const chips = [...node.querySelectorAll("button")], mark = el("i", { class: "box-slot" }); let slot = -1;
+            const move = ev => {
+              if (slot < 0 && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 5) return;
+              if (slot < 0) { try { btn.setPointerCapture(e.pointerId); } catch (err) { /* it follows the window's events regardless */ } btn.classList.add("lifted"); node.append(mark); }
+              // the gap between boxes nearest the pointer, in whichever row it's in
+              const home = node.getBoundingClientRect(); let best = Infinity;
+              chips.forEach((c, k) => { const r = c.getBoundingClientRect(); [[r.left, k], [r.right, k + 1]].forEach(([x, g]) => {
+                const d = Math.hypot(x - ev.clientX, (r.top + r.bottom) / 2 - ev.clientY); if (d >= best) return;
+                best = d; slot = g; mark.style.left = (x - home.left - (g === k ? 4 : -2)) + "px"; mark.style.top = (r.top - home.top) + "px"; mark.style.height = r.height + "px";
+              }); });
+            };
+            const end = ev => {
+              window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end);
+              if (slot < 0) return;
+              dragged = true; btn.classList.remove("lifted"); mark.remove();
+              if (ev.type === "pointerup") put(at, slot);
+            };
+            window.addEventListener("pointermove", move); window.addEventListener("pointerup", end); window.addEventListener("pointercancel", end);
+          });
+          node.append(btn);
+          if (b === refocus) { btn.focus(); refocus = null; }
+        });
+        if (many) node.append(el("span", { class: "stack-end" }, "Back"));
       };
       break;
     }
@@ -3204,7 +3351,7 @@ function hitTest(s, reach = "") {
     for (const [hx, hy] of VHANDLES) { const p = P(a.x + W * (hx + 1) / 2, a.y + H * (hy + 1) / 2); if (Math.abs(p.x - s.x) < 8 && Math.abs(p.y - s.y) < 8) return { type: "vresize", hx, hy }; }
     if (len(sub(scaleHome(), s)) < 10) return { type: "vscale" };
   }
-  for (let bi = state.boxes.length - 1; bi >= 0; bi--) {
+  for (const bi of drawOrder(g).reverse()) {
     const b = state.boxes[bi], G = boxGeo(b, g), front = G.faces.filter(f => f.front), back = G.faces.filter(f => !f.front);
     const under = f => f.fills.some(poly => inPoly(w, poly)), shown = f => b.faces[f.id] !== false;
     const hid = reach === "restore" && [...back, ...front].find(f => !shown(f) && under(f));
