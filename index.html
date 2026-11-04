@@ -743,6 +743,8 @@ function panoCam(g) {
     clip: pts => (pts.some((p, i) => crosses(p, pts[(i + 1) % pts.length])) ? splitPoly(pts, p => p.x) : null),
     // a carried-over box stays clear of the strip's ends and of the steep top and bottom
     fits: (p, q) => Math.abs(elevOf(p)) <= elevMax * 0.95 && Math.abs(Math.atan2(p.x, p.z) - Math.atan2(q.x, q.z)) < Math.PI * 0.8,
+    // a box being turned or moved can lie across the ends of the strip: what counts is how far round it reaches
+    fitsTurned: (p, q) => Math.abs(elevOf(p)) <= elevMax * 0.95 && Math.abs(wrap(Math.atan2(p.x, p.z) - Math.atan2(q.x, q.z))) < Math.PI * 0.8,
     keepIn: S => {
       const D = unproj(S), yaw = Math.atan2(D.x, D.z), e = elevOf(D), yl = 0.9 * Math.PI, el = 0.9 * elevMax;
       return Math.abs(yaw) <= yl && Math.abs(e) <= el ? S : at(Math.max(-yl, Math.min(yl, yaw)), Math.max(-el, Math.min(el, e)));
@@ -750,6 +752,11 @@ function panoCam(g) {
     // VP1 and VP2 are the box's two horizontal directions; VP3 and VP4 the same directions, behind you
     markers: [0, 1, 2, 3].map(k => { const yaw = wrap(w.psi0 + k * PI2); return marker(at(yaw, 0), "VP" + (k + 1), k % 2, "knot", { k, yaw, primary: k < 2 }); }),
     edges: [-Math.PI, Math.PI].map(y => ({ line: [at(y, -elevMax), at(y, elevMax)] })),
+    // a spot past one end of the strip, brought round to where it lands coming in from the other end
+    wrapS: S => {
+      const x = dot(sub(S, C), u), lo = F * w.h(-Math.PI), L = F * w.h(Math.PI) - lo;
+      return x < lo || x > lo + L ? add(S, mul(u, ((x - lo) % L + L) % L + lo - x)) : S;
+    },
     cone: null
   };
 }
@@ -1116,8 +1123,8 @@ function turnFits(bx, g, rot = bx.rot, was = bx) {
     const v = f => Math.min(...[...f.B, ...f.T].map(p => cam.depthOf(p) / (l3(p) || 1))), m = v(F);
     return m >= VIEW_EDGE || m >= v(turnFrame(was, g));
   }
-  const q = n3(C);
-  return [...B, ...T].every(p => l3(p) > 0.02 * l3(C) && (!cam.fits || cam.fits(p, q))) && (!cam.boxOk || cam.boxOk(B, T));
+  const q = n3(C), fits = cam.fitsTurned || cam.fits;
+  return [...B, ...T].every(p => l3(p) > 0.02 * l3(C) && (!fits || fits(p, q))) && (!cam.boxOk || cam.boxOk(B, T));
 }
 // The vanishing points a turned box's edges run to, in its axis colors. An axis still on one of the page's own
 // directions has none of its own, nor does one too square to the view to meet on screen (or, in isometric, at all).
@@ -2618,7 +2625,7 @@ const schema = [
     { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
     { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
     { t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
-    { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other.", when: isPano },
+    { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
     { t: "note", html: "The whole sphere in one continuous view: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
     { t: "readout", text: lensInfo, when: camMode }
@@ -3523,7 +3530,8 @@ canvas.addEventListener("pointermove", e => {
     }
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
-      const free = s3(slideTo(R.cam, R.c0, add(R.s0, sub(w, drag.w0))), R.c0), moves = [];
+      // (a box's middle only reads at one end of a panorama's strip, so going round is what lets either end be held)
+      const aim = add(R.s0, sub(w, drag.w0)), free = s3(slideTo(R.cam, R.c0, R.cam.wrapS ? R.cam.wrapS(aim) : aim), R.c0), moves = [];
       if (keptCentered(bx)) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
       else {
         if (useSnap) {
