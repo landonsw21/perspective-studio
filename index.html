@@ -653,7 +653,8 @@ function fisheyeCam(g, front) {
   return Object.assign(oneChart(lens), {
     kind: "lens", C, F, sides, thMax, mc: C, axes, fam, markers,
     R: F * sides.D * PI2, // how far below the center the down VP sits
-    fits: p => offAxis(p) <= thMax * 0.97, keepIn: lens.keepIn(thMax * 0.95),
+    // a carried-over box stays inside the lens edge; one being moved or turned goes past it, as far as one that isn't turned
+    fits: p => offAxis(p) <= thMax * 0.97, fitsTurned: () => true, keepIn: lens.keepIn(thMax * 0.95),
     edges: [{ ring: lens.ring(thMax) }],
     cone: { center: C, radius: ang => lens.ring(Math.min(ang, Math.PI * 0.999)) }
   });
@@ -2339,11 +2340,14 @@ function slideTo(cam, p, S) {
   if (cam.depthOf) { const d = cam.depthOf(p), rz = cam.depthOf(r); return rz > 1e-6 ? m3(r, d / rz) : p; }
   return m3(n3(r), l3(p));
 }
-// In 6-point, the spot taken hold of stays under the pointer: the middle goes where that spot lands on the line of
-// sight through the pointer, at the same distance from the eye as before. Pieces of a box near the rim can lie far apart
-// on screen, so a pointer's distance on screen says nothing about how far the box has gone.
+// The spot taken hold of stays under the pointer, on the line of sight through it. Through a flat camera the spot keeps
+// its depth, so the whole box slides across at the same depth and keeps its size; through a lens or panorama the middle
+// keeps its distance from the eye. (Moving the middle as far as the pointer would leave the spot behind: a box's near end
+// moves further on screen than its far end, and through a lens, near the edge, its pieces lie far apart.)
 function heldMiddle(R, w) {
-  const d = n3(R.cam.unproj(R.cam.wrapS(w))), b = d3(d, R.held), root = b * b + d3(R.c0, R.c0) - d3(R.held, R.held);
+  const d = n3(R.cam.unproj(R.cam.wrapS ? R.cam.wrapS(w) : w));
+  if (R.cam.depthOf) { const z = R.cam.depthOf(d); return z > 1e-6 ? s3(m3(d, R.cam.depthOf(a3(R.c0, R.held)) / z), R.held) : null; }
+  const b = d3(d, R.held), root = b * b + d3(R.c0, R.c0) - d3(R.held, R.held);
   return root < 0 ? null : s3(m3(d, b + Math.sqrt(root)), R.held);
 }
 // A base is valid when both corners sit on the same side of eye level (at least `clear` away from it on
@@ -3522,18 +3526,16 @@ canvas.addEventListener("pointerdown", e => {
     if (hit.type === "bottom") drag.fixed = P(G.B[j].x, G.B[j].y); else drag.base = P(G.B[j].x, G.B[j].y);
   } else if (hit.type === "body") {
     state.sel = hit.bi; const bx = state.boxes[hit.bi];
-    // Moving a box is a rigid move in 3D: it keeps its shape and its distance from you, and can pass
-    // above or below eye level without warping. Every mode is read through its camera for this.
-    const { cam, B, H } = box3(bx, g);
-    const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8), s0 = cam.proj(c0);
+    // Moving a box is a rigid move in 3D: it keeps its shape and its depth (through a lens, its distance
+    // from you), and can pass above or below eye level without warping. Every mode is read through its
+    // camera for this.
+    const { cam, B, H } = box3(bx, g), T = turnFrame(bx, g);
+    const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8);
     // (snapping goes by the base corner you can see, wherever a turned box has put it)
-    const seen = turned(bx) ? turnFrame(bx, g).B : B, onScreen = i => { const p = cam.proj(seen[i]); return len(sub(P(p.x, p.y), w)); };
-    drag.rig = { cam, B, H, c0, s0: P(s0.x, s0.y), seen, ci: onScreen(0) < onScreen(2) ? 0 : 2 };
-    if (cam.kind === "sphere") {
-      // the spot taken hold of, from the box's middle: where the line of sight first meets the box
-      const T = turnFrame(bx, g), d = n3(cam.unproj(w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
-      drag.rig.held = s3(m3(d, t < Infinity ? t : d3(d, c0)), c0);
-    }
+    const seen = turned(bx) ? T.B : B, onScreen = i => { const p = cam.proj(seen[i]); return len(sub(P(p.x, p.y), w)); };
+    // the spot taken hold of, from the box's middle: where the line of sight first meets the box
+    const d = n3(cam.unproj(cam.wrapS ? cam.wrapS(w) : w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
+    drag.rig = { cam, B, H, c0, seen, ci: onScreen(0) < onScreen(2) ? 0 : 2, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
@@ -3613,8 +3615,7 @@ canvas.addEventListener("pointermove", e => {
     }
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
-      // (a box's middle only reads at one end of a panorama's strip, so going round is what lets either end be held)
-      const aim = add(R.s0, sub(w, drag.w0)), mid = R.held ? heldMiddle(R, w) : slideTo(R.cam, R.c0, R.cam.wrapS ? R.cam.wrapS(aim) : aim);
+      const mid = heldMiddle(R, w);
       if (!mid) break;
       const free = s3(mid, R.c0), moves = [];
       if (keptCentered(bx)) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
