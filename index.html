@@ -170,7 +170,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
       <button class="tb primary" id="tbAdd" type="button">Add box</button>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
-      <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout (4-, 5- and 6-point)">Even out VPs</button>
+      <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout (3-, 4-, 5- and 6-point)">Even out VPs</button>
       <select class="tb" id="tbMode" aria-label="Perspective" title="Perspective"></select>
       <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
       <button class="tb" id="tbExport" type="button">Export PNG</button>
@@ -2086,9 +2086,16 @@ function solveCorner(xl, xr, aL, aR) {
   const p = (lo + hi) / 2;
   return { p, F: xr / horizonReach(PI2 - p, aR) };
 }
-// Put the current curved view's VPs back in an even layout, keeping its size and curvature. In 4-point
-// fisheye VP1 and VP2 go back to 45° either side, which turns the boxes with them.
+// Put the VPs back in an even layout. In 3-point, VP1 and VP2 go either side of the center point, as far apart as
+// they were, and VP3 below it, the three evenly spaced: the view looks down along a cube's diagonal, so every axis
+// shrinks alike (Look up flips VP3 above). A curved view keeps its size and curvature, and in 4-point fisheye VP1 and
+// VP2 go back to 45° either side, which turns the boxes with them.
 function evenVPs() {
+  if (is3()) {
+    const [v1, v2, v3] = state.vps, side = v1.dist <= v2.dist ? 1 : -1, d = Math.max(40, Math.round(Math.abs(v2.dist - v1.dist) / 2));
+    changeGrid(() => { v1.dist = -side * d; v2.dist = side * d; v3.dist = 0; v3.drop = Math.round(d * Math.sqrt(3)); });
+    commit(); touch(); return;
+  }
   if (!camMode()) return;
   const c = state.curvi, turn = isFish4() ? Math.round(c.turn / 90) * 90 : c.turn;
   keepBoxes(() => {
@@ -2669,7 +2676,7 @@ const schema = [
     { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
     { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
     { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
-    { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3.", when: is3 },
+    { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3. Even out VPs, on the toolbar, spaces all three evenly, with VP3 below the horizon.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
     { t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
     { t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
@@ -3162,7 +3169,7 @@ function refreshPanel() {
 }
 function syncToolbar() {
   document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
-  document.getElementById("tbEven").disabled = !camMode(); // only the curved views have VPs to even out
+  document.getElementById("tbEven").disabled = !camMode() && !is3(); // only 3-point and the curved views have VPs to even out
   document.getElementById("tbMode").value = modeKey();
   document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
