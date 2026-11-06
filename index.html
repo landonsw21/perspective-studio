@@ -1722,10 +1722,10 @@ function drawOrder(g) {
   }
   return order;
 }
-function drawBox(c, bx, g, k) {
+function drawBox(c, bx, g, k, skip = null) {
   const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill);
   const near = bx.div && bx.div.on ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
-  const vis = f => bx.faces[f.id] !== false;
+  const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
   const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
   // Faces fill as polygons (split where they cross a seam) and stroke only their real edges
   const fill = (f, alpha, k2) => {
@@ -1816,7 +1816,7 @@ function drawScene(c, k, b, inc) {
     }
   }
   c.restore();
-  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k));
+  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k, inc.hide && inc.hide.bi === i ? inc.hide.face : null));
   if (inc.vps) drawVPs(c, k, g);
 }
 
@@ -1841,7 +1841,8 @@ function frame() {
   ctx.fillStyle = (V.show && V.dim) ? desk : paper; ctx.fillRect(0, 0, cw, ch);
   ctx.save(); ctx.translate(view.x, view.y); ctx.scale(view.z, view.z);
   if (V.show && V.dim) { ctx.fillStyle = paper; ctx.fillRect(V.x, V.y, V.w, V.h); }
-  drawScene(ctx, view.z, visibleBounds(), { rays: true, verticals: true, horizon: true, cone: true, boxes: true, vps: true, dots: true, clipToView: V.show });
+  const hiding = !drag && hover && hover.type === "hide" ? hover : null;
+  drawScene(ctx, view.z, visibleBounds(), { rays: true, verticals: true, horizon: true, cone: true, boxes: true, vps: true, dots: true, clipToView: V.show, hide: hiding });
   ctx.restore();
 
   const g = geo();
@@ -1860,8 +1861,9 @@ function frame() {
     const o = toS(g.O); ctx.fillStyle = paper; ctx.strokeStyle = ink; ctx.lineWidth = 1.25;
     ctx.beginPath(); ctx.moveTo(o.x, o.y - 6); ctx.lineTo(o.x + 6, o.y); ctx.lineTo(o.x, o.y + 6); ctx.lineTo(o.x - 6, o.y); ctx.closePath(); ctx.fill(); ctx.stroke();
   }
-  // a hidden face under the pointer with ⌘ or Ctrl held: a ghost of it, which a ⌘-click brings back
-  const hb = hover && hover.type === "hidden" && state.boxes[hover.bi], hf = hb && boxGeo(hb, g).faces.find(f => f.id === hover.face);
+  // a hidden face under the pointer with ⌘ or Ctrl held: a ghost of it, which a ⌘-click brings back. With Shift
+  // held, the face under the pointer is drawn the same way, as it would be once a Shift-click hides it.
+  const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && boxGeo(hb, g).faces.find(f => f.id === hover.face);
   if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
   // selected box handles
   const bx = state.boxes[state.sel];
@@ -1886,6 +1888,7 @@ function frame() {
 function drawFaceGhost(f, fill, stroke, alpha) {
   const trace = pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
   ctx.save(); ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+  ctx.lineJoin = "round"; // (a miter would spike out past the sharp corners of a face seen nearly edge-on)
   ctx.globalAlpha = alpha;
   for (const poly of f.fills) { ctx.beginPath(); trace(poly); ctx.closePath(); ctx.fill(); }
   ctx.globalAlpha = 0.9; ctx.beginPath(); f.edges.forEach(trace); ctx.stroke();
@@ -2766,7 +2769,7 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Shift-click a face to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -3388,7 +3391,8 @@ const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX
 // first (a box's back face before the front face over it), even behind faces you can see, so they can be
 // brought back one by one. On the selected box, every face can be picked for rotation, hidden or not: the
 // nearest under the pointer, or with `reach` "behind" (Alt held) the one behind it. With "hide" (Shift held),
-// only the faces you can see count, so a hidden face doesn't stand in the way of the one behind it.
+// only the faces you can see count, so a hidden face doesn't stand in the way of the one behind it, and the
+// face found is one to hide (on any box, selected or not).
 function hitTest(s, reach = "") {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
@@ -3422,7 +3426,7 @@ function hitTest(s, reach = "") {
       if (at.length) return { type: "body", bi, face: at[reach ? at.length - 1 : 0].id };
     }
     const f = [...front, ...back].find(f => shown(f) && under(f));
-    if (f) return { type: "body", bi, face: f.id };
+    if (f) return { type: reach === "hide" ? "hide" : "body", bi, face: f.id };
   }
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
@@ -3448,12 +3452,13 @@ const HINTS = {
   ring: "Drag around the circle to rotate the box · click it to set the angle",
   boxvp: "Drag to turn the box, its edges following this point · it catches on the horizon, hold Alt to stop that",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
-  hidden: "⌘-click (Ctrl-click) to bring this face back"
+  hidden: "⌘-click (Ctrl-click) to bring this face back",
+  hide: "Shift-click to hide this face"
 };
-const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer" };
+const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
-// under the pointer with ⌘ or Ctrl held is drawn as a ghost). lastPos lets pressing or letting go of the
-// key update it without the mouse moving.
+// under the pointer with ⌘ or Ctrl held, or a face you can see with Shift held, is drawn as a ghost).
+// lastPos lets pressing or letting go of the key update it without the mouse moving.
 let lastPos = null, ringClick = null; // (where the circle was just clicked, for the click event that follows)
 const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) ? "restore" : e.shiftKey ? "hide" : e.altKey ? "behind" : "");
 function showHover(h) {
@@ -3489,7 +3494,7 @@ canvas.addEventListener("pointerdown", e => {
   }
   if (pointers.size > 2) return;
   const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
-  if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && hit.type === "body")) {
+  if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && (hit.type === "hide" || hit.type === "body"))) {
     // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
     const b = state.boxes[hit.bi]; b.faces[hit.face] = hit.type === "hidden"; state.sel = hit.bi; commit(); touch();
     showHover(hitTest(s, faceReach(e))); return;
@@ -3747,7 +3752,7 @@ canvas.addEventListener("wheel", e => {
 }, { passive: false });
 
 window.addEventListener("keyup", reachChanged);
-canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && (hover.type === "hidden" || hover.type === "body")) { hover = null; redraw(); } });
+canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && ["hidden", "hide", "body"].includes(hover.type)) { hover = null; redraw(); } });
 // on a Mac, Ctrl-click would also open the context menu
 canvas.addEventListener("contextmenu", e => { if (e.ctrlKey && hover && hover.type === "hidden") e.preventDefault(); });
 window.addEventListener("keydown", e => {
