@@ -771,7 +771,7 @@ function panoCam(g) {
   const psi = [wrap(w.psi0), wrap(w.psi0 + PI2)];
   const X = psi.map(p => V3(Math.sin(p), 0, Math.cos(p)));
   return {
-    kind: "pano", C, F, s, warp: w, psi, mc: C, axes: X, fam: { 0: X[0], 1: X[1] },
+    kind: "pano", C, F, s, warp: w, psi, mc: C, axes: X, fam: { 0: X[0], 1: X[1] }, period: F * (w.h(Math.PI) - w.h(-Math.PI)), // (the strip's length)
     proj, projChart, chartOf: D => (D.x >= 0 ? 0 : 1), crosses, unproj,
     projG: D => (Math.abs(elevOf(D)) > elevMax ? null : proj(D)),
     seamPoint: (p, q) => lerp3(p, q, p.x / (p.x - q.x)),
@@ -2385,10 +2385,11 @@ function staysInView(nb, bx, g, edge = VIEW_EDGE) {
   return v >= edge || v >= viewDepth(bx, g);
 }
 // Box bx rebuilt from a 3D base B and height H, or null where the view can't show it as a box: a base at
-// eye level or past what a lens can draw, or a box stretching out toward infinity (past `edge` in a flat view)
-function boxFrom3(bx, B, H, g, edge = VIEW_EDGE) {
+// eye level (within `clear` of it on screen) or past what a lens can draw, or a box stretching out toward
+// infinity (past `edge` in a flat view)
+function boxFrom3(bx, B, H, g, edge = VIEW_EDGE, clear = 2 / view.z) {
   const cam = convCam(g), T = B.map(p => a3(p, m3(UP3, H))), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
-  if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite) || !baseOk(p0, p2, g, 2 / view.z)) return null;
+  if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite) || !baseOk(p0, p2, g, clear)) return null;
   const nb = Object.assign({}, bx, { b0: P(p0.x, p0.y), b2: P(p2.x, p2.y) });
   if (g.cam) {
     nb.H = H / (l3(B[bx.anchor]) || 1);
@@ -2398,6 +2399,85 @@ function boxFrom3(bx, B, H, g, edge = VIEW_EDGE) {
   if (!T.every(p => cam.depthOf(p) > 0) || H >= TALLEST * l3(B[bx.anchor])) return null;
   const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); nb.h = Math.max(1e-6, dot(sub(Ta, Ba), g.up(Ba)));
   return staysInView(nb, bx, g, edge) && (!turned(nb) || turnFits(nb, g, nb.rot, bx, edge)) ? nb : null;
+}
+// Moving box bx by its body: the move, from where the drag began, that brings the spot held on rig R (its base B,
+// height H and middle c0 then, and the spot `held`, from the middle) under screen point w, as { delta, nb } with the
+// box it gives, or null. `extra` offers moves to try first, given the move straight there. The base can't rest at
+// eye level (within `clear` of it), where it would flatten onto the horizon, so a box dragged across the horizon
+// hops over it; and a box can't go where the view can't show it. Short of the pointer, it goes as far toward it as
+// it can and slides along that limit, across or up and down, rather than stopping dead.
+function moveHeld(bx, R, w, g, { extra = () => [], clear } = {}) {
+  // the move that puts the spot held under screen point S (a box kept centered slides along eye level), and the box
+  // after a move d, or null where it can't go
+  const moveTo = S => { const mid = heldMiddle(R, S); if (!mid) return null; const d = s3(mid, R.c0); return keptCentered(bx) ? V3(d.x, -R.c0.y, d.z) : d; };
+  const place = d => boxFrom3(bx, R.B.map(p => a3(p, d)), R.H, g, DRAG_EDGE, clear);
+  const free = moveTo(w);
+  if (!free) return null;
+  for (const m of [...extra(free), { delta: free }]) { const nb = place(m.delta); if (nb) return Object.assign(m, { nb }); }
+  const from = R.at || V3(0, 0, 0), spot = d => { const q = R.cam.proj(a3(a3(R.c0, d), R.held)); return P(q.x, q.y); };
+  const wrap = S => (R.cam.wrapS ? R.cam.wrapS(S) : S), S0 = spot(from), aim = wrap(w);
+  const reach = to => {
+    if (!to) return null;
+    let lo = 0, hi = 1, nb = null;
+    for (let i = 0; i < 16; i++) { const t = (lo + hi) / 2, n = place(lerp3(from, to, t)); if (n) { lo = t; nb = n; } else hi = t; }
+    return nb && { delta: lerp3(from, to, lo), nb };
+  };
+  let got = null;
+  for (const S of [w, P(w.x, S0.y), P(S0.x, w.y)]) {
+    const r = reach(moveTo(S));
+    if (r && (!got || len(sub(wrap(spot(r.delta)), aim)) < len(sub(wrap(spot(got.delta)), aim)))) got = r;
+  }
+  return got;
+}
+// A box held by its middle, as moveHeld takes it
+function middleRig(bx, g) {
+  const { cam, B, H } = box3(bx, g);
+  return { cam, B, H, c0: a3(m3(a3(B[0], B[2]), 0.5), m3(UP3, H / 2)), held: V3(0, 0, 0) };
+}
+// A copy of box bx moved by its middle to screen point w, as dragging it there would, in steps, so one that can't get
+// all the way slides along the limit as a drag does (one long jump would bring it nearer). It may come as near eye
+// level as bx.
+function moveCopy(bx, w, g) {
+  const near = Math.min(...[bx.b0, bx.b2].map(b => Math.abs(dot(sub(b, g.O), g.n)))), opts = { clear: Math.min(2 / view.z, near / 2) };
+  const R = middleRig(bx, g), q = R.cam.proj(R.c0), S0 = P(q.x, q.y);
+  let got = null;
+  for (let i = 1; i <= 16; i++) { const r = moveHeld(bx, R, add(S0, mul(sub(w, S0), i / 16)), g, opts); if (r) { got = r; R.at = r.delta; } }
+  return got;
+}
+// Copy c of a box moved over beside it along the horizon, as if dragged there by its middle, so it keeps its depth,
+// size and proportions. It stops a fifth of its width clear of the box, or moves on past any other box it would land
+// on (within five widths; past that it stays just beside the box), and goes whichever way is shorter, the way `side`
+// says (1 right, −1 left) when both are about the same. A way that keeps it on screen comes first, then one that gets
+// it all the way. Returns { nb, side }, or null where it can't move.
+function besideOf(c, g, side = 1) {
+  const R = middleRig(c, g), q = R.cam.proj(R.c0), M = P(q.x, q.y), per = R.cam.period;
+  // where a box reaches on screen: along the horizon from M (across the panorama, the short way round, for a box
+  // lying across its two ends), and across it
+  const reach = bx => {
+    const F = turnFrame(bx, g), S = [...F.B, ...F.T].map(p => R.cam.proj(p));
+    const us = S.map(p => { const x = dot(sub(p, M), g.u); return per ? x - per * Math.round(x / per) : x; }), ns = S.map(p => dot(sub(p, M), g.n));
+    return { lo: Math.min(...us), hi: Math.max(...us), top: Math.min(...ns), bot: Math.max(...ns) };
+  };
+  const was = reach(c), w = was.hi - was.lo, boxes = state.boxes.map(reach);
+  const hits = (a, b) => a.lo < b.hi + 0.1 * w && b.lo < a.hi + 0.1 * w && a.top < b.bot && b.top < a.bot;
+  const wrap = S => (R.cam.wrapS ? R.cam.wrapS(S) : S), onScreen = S => { const s = P(S.x * view.z + view.x, S.y * view.z + view.y); return s.x >= 0 && s.y >= 0 && s.x <= cw && s.y <= ch; };
+  const tries = [side, -side].map(sd => {
+    let step = 1.2 * w, first = null;
+    // (a lens draws a box bigger further out, so the copy can come out closer to the box than planned)
+    while (step <= 5 * w) {
+      const aim = add(M, mul(g.u, sd * step)), got = moveCopy(c, aim, g); if (!got) break;
+      const S = R.cam.proj(a3(R.c0, got.delta)), off = len(sub(wrap(P(S.x, S.y)), wrap(aim))), now = reach(got.nb);
+      const t = { nb: got.nb, side: sd, off, step, all: off < 0.1 * step, seen: onScreen(S), clear: !boxes.some(b => hits(now, b)) };
+      if (!first) first = t;
+      if (!t.all) break;
+      if (t.clear) return t;
+      const over = boxes.filter(b => hits(now, b));
+      step += (sd > 0 ? Math.max(...over.map(b => b.hi)) - now.lo : now.hi - Math.min(...over.map(b => b.lo))) + 0.2 * w;
+    }
+    return first;
+  }).filter(t => t);
+  const best = list => list.sort((a, b) => a.step * (a.side === side ? 1 : 1.25) - b.step * (b.side === side ? 1 : 1.25))[0];
+  return best(tries.filter(t => t.all && t.seen && t.clear)) || best(tries.filter(t => t.all && t.seen)) || best(tries.filter(t => t.all)) || tries.sort((a, b) => a.off - b.off)[0] || null;
 }
 // The panel's rotation sliders: an angle the view can't show is refused, as a size too big for it is held back
 function setBoxRot(key, v) {
@@ -2420,20 +2500,48 @@ function chooseMode(key) {
 }
 function flipVP3(sign) { changeGrid(() => { state.vps[2].drop = sign * Math.max(40, Math.abs(state.vps[2].drop)); }); commit(); touch(); }
 function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captureFit(bx, g); state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch(); }
+// Adds copy c of a box to the drawing, selected. A box that was `moved` (cut and pasted) keeps its name, and its
+// rays if no other box has taken them since.
+function addCopy(c, g, moved = false) {
+  if (!moved || rayBox()) c.rayFit = false; // the rays stay with the original
+  captureFit(c, g);
+  if (!moved) c.name = "Box " + (state.boxes.length + 1);
+  state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
+}
+// The copy goes right beside the original
 function dupBox() {
   const bx = state.boxes[state.sel]; if (!bx) return;
-  const c = clone(bx), g = geo();
-  if (g.cam) {
-    // set the copy right beside the original, one box-width along the first axis
-    const G = boxGeoCam(bx, g), A1 = g.cam.axes[0], w = d3(s3(G.B3[1], G.B3[0]), A1);
-    const B = G.B3.map(p => a3(p, m3(A1, w + (w < 0 ? -0.1 : 0.1))));
-    const p0 = g.cam.proj(B[0]), p2 = g.cam.proj(B[2]);
-    c.b0 = P(p0.x, p0.y); c.b2 = P(p2.x, p2.y); c.H = bx.H / (l3(B[bx.anchor]) || 1);
-  } else { const d = mul(g.u, 180); c.b0 = add(c.b0, d); c.b2 = add(c.b2, d); }
-  if (keptCentered(c)) centerOnHorizon(c, g);
-  c.rayFit = false; // the rays stay with the original
-  captureFit(c, g);
-  c.name = "Box " + (state.boxes.length + 1); state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
+  const g = geo(), c = clone(bx), b = besideOf(c, g);
+  addCopy(b ? b.nb : c, g);
+}
+// Copy, cut and paste (⌘ or Ctrl with C, X and V). The clipboard keeps the box as it was and the view it was in.
+// Pasted into a different view (another perspective, a moved horizon or VP, a changed lens), it's rebuilt at the
+// same place and size on screen with the same proportions, as switching perspective rebuilds a box. A paste goes
+// under the pointer, by its middle, keeping its depth as dragging it there would. With the pointer where it was
+// at the copy or the last paste, or off the drawing, it goes beside the last box pasted (or the one copied).
+// The first paste after a cut moves the box rather than copying it: it goes back where it was, or under the pointer.
+let clip = null;
+const viewKey = () => JSON.stringify([state.mode, state.horizon.x, state.horizon.y, state.horizon.tilt, state.vps.map(v => [v.dist, v.drop]), state.cone.cv, state.drawingScale, state.curvi]);
+function copyBox(cut) {
+  const bx = state.boxes[state.sel]; if (!bx) return;
+  const g = geo();
+  clip = { last: clone(bx), plan: boxPlans(g)[state.sel], key: viewKey(), at: lastPos, cut, side: 1 };
+  if (cut) delBox();
+  toast(`${cut ? "Cut" : "Copied"} ${bx.name}`);
+}
+function pasteBox() {
+  if (!clip) { toast("Select a box and press ⌘ C (Ctrl C) to copy it first"); return; }
+  const g = geo(), p = clip.plan;
+  let c = clone(clip.last);
+  if (clip.key !== viewKey()) {
+    if (!p) { toast("The view can't show that box"); return; }
+    fitBox(c, p.dims, p.c, p.s, g, p.place);
+    if (keptCentered(c)) centerOnHorizon(c, g);
+  }
+  if (lastPos && !(clip.at && len(sub(lastPos, clip.at)) < 4)) { const got = moveCopy(c, toW(lastPos), g); if (got) c = got.nb; }
+  else if (!clip.cut) { const b = besideOf(c, g, clip.side); if (b) { c = b.nb; clip.side = b.side; } }
+  addCopy(c, g, clip.cut);
+  Object.assign(clip, { last: clone(c), plan: boxPlans(g)[state.sel], key: viewKey(), at: lastPos, cut: false });
 }
 // Stacks the boxes as given, front first, and makes that the custom order: the list of boxes itself, back box first
 function stackBoxes(frontFirst) {
@@ -2784,7 +2892,7 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -3626,37 +3734,13 @@ canvas.addEventListener("pointermove", e => {
     }
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
-      // the move, from where the drag began, that puts the spot held under screen point S (a box kept centered
-      // slides along eye level), and the box after a move d, or null where it can't go
-      const moveTo = S => { const mid = heldMiddle(R, S); if (!mid) return null; const d = s3(mid, R.c0); return keptCentered(bx) ? V3(d.x, -R.c0.y, d.z) : d; };
-      const place = d => boxFrom3(bx, R.B.map(p => a3(p, d)), R.H, g, DRAG_EDGE);
-      const free = moveTo(w), moves = [];
-      if (!free) break;
-      if (useSnap && !keptCentered(bx)) {
-        // snap the base corner nearest the grab point, moving the whole box with it
+      // snap the base corner nearest the grab point, moving the whole box with it
+      const snapped = free => {
+        if (!useSnap || keptCentered(bx)) return [];
         const t = R.cam.proj(a3(R.seen[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
-        if (sp) moves.push({ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp });
-      }
-      moves.push({ delta: free });
-      // The base can't rest at eye level, where it would flatten onto the horizon, so a box dragged across the
-      // horizon hops over it; and a box can't go where the view can't show it. Short of the pointer, it goes as
-      // far toward it as it can and slides along that limit, across or up and down, rather than stopping dead.
-      let got = null;
-      for (const m of moves) { const nb = place(m.delta); if (nb) { got = Object.assign(m, { nb }); break; } }
-      if (!got) {
-        const from = R.at || V3(0, 0, 0), spot = d => { const q = R.cam.proj(a3(a3(R.c0, d), R.held)); return P(q.x, q.y); };
-        const wrap = S => (R.cam.wrapS ? R.cam.wrapS(S) : S), S0 = spot(from), aim = wrap(w);
-        const reach = to => {
-          if (!to) return null;
-          let lo = 0, hi = 1, nb = null;
-          for (let i = 0; i < 16; i++) { const t = (lo + hi) / 2, n = place(lerp3(from, to, t)); if (n) { lo = t; nb = n; } else hi = t; }
-          return nb && { delta: lerp3(from, to, lo), nb };
-        };
-        for (const S of [w, P(w.x, S0.y), P(S0.x, w.y)]) {
-          const r = reach(moveTo(S));
-          if (r && (!got || len(sub(wrap(spot(r.delta)), aim)) < len(sub(wrap(spot(got.delta)), aim)))) got = r;
-        }
-      }
+        return sp ? [{ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp }] : [];
+      };
+      const got = moveHeld(bx, R, w, g, { extra: snapped });
       if (!got) break;
       bx.b0 = got.nb.b0; bx.b2 = got.nb.b2; bx.H = got.nb.H; bx.h = got.nb.h; R.at = got.delta;
       if (got.sp) snapMark = got.sp;
@@ -3729,7 +3813,7 @@ function endPointer(e) {
   if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
-  if (e.pointerType !== "touch") showHover(hitTest(spos(e), faceReach(e))); // (a click may just have selected a box, with hidden faces to pick)
+  if (e.pointerType !== "touch") { lastPos = spos(e); showHover(hitTest(lastPos, faceReach(e))); } // (a click may just have selected a box, with hidden faces to pick)
 }
 // Clicking the solid circle, rather than dragging it, opens a box for the angle around that axis, measured from the
 // box's default and the same one that axis's slider sets. It starts filled in and selected, so typing replaces it.
@@ -3787,6 +3871,10 @@ window.addEventListener("keydown", e => {
   const textUndo = tag === "TEXTAREA" || (tag === "INPUT" && /^(text|number|search|email|url|tel|password)$/.test(document.activeElement.type));
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !textUndo) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !textUndo) { e.preventDefault(); doRedo(); return; }
+  // copy, cut and paste a box (text selected on the page is left to copy as usual)
+  const clipKey = (e.ctrlKey || e.metaKey) && !e.altKey && !textUndo ? e.key.toLowerCase() : "";
+  if ((clipKey === "c" || clipKey === "x") && state.sel >= 0 && !String(window.getSelection())) { e.preventDefault(); if (!e.repeat && !drag) copyBox(clipKey === "x"); return; }
+  if (clipKey === "v") { e.preventDefault(); if (!e.repeat && !drag) pasteBox(); return; }
   if (typing) return;
   if ((e.key === "Delete" || e.key === "Backspace") && state.sel >= 0) { e.preventDefault(); delBox(); }
   else if (e.key === "Escape") { state.sel = -1; touch(); }
