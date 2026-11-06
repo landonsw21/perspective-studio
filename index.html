@@ -1896,12 +1896,12 @@ function drawFaceGhost(f, fill, stroke, alpha) {
   ctx.globalAlpha = 0.9; ctx.beginPath(); f.edges.forEach(trace); ctx.stroke();
   ctx.restore();
 }
-// How far a drag has turned the box, back round to 0 after each full turn
-function ringLabel(k, total) {
-  const t = (total / deg % 360).toFixed(1);
-  return `${AXIS_NAMES[k]} ${t === "0.0" || t === "-0.0" ? "0.0" : (+t > 0 ? "+" : "") + t}°`;
+// The box's angle around an axis from its default, as its slider shows it: 0 to 360, with a whole turn back at 0
+function ringLabel(k, a) {
+  const t = wrapAngle(a).toFixed(1);
+  return `${AXIS_NAMES[k]} ${t === "360.0" ? "0.0" : t}°`;
 }
-// The rotation circle, with a dashed line along its axis, and while it's being dragged how far the box has turned
+// The rotation circle, with a dashed line along its axis, and while it's being dragged the box's angle around it
 function drawRing(R, panel, ghosted = false) {
   const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
   ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
@@ -1919,7 +1919,7 @@ function drawRing(R, panel, ghosted = false) {
     ctx.lineWidth = 1.25; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
   }
   if (live && drag.moved) {
-    const t = ringLabel(R.k, drag.total), p = drag.at;
+    const t = ringLabel(R.k, state.boxes[state.sel].rot[AXIS_KEYS[R.k]]), p = drag.at;
     ctx.font = '500 11px "IBM Plex Mono", monospace';
     const tw = ctx.measureText(t).width;
     ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
