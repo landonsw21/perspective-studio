@@ -2087,13 +2087,13 @@ function solveCorner(xl, xr, aL, aR) {
   return { p, F: xr / horizonReach(PI2 - p, aR) };
 }
 // Put the VPs back in an even layout. In 3-point, VP1 and VP2 go either side of the center point, as far apart as
-// they were, and VP3 below it, the three evenly spaced: the view looks down along a cube's diagonal, so every axis
-// shrinks alike (Look up flips VP3 above). A curved view keeps its size and curvature, and in 4-point fisheye VP1 and
-// VP2 go back to 45° either side, which turns the boxes with them.
+// they were, and VP3 straight below it (or above, if it was above), the three evenly spaced: the view looks down (or
+// up) along a cube's diagonal, so every axis shrinks alike. A curved view keeps its size and curvature, and in 4-point
+// fisheye VP1 and VP2 go back to 45° either side, which turns the boxes with them.
 function evenVPs() {
   if (is3()) {
     const [v1, v2, v3] = state.vps, side = v1.dist <= v2.dist ? 1 : -1, d = Math.max(40, Math.round(Math.abs(v2.dist - v1.dist) / 2));
-    changeGrid(() => { v1.dist = -side * d; v2.dist = side * d; v3.dist = 0; v3.drop = Math.round(d * Math.sqrt(3)); });
+    changeGrid(() => { v1.dist = -side * d; v2.dist = side * d; v3.dist = 0; v3.drop = (v3.drop < 0 ? -1 : 1) * Math.round(d * Math.sqrt(3)); });
     commit(); touch(); return;
   }
   if (!camMode()) return;
@@ -2676,7 +2676,7 @@ const schema = [
     { t: "range", bind: "vps.2.dist", label: "VP3 position along horizon", min: -6000, max: 6000, step: 1, when: is3 },
     { t: "range", bind: "vps.2.drop", label: "VP3 distance from horizon", min: -12000, max: 12000, step: 1, when: is3 },
     { t: "btns", items: [["Look down (VP3 below)", () => flipVP3(1), ""], ["Look up (VP3 above)", () => flipVP3(-1), ""]], when: is3 },
-    { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3. Even out VPs, on the toolbar, spaces all three evenly, with VP3 below the horizon.", when: is3 },
+    { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas, and set its rays under Rays → VP3. Even out VPs, on the toolbar, spaces all three evenly, keeping VP3 on its side of the horizon.", when: is3 },
     { t: "readout", text: camCheck3, when: is3 },
     { t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
     { t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
