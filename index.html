@@ -1162,11 +1162,11 @@ function turnFrame(bx, g, rot = bx.rot) {
 }
 // Can the view show the box at these angles? Through a flat camera, every corner stays as near straight ahead as
 // editing allows (or no further out than box `was`); through a lens, every corner stays where it can be drawn.
-function turnFits(bx, g, rot = bx.rot, was = bx) {
+function turnFits(bx, g, rot = bx.rot, was = bx, edge = VIEW_EDGE) {
   const F = turnFrame(bx, g, rot), { cam, B, T, C } = F;
   if (!g.cam) {
     const v = f => Math.min(...[...f.B, ...f.T].map(p => cam.depthOf(p) / (l3(p) || 1))), m = v(F);
-    return m >= VIEW_EDGE || m >= v(turnFrame(was, g));
+    return m >= edge || m >= v(turnFrame(was, g));
   }
   const q = n3(C), fits = cam.fitsTurned || cam.fits;
   return [...B, ...T].every(p => l3(p) > 0.02 * l3(C) && (!fits || fits(p, q)));
@@ -1299,12 +1299,13 @@ function dragTurnedTop(bx, F, i, S, g) {
 }
 // Height for a camera box whose anchor corner sits at unit direction Bu, so that the anchor's top corner
 // lands on screen point S (S's direction is projected onto that corner's vertical plane).
+const TALLEST = 50; // (a box's height reads back as at most this many times its corner's distance from the eye)
 function topFromScreen(Bu, S, g) {
   const Dm = g.cam.unproj(S), hl = Math.hypot(Bu.x, Bu.z);
   if (hl < 1e-9) return 0.3;
   const dmx = (Dm.x * Bu.x + Dm.z * Bu.z) / hl;
-  if (dmx < 1e-6) return 50;
-  return Math.max(1e-9, Math.min(50, hl * Dm.y / dmx - Bu.y));
+  if (dmx < 1e-6) return TALLEST;
+  return Math.max(1e-9, Math.min(TALLEST, hl * Dm.y / dmx - Bu.y));
 }
 function axisName(a) {
   if (isIso()) return "axis " + (a + 1);
@@ -2372,28 +2373,31 @@ function baseOk(b0, b2, g, clear = 0) {
 }
 // In 1-, 2- and 3-point, editing keeps every corner of a box within about 88° of straight ahead (that is
 // already far off the page), or at least no further out than it was. Past that, boxes stretch without end.
-const VIEW_EDGE = 0.035;
+// Dragging a box goes a little further (about 89.4°), so one made as big as editing allows can still be moved.
+const VIEW_EDGE = 0.035, DRAG_EDGE = 0.01;
 function viewDepth(bx, g) {
   const { cam, B, H } = box3(bx, g);
   return Math.min(...[...B, ...B.map(p => a3(p, m3(UP3, H)))].map(p => cam.depthOf(p) / (l3(p) || 1)));
 }
-function staysInView(nb, bx, g) {
+function staysInView(nb, bx, g, edge = VIEW_EDGE) {
   if (g.cam) return true;
   const v = viewDepth(nb, g);
-  return v >= VIEW_EDGE || v >= viewDepth(bx, g);
+  return v >= edge || v >= viewDepth(bx, g);
 }
 // Box bx rebuilt from a 3D base B and height H, or null where the view can't show it as a box: a base at
-// eye level or past what a lens can draw, or a box stretching out toward infinity
-function boxFrom3(bx, B, H, g) {
+// eye level or past what a lens can draw, or a box stretching out toward infinity (past `edge` in a flat view)
+function boxFrom3(bx, B, H, g, edge = VIEW_EDGE) {
   const cam = convCam(g), T = B.map(p => a3(p, m3(UP3, H))), p0 = cam.proj(B[0]), p2 = cam.proj(B[2]);
   if (![p0.x, p0.y, p2.x, p2.y].every(Number.isFinite) || !baseOk(p0, p2, g, 2 / view.z)) return null;
   const nb = Object.assign({}, bx, { b0: P(p0.x, p0.y), b2: P(p2.x, p2.y) });
   if (g.cam) {
     nb.H = H / (l3(B[bx.anchor]) || 1);
-    return readsBack(nb, B, g.cam, l3(s3(T[2], B[0]))) && (!turned(nb) || turnFits(nb, g, nb.rot, bx)) ? nb : null;
+    return readsBack(nb, B, g.cam, l3(s3(T[2], B[0]))) && (!turned(nb) || turnFits(nb, g, nb.rot, bx, edge)) ? nb : null;
   }
+  // (a top behind the eye would read back as a box with no height at all, and one taller than TALLEST as a shorter box)
+  if (!T.every(p => cam.depthOf(p) > 0) || H >= TALLEST * l3(B[bx.anchor])) return null;
   const Ba = cam.proj(B[bx.anchor]), Ta = cam.proj(T[bx.anchor]); nb.h = Math.max(1e-6, dot(sub(Ta, Ba), g.up(Ba)));
-  return staysInView(nb, bx, g) && (!turned(nb) || turnFits(nb, g, nb.rot, bx)) ? nb : null;
+  return staysInView(nb, bx, g, edge) && (!turned(nb) || turnFits(nb, g, nb.rot, bx, edge)) ? nb : null;
 }
 // The panel's rotation sliders: an angle the view can't show is refused, as a size too big for it is held back
 function setBoxRot(key, v) {
@@ -3622,28 +3626,40 @@ canvas.addEventListener("pointermove", e => {
     }
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
-      const mid = heldMiddle(R, w);
-      if (!mid) break;
-      const free = s3(mid, R.c0), moves = [];
-      if (keptCentered(bx)) moves.push({ delta: V3(free.x, -R.c0.y, free.z) }); // a box kept centered slides along eye level
-      else {
-        if (useSnap) {
-          // snap the base corner nearest the grab point, moving the whole box with it
-          const t = R.cam.proj(a3(R.seen[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
-          if (sp) moves.push({ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp });
+      // the move, from where the drag began, that puts the spot held under screen point S (a box kept centered
+      // slides along eye level), and the box after a move d, or null where it can't go
+      const moveTo = S => { const mid = heldMiddle(R, S); if (!mid) return null; const d = s3(mid, R.c0); return keptCentered(bx) ? V3(d.x, -R.c0.y, d.z) : d; };
+      const place = d => boxFrom3(bx, R.B.map(p => a3(p, d)), R.H, g, DRAG_EDGE);
+      const free = moveTo(w), moves = [];
+      if (!free) break;
+      if (useSnap && !keptCentered(bx)) {
+        // snap the base corner nearest the grab point, moving the whole box with it
+        const t = R.cam.proj(a3(R.seen[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
+        if (sp) moves.push({ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp });
+      }
+      moves.push({ delta: free });
+      // The base can't rest at eye level, where it would flatten onto the horizon, so a box dragged across the
+      // horizon hops over it; and a box can't go where the view can't show it. Short of the pointer, it goes as
+      // far toward it as it can and slides along that limit, across or up and down, rather than stopping dead.
+      let got = null;
+      for (const m of moves) { const nb = place(m.delta); if (nb) { got = Object.assign(m, { nb }); break; } }
+      if (!got) {
+        const from = R.at || V3(0, 0, 0), spot = d => { const q = R.cam.proj(a3(a3(R.c0, d), R.held)); return P(q.x, q.y); };
+        const wrap = S => (R.cam.wrapS ? R.cam.wrapS(S) : S), S0 = spot(from), aim = wrap(w);
+        const reach = to => {
+          if (!to) return null;
+          let lo = 0, hi = 1, nb = null;
+          for (let i = 0; i < 16; i++) { const t = (lo + hi) / 2, n = place(lerp3(from, to, t)); if (n) { lo = t; nb = n; } else hi = t; }
+          return nb && { delta: lerp3(from, to, lo), nb };
+        };
+        for (const S of [w, P(w.x, S0.y), P(S0.x, w.y)]) {
+          const r = reach(moveTo(S));
+          if (r && (!got || len(sub(wrap(spot(r.delta)), aim)) < len(sub(wrap(spot(got.delta)), aim)))) got = r;
         }
-        moves.push({ delta: free });
       }
-      // The base can't rest at eye level, where it would flatten onto the horizon: a move (or a snap) that
-      // lands it there is skipped, so a box dragged across the horizon hops over it. Through a lens, a spot
-      // where the box can't be drawn as itself is skipped too.
-      for (const { delta, sp } of moves) {
-        const nb = boxFrom3(bx, R.B.map(p => a3(p, delta)), R.H, g);
-        if (!nb) continue;
-        bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h;
-        if (sp) snapMark = sp;
-        break;
-      }
+      if (!got) break;
+      bx.b0 = got.nb.b0; bx.b2 = got.nb.b2; bx.H = got.nb.H; bx.h = got.nb.h; R.at = got.delta;
+      if (got.sp) snapMark = got.sp;
       break;
     }
     case "vp": {
