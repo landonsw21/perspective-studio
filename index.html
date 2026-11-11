@@ -181,7 +181,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
       <button class="tb primary" id="tbAdd" type="button">Add box</button>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
-      <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout (3-, 4-, 5- and 6-point)">Even out VPs</button>
+      <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout, centered on the page (3-, 4-, 5- and 6-point)">Even out VPs</button>
       <select class="tb" id="tbMode" aria-label="Perspective" title="Perspective"></select>
       <button class="tb" id="tbReset" type="button">Reset</button>
       <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
@@ -2308,16 +2308,20 @@ function solveCorner(xl, xr, aL, aR) {
 // Put the VPs back in an even layout. In 3-point, VP1 and VP2 go either side of the center point, as far apart as
 // they were, and VP3 straight below it (or above, if it was above), the three evenly spaced: the view looks down (or
 // up) along a cube's diagonal, so every axis shrinks alike. A curved view keeps its size and curvature, and in 4-point
-// fisheye VP1 and VP2 go back to 45° either side, which turns the boxes with them.
+// fisheye VP1 and VP2 go back to 45° either side, which turns the boxes with them. Either way the layout is then
+// centered on the page, as Center on page does: its center (the horizon's center point, or in a curved view the lens
+// center along it) goes to the middle of the export area, with the boxes kept as for any horizon move.
 function evenVPs() {
+  const V = state.viewport, toPage = (along = 0) => { const g = geo(); state.horizon.x = V.x + V.w / 2 - g.u.x * along; state.horizon.y = V.y + V.h / 2 - g.u.y * along; };
   if (is3()) {
     const [v1, v2, v3] = state.vps, side = v1.dist <= v2.dist ? 1 : -1, d = Math.max(40, Math.round(Math.abs(v2.dist - v1.dist) / 2));
-    changeGrid(() => { v1.dist = -side * d; v2.dist = side * d; v3.dist = 0; v3.drop = (v3.drop < 0 ? -1 : 1) * Math.round(d * Math.sqrt(3)); });
+    changeGrid(() => { toPage(); v1.dist = -side * d; v2.dist = side * d; v3.dist = 0; v3.drop = (v3.drop < 0 ? -1 : 1) * Math.round(d * Math.sqrt(3)); });
     commit(); touch(); return;
   }
   if (!camMode()) return;
   const c = state.curvi, turn = isFish4() ? Math.round(c.turn / 90) * 90 : c.turn;
   keepBoxes(() => {
+    toPage(state.cone.cv);
     if (isPano()) c.panoK = [0, 0, 0, 0];
     else { const r = c[lensKey()]; r.L = r.R = r.U = r.D = r.BL = r.BR = r.BU = r.BD = 1; r.back = 2; }
     c.turn = turn;
