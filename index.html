@@ -2224,6 +2224,7 @@ function keepBoxes(mutate, turn = 0) {
 }
 // Dragging one VP of a curved view moves just that VP, and the lens reshapes around it. Each drag works
 // from the lens as it was when the drag began, so the points that stay put don't drift.
+const OPPOSITE_SIDE = { L: "R", R: "L", U: "D", D: "U" };
 function lensVPDrag(mk, w, g) {
   const c0 = drag.lens0, cam0 = drag.cam0, C = cam0.C, rel = sub(w, C);
   const along = dot(rel, g.u), down = dot(rel, g.n), gap = 6 / view.z;
@@ -2231,18 +2232,21 @@ function lensVPDrag(mk, w, g) {
   const unit = (key, curv) => cam0.F * stretchOf(c0[key][curv]) * PI2;
   switch (mk.drag) {
     case "sideH": case "sideV": {
+      // (with Mirror on, the opposite point, right for left or down for up, goes the same distance out the other way)
       const key = lensKey(), horiz = mk.drag === "sideH", sd = mk.side, r0 = c0[key], un = unit(key, horiz ? "hc" : "vc");
+      const sds = state.symmetric ? [sd, OPPOSITE_SIDE[sd]] : [sd];
       let dist = Math.max(gap, horiz ? (sd === "L" ? -along : along) : (sd === "U" ? -down : down));
-      if (key !== "f6") { keepBoxes(() => { state.curvi[key][sd] = dist / un; }); return; }
+      if (key !== "f6") { keepBoxes(() => { sds.forEach(x => { state.curvi[key][x] = dist / un; }); }); return; }
       // in 6-point the back rim on that side stays put, and the 90° point can't pass it
-      const rim = un * r0[sd] * r0.back * r0["B" + sd];
-      dist = Math.min(dist, rim / BACK_MIN);
-      keepBoxes(() => { const r = state.curvi.f6; r[sd] = dist / un; r["B" + sd] = rim / (dist * r0.back); });
+      const rims = sds.map(x => un * r0[x] * r0.back * r0["B" + x]);
+      dist = Math.min(dist, ...rims.map(rim => rim / BACK_MIN));
+      keepBoxes(() => { const r = state.curvi.f6; sds.forEach((x, i) => { r[x] = dist / un; r["B" + x] = rims[i] / (dist * r0.back); }); });
       return;
     }
     case "center": {
       // The center slides between the left and right points, which stay put, as does the 6-point back rim
-      // beside them; up and down ride along
+      // beside them; up and down ride along. With Mirror on, the whole lens moves instead, so its sides stay even.
+      if (state.symmetric) { const cv = Math.round(drag.cv0 + along); keepBoxes(() => { state.cone.cv = cv; }); return; }
       const key = lensKey(), r0 = c0[key], un = unit(key, "hc"), xL = -un * r0.L, xR = un * r0.R;
       let lo = xL + gap, hi = xR - gap;
       const six = key === "f6", rimL = six ? -xL * r0.back * r0.BL : 0, rimR = six ? xR * r0.back * r0.BR : 0;
@@ -2271,8 +2275,9 @@ function lensVPDrag(mk, w, g) {
       // Like a 2-point VP: the other VP stays where it is, and the lens turns and resizes so this one lands
       // under the pointer. Up and down keep their places too.
       const other = cam0.markers.find(m => m.drag === "corner" && m.axis !== mk.axis);
-      const left = mk.yaw < other.yaw, xo = dot(sub(other.p, C), g.u);
-      const sol = solveCorner(left ? Math.min(-gap, along) : xo, left ? xo : Math.max(gap, along), cam0.sides.L, cam0.sides.R);
+      const left = mk.yaw < other.yaw, here = left ? Math.min(-gap, along) : Math.max(gap, along);
+      const xo = state.symmetric ? -here : dot(sub(other.p, C), g.u); // (with Mirror on, the other one opposite this one)
+      const sol = solveCorner(left ? here : xo, left ? xo : here, cam0.sides.L, cam0.sides.R);
       if (!sol || !(sol.F * PI2 >= 5 && sol.F * PI2 <= 1e5)) return;
       const turn = c0.turn + (-sol.p - Math.min(mk.yaw, other.yaw)) / deg, k = cam0.F / sol.F;
       keepBoxes(() => { const r = state.curvi.f4; state.curvi.turn = turn; r.size = sol.F * PI2; r.U = c0.f4.U * k; r.D = c0.f4.D * k; }, (turn - state.curvi.turn) * deg);
@@ -2282,6 +2287,8 @@ function lensVPDrag(mk, w, g) {
       // a panorama VP: only its own yaw shift changes, as long as the strip still runs left to right
       const K = c0.panoK.slice();
       K[mk.k] = cam0.warp.unbase(along / cam0.F) - mk.yaw;
+      // (with Mirror on, VP1 and VP2, or VP3 and VP4, stay mirror images across the center)
+      if (state.symmetric) { const o = cam0.markers.find(m => m.drag === "knot" && m.k === (mk.k ^ 1)); K[o.k] = -(mk.yaw + K[mk.k]) - o.yaw; }
       if (!panoOk(Object.assign({}, c0, { panoK: K }))) return;
       keepBoxes(() => { state.curvi.panoK = K; });
       return;
@@ -3049,7 +3056,11 @@ const schema = [
     { top: true, t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano },
     { top: true, t: "note", html: "One vanishing point doesn't fix how far you stand from the picture, so 1-point has no cone of vision.", when: is1 },
     { top: true, t: "sub", label: "Vanishing points", when: noIso },
-    { top: true, t: "checks", items: [{ bind: "symmetric", label: "Mirror VPs around the center point", when: usesVPDist }, { bind: "lockFrame", label: "Lock horizon and VPs in place" }], when: noIso },
+    { top: true, t: "checks", items: [{ bind: "symmetric", label: () => (camMode() ? "Mirror VPs around the center" : "Mirror VPs around the center point"), when: () => usesVPDist() || camMode() }, { bind: "lockFrame", label: "Lock horizon and VPs in place" }], when: noIso },
+    { top: true, t: "note", html: () => (isPano() ? "With Mirror on, VP1 and VP2 stay mirror images across the center as you drag either one, and so do VP3 and VP4."
+      : isFish4() ? "With Mirror on, dragging VP1 moves VP2 the same distance the other way from the lens center, and the other way round; the up and down VPs move out or in together too."
+      : camMode() ? "With Mirror on, the left and right points move out or in together, and so do the up and down points. Dragging the center moves the whole lens, so its sides stay even."
+      : "With Mirror on, dragging VP1 or typing its distance moves VP2 the same distance the other way, and the other way round."), when: () => usesVPDist() || camMode() },
     { t: "seg" },
     // Each VP's tab starts with where that VP sits, where it has a setting of its own, then its rays
     { t: "range", bind: "vps.3.dist", uid: "one", label: "VP position along horizon", min: -3000, max: 3000, step: 1, when: is1 },
@@ -3916,7 +3927,7 @@ function showHover(h) {
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
-  document.getElementById("stHint").textContent = vd ? vd[0] + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
+  document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) showHover(hitTest(lastPos, faceReach(e))); };
 // VP markers drag in different ways depending on the mode
@@ -3931,6 +3942,16 @@ const VP_DRAGS = {
   back: ["Drag to move the back rim; the 90° ring stays put", "ew-resize"],
   knot: ["Drag along the horizon to move just this VP", "ew-resize"]
 };
+// what those drags do with Mirror on
+const MIRROR_HINTS = {
+  dist: "Drag the vanishing point along the horizon; with Mirror on, the other one moves the opposite way",
+  sideH: "Drag along the horizon to move this point; with Mirror on, the opposite point moves to match",
+  sideV: "Drag up or down to move this point; with Mirror on, the opposite point moves to match",
+  corner: "Drag along the horizon to move this VP; with Mirror on, the other one moves the opposite way",
+  center: "Drag along the horizon to move the whole lens; with Mirror on, its sides stay even",
+  knot: "Drag along the horizon to move this VP; with Mirror on, its mirror image across the center moves to match"
+};
+const vpHint = mk => (state.symmetric && MIRROR_HINTS[mk.drag] && !(mk.drag === "dist" && mk.vi > 1) ? MIRROR_HINTS[mk.drag] : VP_DRAGS[mk.drag][0]);
 
 canvas.addEventListener("pointerdown", e => {
   closeRingEntry(); ringClick = null;
