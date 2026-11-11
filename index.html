@@ -1510,17 +1510,6 @@ function axisName(a) {
   if (["5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
   return a ? "VP2" : "VP1";
 }
-function faceLabel(id) {
-  const bx = state.boxes[state.sel];
-  if (id === "top") return "Top";
-  if (id === "bottom") return "Bottom";
-  if (!bx) return id;
-  const G = boxGeo(bx, geo());
-  const f = G.faces.find(x => x.id === id);
-  if (turned(bx)) return `${f.front ? "Near" : "Far"} side, along ${id === "s01" || id === "s23" ? "X" : "Y"}`;
-  if (state.mode === "1pt") return id === "s01" || id === "s23" ? (f.front ? "Front (faces you)" : "Back") : `${f.front ? "Near" : "Far"} side, running to the VP`;
-  return `${f.front ? "Near" : "Far"} side, running to ${axisName(id === "s01" || id === "s23" ? 0 : 1)}`;
-}
 
 /* ---------- snapping ---------- */
 // Guides are cached together with their crossings: straight lines in 2- and 3-point, great circles
@@ -3145,8 +3134,8 @@ const schema = [
     { t: "color", bind: "boxes.$b.fill", label: "Face color", when: hasBox },
     { t: "range", bind: "boxes.$b.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, hi: 500, when: hasBox },
     { t: "sub", label: "Faces", when: hasBox },
-    ...["top", "bottom", "s01", "s23", "s12", "s30"].map(id => ({ t: "check", bind: "boxes.$b.faces." + id, label: () => faceLabel(id), when: hasBox })),
-    { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
+    // (each face is hidden with Shift-click and brought back with ⌘-click on the canvas)
+    { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, "", () => hasBox() && Object.values(state.boxes[state.sel].faces).some(v => v === false)], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, "", () => hasBox() && state.boxes[state.sel].faces.top !== false]], when: hasBox },
     { t: "sub", label: "Planes", when: hasBox },
     ...[["x", "Planes across X (width)"], ["y", "Planes across Y (length)"], ["z", "Planes up Z (height)"]].map(([k, label]) => ({ t: "parts", bind: "boxes.$b.planes." + k, label, hi: PLANES_MAX, planes: true, when: hasBox })),
     { t: "btns", items: [["Show all planes", () => { state.boxes[state.sel].planes.hidden = []; commit(); touch(); }, "", () => hasBox() && state.boxes[state.sel].planes.hidden.length > 0]], when: hasBox },
