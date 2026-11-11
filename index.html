@@ -2638,13 +2638,16 @@ function scaleDrawing(k, C, from) {
     bx.fit = o.fit ? Object.assign(at(o.fit), { s: o.fit.s * k }) : null;
   });
 }
-// How far the drawing can be scaled from setup `s` in one go: every lens and the panorama stay within the
-// sizes they can take (one already outside them, from a loaded file, doesn't hold the drawing back), and one
-// step never shrinks it past 1% or grows it past 100 times
+// How far the drawing can be scaled from setup `s` in one go: the lens or panorama in use stays within the sizes it
+// can take (one already outside them, from a loaded file, doesn't hold the drawing back), and one step never shrinks
+// it past 1% or grows it past 100 times. The other views' lenses scale along without holding it back (switching to
+// one grows it if it has to, as switching always does), or a view whose lens starts out bigger would stop the
+// drawing long before the lens in use got there.
 function scaleRange(s) {
-  const c = s.curvi;
+  const c = s.curvi, inUse = s.mode === "4pt" ? (c.style4 === "pano" ? [c.pano, 10] : [c.f4.size, 5]) : s.mode === "5pt" ? [c.f5.size, 5] : s.mode === "6pt" ? [c.f6.size, 5] : null;
   let lo = 0.01, hi = 100;
-  for (const [v, min] of [[c.f4.size, 5], [c.f5.size, 5], [c.f6.size, 5], [c.pano, 10]]) {
+  if (inUse) {
+    const [v, min] = inUse;
     if (v >= min) lo = Math.max(lo, min / v);
     if (v <= 1e5) hi = Math.min(hi, 1e5 / v);
   }
@@ -3515,10 +3518,12 @@ function resetAll() {
   ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
 }
 // Puts the perspective in use back as it starts: the horizon, the VPs and this view's lens at their defaults, the horizon
-// placed on the page as it first is, and in place of the boxes one default box in the middle of the page. Colors, rays,
-// guides and the page itself stay as they are. One undo brings it all back.
+// placed on the page as it first is, and in place of the boxes one default box in the middle of the page. A scaled
+// drawing first goes back to 100%, so the lengths that scaled with it (ray and guide spacing, the other views' lenses)
+// are as they were before. Colors, rays, guides and the page itself stay as they are. One undo brings it all back.
 function resetPerspective() {
   const d = defaultState(), s = state, V = s.viewport, D = d.viewport, mid = P(V.x + V.w / 2, V.y + V.h / 2);
+  if (s.drawingScale !== 1) scaleDrawing(1 / s.drawingScale, mid, clone(s));
   s.horizon.x = mid.x + d.horizon.x - (D.x + D.w / 2); s.horizon.y = mid.y + d.horizon.y - (D.y + D.h / 2); s.horizon.tilt = d.horizon.tilt;
   s.vps.forEach((v, i) => { v.dist = d.vps[i].dist; v.drop = d.vps[i].drop; });
   s.cone.cv = d.cone.cv; s.drawingScale = d.drawingScale;
