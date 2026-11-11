@@ -4007,11 +4007,19 @@ canvas.addEventListener("pointerdown", e => {
     // camera for this.
     const { cam, B, H } = box3(bx, g), T = turnFrame(bx, g);
     const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8);
-    // (snapping goes by the base corner you can see, wherever a turned box has put it)
-    const seen = turned(bx) ? T.B : B, onScreen = i => { const p = cam.proj(seen[i]); return len(sub(P(p.x, p.y), w)); };
+    // Snapping goes by the corner you can see that's nearest where you took hold, top or bottom, wherever a turned box has
+    // put it: the corners of the faces turned toward you, or with the box ghosted, a wireframe or a face toward you
+    // hidden, any corner (you see them all through it)
+    const Bc = turned(bx) ? T.B : B, Tc = turned(bx) ? T.T : B.map(p => a3(p, m3(UP3, H)));
+    const corner3 = n => (n[0] === "b" ? Bc : Tc)[+n[1]], mid3 = m3([...Bc, ...Tc].reduce(a3, V3(0, 0, 0)), 1 / 8);
+    const toward = FACES.filter(f => { const fc = m3(f.v.map(corner3).reduce(a3, V3(0, 0, 0)), 1 / 4); return d3(s3(fc, mid3), fc) < 0; });
+    const seeThrough = bx.mode !== "solid" || toward.some(f => bx.faces[f.id] === false);
+    const names = seeThrough ? ["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"] : [...new Set(toward.flatMap(f => f.v))];
+    const onScreen = q => { const p = cam.proj(q); return len(sub(P(p.x, p.y), w)); };
+    const corner = names.map(corner3).reduce((a, q) => (onScreen(q) < onScreen(a) ? q : a));
     // the spot taken hold of, from the box's middle: where the line of sight first meets the box
     const d = n3(cam.unproj(cam.wrapS ? cam.wrapS(w) : w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
-    drag.rig = { cam, B, H, c0, seen, ci: onScreen(0) < onScreen(2) ? 0 : 2, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
+    drag.rig = { cam, B, H, c0, corner, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
@@ -4091,11 +4099,11 @@ canvas.addEventListener("pointermove", e => {
     }
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig; if (!R) break;
-      // snap the base corner nearest the grab point, moving the whole box with it
+      // snap the visible corner nearest the grab point (see pointerdown), moving the whole box with it
       const snapped = free => {
         if (!useSnap || keptCentered(bx)) return [];
-        const t = R.cam.proj(a3(R.seen[R.ci], free)), sp = snapPoint(P(t.x, t.y), state.sel);
-        return sp ? [{ delta: s3(slideTo(R.cam, R.seen[R.ci], sp.pt), R.seen[R.ci]), sp }] : [];
+        const t = R.cam.proj(a3(R.corner, free)), sp = snapPoint(P(t.x, t.y), state.sel);
+        return sp ? [{ delta: s3(slideTo(R.cam, R.corner, sp.pt), R.corner), sp }] : [];
       };
       const got = moveHeld(bx, R, w, g, { extra: snapped });
       if (!got) break;
