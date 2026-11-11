@@ -3010,52 +3010,54 @@ const DIAGONALS = [["none", "None"], ["face", "Corner to corner (X)"], ["columns
 const diagNote = () => "On the upright faces, columns stand side by side and rows are stacked up them. On the top and bottom, columns sit side by side along the edges running " +
   (is1() ? "across, and rows along the edges running to the VP." : `to ${axisName(0)}, and rows along the edges running to ${axisName(1)}.`);
 const schema = [
-  { id: "rays", title: "Rays and vertical guides", rows: [
-    // Above the tabs, what belongs to the view as a whole: how it works, its lens, the horizon, the cone of vision and
-    // the settings shared by every VP. (Rows marked top show whichever tab is open.)
-    { top: true, t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP anywhere and the horizon moves with it; place it and set its rays in the VP tab below.", when: is1 },
-    { top: true, t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
-    { top: true, t: "note", html: "No vanishing points and no horizon. Every set of box edges stays parallel, at 30° either side of level and straight up and down, and nothing shrinks with distance, so sizes can be measured anywhere on the page. The three sets of rays make a grid of equal triangles.", when: isIso },
-    { top: true, t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
-    { top: true, t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
-    { top: true, t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
-    { top: true, t: "note", html: "The whole sphere in one continuous view, as if you were inside a globe: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag a box past the rim and it goes through the point behind you and comes in from the opposite side, stretching around the rim as it passes. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
-    { top: true, t: "readout", text: camCheck3, when: is3 },
-    { top: true, t: "sub", label: "Lens", when: lensMode },
-    { top: true, t: "sub", label: "Panorama", when: isPano },
-    { top: true, t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
-    { top: true, t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
-    { top: true, t: "range", bind: "curvi.panoHc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: isPano },
-    { top: true, t: "note", html: "Horizontal curvature bends the lines that run left and right, and vertical curvature the lines that run up and down. 100% is an even fisheye, 0% makes those lines straight, and more bends them further.", when: lensMode },
-    { top: true, t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: is5 },
-    { top: true, t: "range", bind: "curvi.$l.size", label: "Lens size (the 90° circle at 100%)", min: 50, max: 1500, step: 1, lo: 5, hi: 100000, when: lensMode },
-    { top: true, t: "range", bind: "curvi.pano", label: "Panorama size (90° at 100%)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
-    { top: true, t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: is4 },
-    { top: true, t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
-    { top: true, t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
-    { top: true, t: "readout", text: lensInfo, when: camMode },
-    { top: true, t: "sub", label: "Horizon line", when: noIso },
-    { top: true, t: "check", bind: "horizon.show", label: "Show horizon line", when: noIso },
+  { id: "camera", title: "Camera", rows: [
+    // the view as a whole: how it works, its lens or panorama, the horizon and the cone of vision
+    { t: "note", html: "One vanishing point on the horizon. Depth edges run to it, widths stay parallel to the horizon and heights stay vertical, so the front of every box is a true rectangle. Drag the VP anywhere and the horizon moves with it; place it and set its rays in its tab under Vanishing points.", when: is1 },
+    { t: "note", html: "Two vanishing points on the horizon. Vertical edges stay vertical.", when: is2 },
+    { t: "note", html: "No vanishing points and no horizon. Every set of box edges stays parallel, at 30° either side of level and straight up and down, and nothing shrinks with distance, so sizes can be measured anywhere on the page. The three sets of rays make a grid of equal triangles.", when: isIso },
+    { t: "note", html: "Looking at a box's corner, like 2-point: its two horizontal directions vanish at VP1 and VP2 on the horizon, always 90° apart, and vertical lines curve to the up and down VPs. Drag VP1 or VP2 along the horizon and the other one stays put, while the lens resizes and turns to match. Drag up or down to move just that point.", when: isFish4 },
+    { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
+    { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
+    { t: "note", html: "The whole sphere in one continuous view, as if you were inside a globe: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag a box past the rim and it goes through the point behind you and comes in from the opposite side, stretching around the rim as it passes. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
+    { t: "readout", label: "Camera check", text: camCheck3, when: is3 },
+    { t: "sub", label: "Lens", when: lensMode },
+    { t: "sub", label: "Panorama", when: isPano },
+    { t: "range", bind: "curvi.$l.hc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.$l.vc", label: "Vertical curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.panoHc", label: "Horizontal curvature (%)", min: 0, max: 300, step: 1, lo: 0, hi: 100000, when: isPano },
+    { t: "note", html: "Horizontal curvature bends the lines that run left and right, and vertical curvature the lines that run up and down. 100% is an even fisheye, 0% makes those lines straight, and more bends them further.", when: lensMode },
+    { t: "range", bind: "curvi.coverage", label: "Lens coverage (°)", min: 60, max: 340, step: 1, lo: 1, hi: 360, when: is5 },
+    { t: "range", bind: "curvi.$l.size", label: "Lens size (the 90° circle at 100%)", min: 50, max: 1500, step: 1, lo: 5, hi: 100000, when: lensMode },
+    { t: "range", bind: "curvi.pano", label: "Panorama size (90° at 100%)", min: 50, max: 1500, step: 1, lo: 10, hi: 100000, when: isPano },
+    { t: "range", bind: "curvi.turn", label: "Turn the view (°)", min: -180, max: 180, step: 0.5, lo: -720, hi: 720, when: is4 },
+    { t: "range", bind: "cone.cv", uid: "lens", label: () => (isPano() ? "Panorama center along horizon" : "Lens center along horizon"), min: -4000, max: 4000, step: 1, when: camMode },
+    { t: "check", bind: "curvi.circle", label: () => (isPano() ? "Show the ends of the panorama" : is6() ? "Show the 90° ring and the back rim" : "Show the lens edge"), when: camMode },
+    { t: "readout", label: () => (isPano() ? "Panorama measurements" : "Lens measurements"), text: lensInfo, when: camMode },
+    { t: "sub", label: "Horizon line", when: noIso },
+    { t: "check", bind: "horizon.show", label: "Show horizon line", when: noIso },
     // (eye level and the center point move on the canvas: drag the line, or the diamond at its center)
-    { top: true, t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1, lo: -180, hi: 180, when: noIso },
-    { top: true, t: "btns", items: [["Center on page", centerHorizonOnPage, ""]] },
-    { top: true, t: "note", html: "An isometric view has no horizon. Center on page puts the middle of the grid in the middle of the export area.", when: isIso },
-    { top: true, t: "color", bind: "horizon.color", label: "Color", when: noIso },
-    { top: true, t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25, hi: 500, when: noIso },
-    { top: true, t: "select", bind: "horizon.dash", label: "Line style", options: DASH, when: noIso },
-    { top: true, t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: noIso },
-    { top: true, t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame; where a vanishing point sits on it, hold Alt (⌥) to grab the diamond.", when: noIso },
-    { top: true, t: "sub", label: "Cone of vision", when: noIso },
-    { top: true, t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() && !is1() && noIso() },
-    { top: true, t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179, when: () => !isPano() && !is1() && noIso() },
-    { top: true, t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1, when: is2 },
-    { top: true, t: "color", bind: "cone.color", label: "Color", when: noIso },
-    { top: true, t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched.", when: is2 },
-    { top: true, t: "note", html: "In 3-point the cone centers itself on the camera's true center of vision.", when: is3 },
-    { top: true, t: "note", html: "Here the cone centers on the lens center, set above under Lens. The color above also draws the lens edge.", when: lensMode },
-    { top: true, t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano },
-    { top: true, t: "note", html: "One vanishing point doesn't fix how far you stand from the picture, so 1-point has no cone of vision.", when: is1 },
-    { top: true, t: "sub", label: "Vanishing points", when: noIso },
+    { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1, lo: -180, hi: 180, when: noIso },
+    { t: "btns", items: [["Center on page", centerHorizonOnPage, ""]] },
+    { t: "note", html: "An isometric view has no horizon. Center on page puts the middle of the grid in the middle of the export area.", when: isIso },
+    { t: "color", bind: "horizon.color", label: "Color", when: noIso },
+    { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25, hi: 500, when: noIso },
+    { t: "select", bind: "horizon.dash", label: "Line style", options: DASH, when: noIso },
+    { t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: noIso },
+    { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame; where a vanishing point sits on it, hold Alt (⌥) to grab the diamond.", when: noIso },
+    { t: "sub", label: "Cone of vision", when: noIso },
+    { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() && !is1() && noIso() },
+    { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179, when: () => !isPano() && !is1() && noIso() },
+    { t: "range", bind: "cone.cv", label: "Center of vision offset", min: -4000, max: 4000, step: 1, when: is2 },
+    { t: "color", bind: "cone.color", label: "Color", when: noIso },
+    { t: "note", html: "The center of vision must sit between the VPs. Boxes drawn outside the circle start to look stretched.", when: is2 },
+    { t: "note", html: "In 3-point the cone centers itself on the camera's true center of vision.", when: is3 },
+    { t: "note", html: "Here the cone centers on the lens center, set above under Lens. The color above also draws the lens edge.", when: lensMode },
+    { t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano },
+    { t: "note", html: "One vanishing point doesn't fix how far you stand from the picture, so 1-point has no cone of vision.", when: is1 }
+  ]},
+  // The VPs: settings shared by all of them, then a tab for each one (where it sits, where it has a setting of its own,
+  // then its rays), and where there are vertical guides, a tab for them. (Rows marked top show with every tab.)
+  { id: "vps", title: () => (isIso() ? "Rays" : "Vanishing points"), rows: [
     { top: true, t: "checks", items: [{ bind: "symmetric", label: () => (camMode() ? "Mirror VPs around the center" : "Mirror VPs around the center point"), when: () => usesVPDist() || camMode() }, { bind: "lockFrame", label: "Lock horizon and VPs in place" }], when: noIso },
     { top: true, t: "note", html: () => (isPano() ? "With Mirror on, VP1 and VP2 stay mirror images across the center as you drag either one, and so do VP3 and VP4."
       : isFish4() ? "With Mirror on, dragging VP1 moves VP2 the same distance the other way from the lens center, and the other way round; the up and down VPs move out or in together too."
@@ -3072,7 +3074,7 @@ const schema = [
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas or place it here, and set its rays below. Even out VPs, on the toolbar, spaces all three evenly, keeping VP3 on its side of the horizon, and centers them on the page.", when: onVP3 },
     { t: "range", bind: "curvi.f6.back", label: "Back rim (× the 90° ring)", min: 1.1, max: 4, step: 0.05, lo: BACK_MIN, hi: BACK_MAX, when: () => is6() && ui.vp === 3 },
     { t: "sub", label: "Rays", when: placedInTab },
-    { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
+    { t: "readout", label: () => `Rays spaced along ${rayBox().name}`, text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show rays" },
       { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || isIso() || rayBox()) },
@@ -3094,7 +3096,7 @@ const schema = [
     { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." },
     // the Verticals tab: 1-, 2-point and the panorama's vertical guides (3-point and the other curved views draw their
     // verticals as rays, under VP3 or Up & down)
-    { guide: true, t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
+    { guide: true, t: "readout", label: () => `Verticals spaced along ${rayBox().name}`, text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
     { guide: true, t: "checks", items: [{ bind: "verticals.show", label: "Show" }] },
     { guide: true, t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side of the middle"), min: 0, max: 80, step: 1, hi: 400 },
     { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !rayBox() },
@@ -3106,7 +3108,7 @@ const schema = [
     { guide: true, t: "note", html: () => "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a line style, set in the table, <code>.</code> skips a guide, and the pattern repeats. A's color also colors the Verticals tab." + (isPano() ? " In a panorama the vertical guides stay straight." : "") }
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
-    { t: "readout", text: () => (rayBox().rayFaces === "caps"
+    { t: "readout", label: () => `Horizontals spaced along ${rayBox().name}`, text: () => (rayBox().rayFaces === "caps"
       ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its ${capsText(box3(rayBox(), geo()))}, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
       : `The horizontals are spaced along ${rayBox().name}, like the rays: they run level with its top, bottom and division heights and carry on above and below it. Turn that off under Boxes to space them here again.`), when: () => !!rayBox() },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
@@ -3155,7 +3157,7 @@ const schema = [
     { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
     { t: "parts", bind: "boxes.$b.div.vert", label: () => (is3() ? "Lines to VP3 on sides" : radiusMode() ? "Lines to the up and down VPs on sides" : "Vertical lines on sides"), hi: 128, when: hasDiv },
     { t: "select", bind: "boxes.$b.div.diag", label: "Diagonals", options: DIAGONALS, when: hasDiv },
-    { t: "readout", text: diagNote, when: () => hasDiv() && ["columns", "rows"].includes(getP("boxes.$b.div.diag")) },
+    { t: "readout", label: "Columns and rows", text: diagNote, when: () => hasDiv() && ["columns", "rows"].includes(getP("boxes.$b.div.diag")) },
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.planes", label: "Divide the planes", when: () => hasDiv() && ["x", "y", "z"].some(a => state.boxes[state.sel].planes[a] > 1) },
@@ -3244,14 +3246,15 @@ document.addEventListener("pointerdown", e => { if (!infoTip.hidden && !infoTip.
 window.addEventListener("scroll", () => { if (!infoTip.hidden) hideInfo(true); }, true);
 document.querySelector(".ph .title").append(infoButton(document.getElementById("about").innerHTML, "About"));
 
+const escHtml = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v); } kids.forEach(k => e.append(k)); return e; }
 // (Isometric has no horizon or VPs, so their rows above the tabs hide there, all but Center on page, which puts the
 // middle of the grid on the page; nor vertical guides, which its vertical rays stand in for. One count serves all
 // three axes there, except past a box the rays are spaced along.)
 // The rays section shows the chosen tab's rows: a VP's own and its rays, or with Verticals the vertical guides (the
 // rows above the tabs show with all of them)
-{ const sec = schema.find(s => s.id === "rays"); sec.rows.forEach(r => { if (r.t === "seg" || r.top) return; const w = r.when, g = !!r.guide; r.when = () => guidesTab() === g && (!w || w()); }); }
-{ const r = schema.find(s => s.id === "rays").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!rayBox()) && (!w || w()); }
+{ const sec = schema.find(s => s.id === "vps"); sec.rows.forEach(r => { if (r.t === "seg" || r.top) return; const w = r.when, g = !!r.guide; r.when = () => guidesTab() === g && (!w || w()); }); }
+{ const r = schema.find(s => s.id === "vps").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!rayBox()) && (!w || w()); }
 
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
@@ -3448,7 +3451,14 @@ function makeRow(r) {
       };
       break;
     }
-    case "readout": node = el("div", { class: "note readout" }); update = () => { const t = r.text(); if (node.textContent !== t) node.textContent = t; }; break;
+    case "readout": {
+      // what the drawing is doing now (a camera check, a lens's measurements, rays following a box), behind an Info
+      // button like the notes, with a label that says what it's about
+      const b = infoButton(() => escHtml(r.text()), "Info"); // (its label is worked out once it shows, when what it names exists)
+      node = el("div", { class: "row note" }, b);
+      update = () => { const t = labelText(r) || "Info"; if (b.lastChild.textContent !== t) b.lastChild.textContent = t; };
+      break;
+    }
     case "sub": node = el("div", { class: "sub" }, r.label); update = () => {}; break;
     case "note": node = el("div", { class: "row note" }, infoButton(r.html)); update = () => {}; break;
     case "btns": {
@@ -3463,7 +3473,7 @@ function makeRow(r) {
       update = () => {
         const order = drawOrder(geo()).reverse(), many = order.length > 1;
         const s = JSON.stringify([order, state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
-        if (!state.boxes.length) { node.append(el("div", { class: "note" }, "No boxes yet. Add one and it lands below the horizon, ready to drag.")); return; }
+        if (!state.boxes.length) { node.append(el("div", { class: "row note" }, infoButton("Add one with Add box and it lands below the horizon, ready to drag.", "No boxes yet"))); return; }
         const put = (at, slot) => { const list = [...order], [i] = list.splice(at, 1); list.splice(slot > at ? slot - 1 : slot, 0, i); if (list.join() !== order.join()) stackBoxes(list); };
         if (many) node.append(el("span", { class: "stack-end" }, "Front"));
         order.forEach((i, at) => {
@@ -3534,16 +3544,18 @@ function makeRow(r) {
   rows.push({ r, node, update });
   return node;
 }
-const sections = []; // sections that only show in some modes
+const sections = [], titled = []; // sections that only show in some modes, and ones whose title changes with the view
+const titleOf = sec => (typeof sec.title === "function" ? sec.title() : sec.title);
 function buildPanel() {
   const root = document.getElementById("sections");
   for (const sec of schema) {
-    const body = el("div", { class: "sb" });
+    const body = el("div", { class: "sb" }), sum = el("summary", {}, titleOf(sec));
     sec.rows.forEach(r => body.append(makeRow(r)));
-    const det = el("details", { class: "sec" }, el("summary", {}, sec.title), body);
+    const det = el("details", { class: "sec" }, sum, body);
     if (sec.open !== false) det.open = true;
     root.append(det);
     if (sec.when) sections.push([sec, det]);
+    if (typeof sec.title === "function") titled.push([sec, sum]);
   }
 }
 function rayTabs() {
@@ -3557,6 +3569,7 @@ function rayTabs() {
 function refreshPanel() {
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   for (const [sec, det] of sections) det.hidden = !sec.when();
+  for (const [sec, sum] of titled) { const t = titleOf(sec); if (sum.textContent !== t) sum.textContent = t; }
   for (const { r, node, update } of rows) {
     const show = r.when ? r.when() : true;
     node.hidden = !show;
