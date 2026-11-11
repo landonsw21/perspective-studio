@@ -354,7 +354,8 @@ function defaultState() {
     // the curved views.
     drawingScale: 1,
     linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true, boxOrder: "distance",
-    verticals: { show: true, count: 16, spacing: 100, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
+    // the vertical guides follow a pattern of line styles, as rays do, counted from the middle one (or the outermost)
+    verticals: { show: true, count: 16, spacing: 100, offset: 0, pattern: "A", from: "center", styles: { A: lineStyle("#7d8b96", 0.6, "solid", 0.4), B: lineStyle("#b3bcc3", 0.4, "solid", 0.3) } },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
@@ -441,6 +442,10 @@ function normalize(s) {
     // setups saved before letters past B kept A and B as "a" and "b"
     loadPattern(v.rays, raw && raw.styles && typeof raw.styles === "object" ? raw.styles : { A: raw && raw.a, B: raw && raw.b }, d.vps[i].rays.styles);
   });
+  // vertical guides saved before they had a pattern had one style, which becomes A's
+  const rawV = (s && s.verticals && typeof s.verticals === "object" && s.verticals) || {};
+  loadPattern(out.verticals, rawV.styles && typeof rawV.styles === "object" ? rawV.styles : { A: { color: rawV.color, width: rawV.width, dash: rawV.dash, opacity: rawV.opacity } }, d.verticals.styles);
+  if (!["center", "edge"].includes(out.verticals.from)) out.verticals.from = "center";
   out.boxes = (Array.isArray(out.boxes) ? out.boxes : []).filter(b => b && okPt(b.b0) && okPt(b.b2)).map(b => {
     const o = deepMerge(boxDefaults(), b), raw = b.div && typeof b.div === "object" ? b.div : {};
     // division lines saved before they had a pattern had one color, weight and opacity, which become A's
@@ -953,19 +958,25 @@ function boxRays(vi, g, bx) {
 // division lines meet them, with the rays sent along the top and bottom). 1-point's horizontal guides are
 // measured down from the horizon and run level with the division heights up the hub's vertical edge, or, with
 // the rays sent along the top and bottom, across the caps they follow, along the box's first axis.
-function guidesAt(G, g, upright, from, dir) {
+function guidesAt(G, g, upright, from, dir, marks = false) {
   const fit = rayBox(), out = [];
-  if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(G.offset + j * G.spacing); return out; }
+  if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(marks ? { t: G.offset + j * G.spacing, j } : G.offset + j * G.spacing); return out; }
   const b3 = box3(fit, g), cam = b3.cam, extra = Math.max(0, Math.round(G.count)), onCaps = fit.rayFaces === "caps";
   const spots = !upright && onCaps ? capSpots(b3, fit.div, extra, 0) : boxSpots(b3, fit.div, extra, boxWings(fit, g, b3.B), upright, onCaps);
-  for (const { p } of spots) {
+  for (const { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
-    if (Number.isFinite(t)) out.push(t);
+    if (Number.isFinite(t)) out.push(marks ? { t, j } : t);
   }
   return out;
 }
 const verticalsAt = g => guidesAt(state.verticals, g, true, g.mc || g.O, g.u);
+// The vertical guides with their pattern letters, counted as a VP's rays are: out from the middle one, or in from
+// the outermost at one end; spaced along a box, from the corner nearest you, as its division lines are
+function verticalMarks(g) {
+  const V = state.verticals, pat = V.pattern || "A", n = pat.length, fit = rayBox(), c = Math.round(V.count);
+  return guidesAt(V, g, true, g.mc || g.O, g.u, true).map(({ t, j }) => ({ t, ch: pat[fit ? ((j % n) + n) % n : (V.from === "edge" ? j + c : Math.abs(j)) % n] }));
+}
 const horizontalsAt = g => guidesAt(state.horizontals, g, false, g.O, g.n);
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
@@ -1473,7 +1484,7 @@ function linearGuides(g) {
   const onBox = !!rayBox();
   fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push(g.iso ? { p: r.q, d: r.d, fwd: false, fam: "r" + vi } : { p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
   if (state.horizon.show && !g.iso) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
-  if (state.verticals.show && state.mode !== "3pt" && !g.iso) for (const t of verticalsAt(g)) lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
+  if (state.verticals.show && state.mode !== "3pt" && !g.iso) for (const { t, ch } of verticalMarks(g)) if (ch !== ".") lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
   // (a horizontal guide along the horizon itself would only repeat it)
   if (state.horizontals.show && state.mode === "1pt") for (const s of horizontalsAt(g)) if (Math.abs(s) > 1e-9) lines.push({ p: add(g.O, mul(g.n, s)), d: g.u, fwd: false, fam: "x" });
   const pts = [], LIM = 4e4;
@@ -1510,9 +1521,10 @@ function camGuides(g) {
     rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), !onBox && (R.behind || around), { fam: "r" + vi, ch: r.ch })); });
   });
   if (state.horizon.show) push(makeArc(cam, V3(0, 0, 1), V3(1, 0, 0), true, { fam: "h" }));
-  if (state.verticals.show && usesVerticals()) for (const t of verticalsAt(g)) {
+  if (state.verticals.show && usesVerticals()) for (const { t, ch } of verticalMarks(g)) {
+    if (ch === ".") continue;
     const D = cam.unproj(add(g.mc || g.O, mul(g.u, t)));
-    push(makeArc(cam, UP3, V3(D.x, 0, D.z), false, { fam: "v" }));
+    push(makeArc(cam, UP3, V3(D.x, 0, D.z), false, { fam: "v", ch }));
   }
   const pts = [];
   if (arcs.length <= MAX_CROSSING_GUIDES) for (let i = 0; i < arcs.length; i++) for (let j = i + 1; j < arcs.length; j++) {
@@ -1632,7 +1644,9 @@ function drawGuides(c, k, b, inc, g) {
       list.forEach(a => a.polys.forEach(pl => pl.forEach((q, i) => (i ? p.lineTo(q.x, q.y) : p.moveTo(q.x, q.y)))));
       strokeStyle(c, style, k); c.stroke(p);
     };
-    if (inc.verticals && V.show && usesVerticals()) strokeArcs(arcs.filter(a => a.fam === "v"), V);
+    // one group per letter, each in its letter's style, A on top, as for rays
+    const byLetter = list => { const m = new Map(); list.forEach(a => { if (!m.has(a.ch)) m.set(a.ch, []); m.get(a.ch).push(a); }); return [...m].sort(byLayer); };
+    if (inc.verticals && V.show && usesVerticals()) byLetter(arcs.filter(a => a.fam === "v")).forEach(([ch, list]) => strokeArcs(list, styleOf(V, ch)));
     if (inc.rays) fams().forEach(vi => {
       const R = state.vps[vi].rays; if (!R.show) return;
       const groups = new Map();
@@ -1662,8 +1676,11 @@ function drawGuides(c, k, b, inc, g) {
   };
   const onBox = !!rayBox();
   if (inc.verticals && V.show && state.mode !== "3pt" && !g.iso) {
-    const L = onBox ? undefined : farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
-    strokeStyle(c, V, k); c.stroke(guidePath(verticalsAt(g), g.u, g.n, L));
+    // one path per letter, each in its letter's style, A on top, all reaching as far so their dashes line up
+    let marks = verticalMarks(g).filter(m => m.ch !== "."), L = farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
+    if (onBox) { const F = farDist(g.O, b); marks = marks.filter(m => Math.abs(m.t) <= F); L = F + Math.max(0, ...marks.map(m => Math.abs(m.t))); }
+    const groups = new Map(); marks.forEach(m => { if (!groups.has(m.ch)) groups.set(m.ch, []); groups.get(m.ch).push(m.t); });
+    [...groups].sort(byLayer).forEach(([ch, ts]) => { strokeStyle(c, styleOf(V, ch), k); c.stroke(guidePath(ts, g.u, g.n, L)); });
   }
   const Hz = state.horizontals;
   if (inc.verticals && Hz.show && state.mode === "1pt") {
@@ -2885,6 +2902,8 @@ function setDivPattern(v) { const D = state.boxes[state.sel].div; D.pattern = v;
 // What a pattern row and style table edit: the rays of the VP being edited, or the selected box's division lines
 const RAY_PATTERN = { path: "vps.$v.rays", obj: () => state.vps[ui.vp].rays, set: setPattern, key: () => "v" + ui.vp, name: "Pattern", noun: "ray", aria: "ray",
   tipA: "A's color also colors the VP marker", tip: ch => `Rays drawn for each ${ch} in the pattern` };
+const VERT_PATTERN = { path: "verticals", obj: () => state.verticals, set: v => { state.verticals.pattern = v; ensureStyles(state.verticals); touch(); }, key: () => "g", name: "Vertical guide pattern", noun: "line", aria: "vertical guide",
+  tipA: "A's color also colors the Verticals tab", tip: ch => `Vertical guides drawn for each ${ch} in the pattern` };
 const DIV_PATTERN = { path: "boxes.$b.div", obj: () => state.boxes[state.sel].div, set: setDivPattern, key: () => "b" + state.sel, name: "Division pattern", noun: "line", aria: "division",
   tipA: "A's style also draws the diagonals", tip: ch => `Division lines drawn for each ${ch} in the pattern` };
 // The pattern preview draws each letter's line style down its bar
@@ -3016,14 +3035,15 @@ const schema = [
     // the Verticals tab: 1-, 2-point and the panorama's vertical guides (3-point and the other curved views draw their
     // verticals as rays, under VP3 or Up & down)
     { guide: true, t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
-    { guide: true, t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
-    { guide: true, t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side"), min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
-    { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => usesVerticals() && !rayBox() },
-    { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => usesVerticals() && !rayBox() },
-    { guide: true, t: "color", bind: "verticals.color", label: "Color", when: usesVerticals },
-    { guide: true, t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: usesVerticals },
-    { guide: true, t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: usesVerticals },
-    { guide: true, t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: usesVerticals }
+    { guide: true, t: "checks", items: [{ bind: "verticals.show", label: "Show" }] },
+    { guide: true, t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side of the middle"), min: 0, max: 80, step: 1, hi: 400 },
+    { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !rayBox() },
+    { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !rayBox() },
+    { guide: true, t: "sub", label: "Pattern and styles" },
+    { guide: true, t: "pattern", of: VERT_PATTERN },
+    { guide: true, t: "toggle", bind: "verticals.from", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !rayBox() },
+    { guide: true, t: "styles", of: VERT_PATTERN },
+    { guide: true, t: "note", html: () => "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a line style, set in the table, <code>.</code> skips a guide, and the pattern repeats. A's color also colors the Verticals tab." + (isPano() ? " In a panorama the vertical guides stay straight." : "") }
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
     { t: "readout", text: () => (rayBox().rayFaces === "caps"
@@ -3139,7 +3159,7 @@ let infoAt = null, infoHide = 0;
 function showInfo(btn, html) {
   clearTimeout(infoHide);
   if (infoAt && infoAt !== btn) infoAt.setAttribute("aria-expanded", "false");
-  infoTip.innerHTML = html; infoTip.hidden = false; infoAt = btn;
+  infoTip.innerHTML = typeof html === "function" ? html() : html; infoTip.hidden = false; infoAt = btn; // (worked out when shown, where it varies)
   btn.setAttribute("aria-expanded", "true"); btn.setAttribute("aria-describedby", "infoTip");
   // below the button, or above it where there's more room there, kept on screen
   const r = btn.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, w = Math.min(320, W - 16);
@@ -3370,14 +3390,14 @@ function makeRow(r) {
       node = el("div", { class: "seg", role: "group", "aria-label": "Choose which rays to edit" });
       let sig = "";
       update = () => {
-        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + guidesTab() + usesVerticals() + state.verticals.color + tabs.map(([vi]) => state.vps[vi].rays.styles.A.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
+        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + guidesTab() + usesVerticals() + state.verticals.styles.A.color + tabs.map(([vi]) => state.vps[vi].rays.styles.A.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
         tabs.forEach(([vi, t]) => {
           const sw = el("span", { class: "swatch" }); sw.style.background = state.vps[vi].rays.styles.A.color;
           const b = el("button", { type: "button", "aria-pressed": String(!guidesTab() && ui.vp === vi) }, sw, t); b.addEventListener("click", () => { ui.vp = vi; ui.guides = false; touch(); }); node.append(b);
         });
         // and where there are vertical guides, a tab for them too
         if (usesVerticals()) {
-          const sw = el("span", { class: "swatch" }); sw.style.background = state.verticals.color;
+          const sw = el("span", { class: "swatch" }); sw.style.background = state.verticals.styles.A.color;
           const b = el("button", { type: "button", "aria-pressed": String(guidesTab()) }, sw, "Verticals"); b.addEventListener("click", () => { ui.guides = true; touch(); }); node.append(b);
         }
       };
