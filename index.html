@@ -3041,8 +3041,7 @@ const schema = [
     { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame; where a vanishing point sits on it, hold Alt (⌥) to grab the diamond." }
   ]},
   { id: "vps", title: "Vanishing points", rows: [
-    { t: "range", bind: "vps.0.dist", label: "VP1 distance from center", min: -8000, max: 8000, step: 1, when: usesVPDist },
-    { t: "range", bind: "vps.1.dist", label: "VP2 distance from center", min: -8000, max: 8000, step: 1, when: usesVPDist },
+    // (VP1 and VP2 are placed by dragging their markers along the horizon)
     { t: "check", bind: "symmetric", label: "Mirror VPs around the center point", when: usesVPDist },
     { t: "check", bind: "lockFrame", label: "Lock horizon and VPs in place" },
     ...[0, 1, 2, 3].map(vi => ({ t: "check", bind: `vps.${vi}.show`, label: () => markerShowLabel(vi), when: () => fams().includes(vi) })),
