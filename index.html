@@ -1147,22 +1147,73 @@ function setSurfaceShown(bx, id, on) {
 // the planes cut where they cross, in the order to draw them, back to front from where you are; and `depth`, how far
 // along the line of sight through a spot on the drawing each plane lies. A piece's sides run along the box's faces or
 // along another plane; one along a plane is drawn by the piece on your side of it, which comes after that plane.
-function boxPlanes(bx, g, G = boxGeo(bx, g)) {
-  const n = [bx.planes.x, bx.planes.y, bx.planes.z];
-  if (n.every(v => v <= 1)) return null;
-  // the box in 3D: which side of each plane you're on, and where along a line of sight a plane lies
+// A box's own space: spots (x, y, z), 0 to 1 each way from corner 0 (x toward corner 1, y toward corner 3, z up), and
+// where the eye is in those terms (`eye`), from the box read in 3D. `at` puts a spot in 3D, to be projected (and curved
+// through a lens), for a turned box or a lens; otherwise straight on screen, mapped from the side faces at its height,
+// so it lands exactly on the box as drawn. `run` draws a straight run between two spots (`span`: how much of the box
+// it crosses, for how finely to follow a lens).
+function boxFrame(bx, g, G = boxGeo(bx, g)) {
   let cam, B, T;
   if (turned(bx)) ({ cam, B, T } = turnFrame(bx, g));
   else { const r = box3(bx, g); cam = r.cam; B = r.B; T = B.map(p => a3(p, m3(UP3, r.H))); }
   const O = B[0], ax = [s3(B[1], O), s3(B[3], O), s3(T[0], O)], eye = ax.map(v => -d3(O, v) / d3(v, v));
-  // A spot (x, y, z) in the box, 0 to 1 each way: a point in 3D, projected (and curved through a lens), for a turned box
-  // or a lens; otherwise straight on screen, mapped from the side faces at its height, so the planes meet the faces
-  // exactly where they're drawn
   const in3 = !!g.cam || turned(bx), steps = g.cam ? EDGE_N : 1;
   const at = in3 ? q => a3(O, a3(a3(m3(ax[0], q[0]), m3(ax[1], q[1])), m3(ax[2], q[2]))) : (() => {
     const [b0, b1, b2, b3] = G.B, [t0, t1, t2, t3] = G.T, m01 = quadMap([b0, b1, t1, t0]), m23 = quadMap([b2, b3, t3, t2]);
     return q => quadMap([m01(0, q[2]), m01(1, q[2]), m23(0, q[2]), m23(1, q[2])])(q[0], q[1]);
   })();
+  const run = (q0, q1, span = 1) => {
+    const a = at(q0), b = at(q1); if (!in3) return [[a, b]];
+    const k = steps > 1 ? Math.max(2, Math.ceil(steps * span)) : 1, s = [];
+    for (let i = 0; i <= k; i++) s.push(lerp3(a, b, i / k));
+    return projPath(cam, s, false);
+  };
+  return { cam, O, ax, eye, in3, steps, at, run };
+}
+// A face's corners in the box's own space ("b2" is base corner 2, "t2" the top corner over it)
+const cornerSpot = c => [[0, 1, 1, 0][+c[1]], [0, 0, 1, 1][+c[1]], c[0] === "t" ? 1 : 0];
+// The face on each side of the box, by direction (x, y, z) and side (0 at corner 0, 1 across from it)
+const FACE_SIDE = [["s30", "s12"], ["s01", "s23"], ["bottom", "top"]];
+// What hides a box's own edges. A spot on an edge is hidden where the line of sight to it enters the box through a face
+// you can see that the spot isn't on, or crosses a plane you can see (`planes`, as [direction, position]) on the way in.
+// Returns a function splitting a straight run between two spots into the lines of it you see and those hidden: looked
+// at in the middle of each 24th of the way, with each change pinned down by halving.
+function hiddenLines(F, faceShown, planes) {
+  const { eye } = F;
+  // (how far before the spot, in the box's own size, something has to be to count as in front: the eye can be all but
+  // infinitely far off, as in isometric, where every crossing comes a hair before the spot as a share of the way)
+  const before = (X, s) => (1 - s) * Math.hypot(X[0] - eye[0], X[1] - eye[1], X[2] - eye[2]) > 1e-6;
+  const hides = X => {
+    let sIn = 0, entry = null;
+    for (let k = 0; k < 3; k++) for (const side of [0, 1]) {
+      if (side ? eye[k] <= 1 : eye[k] >= 0) continue; // (you're on the box's side of that face)
+      const s = (side - eye[k]) / (X[k] - eye[k]); if (s > sIn) { sIn = s; entry = FACE_SIDE[k][side]; }
+    }
+    if (entry && before(X, sIn) && faceShown(entry)) return true;
+    return planes.some(([k, t]) => { const a = eye[k] - t, b = X[k] - t; if (!(a * b < 0)) return false; const s = a / (a - b); return s > sIn && before(X, s); });
+  };
+  return (q0, q1, span = 1) => {
+    const N = 24, at = u => q0.map((v, k) => v + (q1[k] - v) * u), mid = i => (i + 0.5) / N, state = [], cuts = [0];
+    for (let i = 0; i < N; i++) state.push(hides(at(mid(i))));
+    for (let i = 1; i < N; i++) if (state[i] !== state[i - 1]) {
+      let lo = mid(i - 1), hi = mid(i);
+      for (let n = 0; n < 20; n++) { const m = (lo + hi) / 2; if (hides(at(m)) === state[i - 1]) lo = m; else hi = m; }
+      cuts.push((lo + hi) / 2);
+    }
+    cuts.push(1);
+    const out = { seen: [], hidden: [] };
+    for (let j = 0; j + 1 < cuts.length; j++) {
+      const a = cuts[j], b = cuts[j + 1], h = state[Math.min(N - 1, Math.floor((a + b) / 2 * N))];
+      out[h ? "hidden" : "seen"].push(...F.run(at(a), at(b), span * (b - a)));
+    }
+    return out;
+  };
+}
+function boxPlanes(bx, g, G = boxGeo(bx, g)) {
+  const n = [bx.planes.x, bx.planes.y, bx.planes.z];
+  if (n.every(v => v <= 1)) return null;
+  // the box in 3D: which side of each plane you're on, and where along a line of sight a plane lies
+  const { cam, O, ax, eye, in3, steps, at } = boxFrame(bx, g, G);
   const pr = p => { const s = cam.proj(p); return P(s.x, s.y); };
   // a flat four-sided piece of the box on screen, from its four spots: its fills, split where it crosses a seam, and the
   // lines of each side (`span`: how much of the box its sides run along, for how finely to follow a lens)
@@ -1184,10 +1235,10 @@ function boxPlanes(bx, g, G = boxGeo(bx, g)) {
   const piece = (f, i, r) => {
     const a = (f + 1) % 3, b = (f + 2) % 3, t = i / n[f], [a0, a1] = r[a].map(j => j / n[a]), [b0, b1] = r[b].map(j => j / n[b]);
     const spot = (u, v) => { const q = [0, 0, 0]; q[f] = t; q[a] = u; q[b] = v; return q; };
-    const Q = quad([spot(a0, b0), spot(a1, b0), spot(a1, b1), spot(a0, b1)], [a1 - a0, b1 - b0]);
-    // each side: the direction and slice it runs along, and which side of it the piece lies (1 above, -1 below)
+    const qs = [spot(a0, b0), spot(a1, b0), spot(a1, b1), spot(a0, b1)], Q = quad(qs, [a1 - a0, b1 - b0]);
+    // each side: the direction and slice it runs along, which side of it the piece lies (1 above, -1 below), and its spots
     const along = [[b, r[b][0], 1], [a, r[a][1], -1], [b, r[b][1], -1], [a, r[a][0], 1]];
-    const sides = Q.sides.map((pl, e) => { const [d, j, side] = along[e], p = on(d, j); return { pl, on: p, d, j, mine: !p || (eye[d] - j / n[d]) * side > 0 }; });
+    const sides = Q.sides.map((pl, e) => { const [d, j, side] = along[e], p = on(d, j); return { pl, on: p, d, j, mine: !p || (eye[d] - j / n[d]) * side > 0, q: [qs[e], qs[(e + 1) % 4]], span: e % 2 ? b1 - b0 : a1 - a0 }; });
     // Its division lines are those of the face it lies parallel to (across X the side s12, across Y the side s01, across
     // Z the top), so they carry on from the faces through the box, over just this piece of the plane. A line along one
     // of its sides is left to the piece that draws that side.
@@ -1882,7 +1933,18 @@ function drawBox(c, bx, g, k, skip = null) {
   const edges = f => { c.beginPath(); for (const pl of f.edges) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.stroke(); };
   // A plane's pieces, inside the box, with the lines where they meet its faces and the other planes you can see
   const showsPlane = id => surfaceShown(bx, id) && id !== skip, planes = PL ? PL.pieces.filter(p => showsPlane(p.id)) : [];
-  const planeEdges = p => { c.beginPath(); for (const sd of p.sides) if (sd.mine && (!sd.on || showsPlane(sd.on))) for (const pl of sd.pl) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
+  const drawn = p => p.sides.filter(sd => sd.mine && (!sd.on || showsPlane(sd.on))); // (a piece's lines: along the faces, and along planes you can see from your side)
+  const planeEdges = p => { c.beginPath(); for (const sd of drawn(p)) for (const pl of sd.pl) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
+  const strokeLines = list => { c.beginPath(); for (const pl of list) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
+  // With hidden edges dashed, a back face's or a plane's edge is dashed only where a face or plane of the box you can see
+  // is in front of it. What you see of it is drawn solid, last, as the front edges are.
+  const split = bx.dashHidden && hiddenLines(boxFrame(bx, g, G), id => vis({ id }), PL ? PL.planes.filter(p => showsPlane(p.id)).map(p => [p.k, p.t]) : []);
+  const seenLines = [], dashLater = [];
+  const sortOut = runs => { const o = { seen: [], hidden: [] }; runs.forEach(([q0, q1, span]) => { const r = split(q0, q1, span); o.seen.push(...r.seen); o.hidden.push(...r.hidden); }); seenLines.push(...o.seen); return o.hidden; };
+  const faceRuns = f => { const v = FACES.find(x => x.id === f.id).v; return v.map((cn, e) => [cornerSpot(cn), cornerSpot(v[(e + 1) % 4]), 1]); };
+  const pieceRuns = p => drawn(p).map(sd => [sd.q[0], sd.q[1], sd.span]);
+  // each run's hidden part: dashed now through a see-through box, or over everything at the end of a solid one
+  const hiddenEdges = runs => { const h = sortOut(runs); if (solid) dashLater.push(...h); else { c.setLineDash(dash); strokeLines(h); } };
   const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
   c.lineJoin = "round"; c.lineCap = "round";
   const solid = bx.mode === "solid", wire = bx.mode === "wire";
@@ -1894,8 +1956,8 @@ function drawBox(c, bx, g, k, skip = null) {
     drawDivisions(c, f, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
-    c.setLineDash(!solid && bx.dashHidden ? dash : []);
-    edges(f);
+    if (split) hiddenEdges(faceRuns(f));
+    else { c.setLineDash([]); edges(f); }
   }
   // the planes, inside, as the faces behind them are: seen through the faces in front, or where those are hidden
   for (const p of planes) {
@@ -1903,8 +1965,8 @@ function drawBox(c, bx, g, k, skip = null) {
     if (bx.div.planes) drawDivisions(c, p.div, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
-    c.setLineDash(!solid && bx.dashHidden ? dash : []);
-    planeEdges(p);
+    if (split) hiddenEdges(pieceRuns(p));
+    else { c.setLineDash([]); planeEdges(p); }
   }
   for (const f of fronts) {
     if (!wire) fill(f, solid ? 1 : bx.ghost, f.shade);
@@ -1912,10 +1974,9 @@ function drawBox(c, bx, g, k, skip = null) {
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = 1; c.setLineDash([]); edges(f);
   }
-  if (solid && bx.dashHidden) {
-    c.globalAlpha = 0.45; c.setLineDash(dash); c.lineWidth = lw * 0.75;
-    for (const f of backs) edges(f);
-    for (const p of planes) planeEdges(p);
+  if (split) {
+    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.globalAlpha = 1; c.setLineDash([]); strokeLines(seenLines);
+    if (solid) { c.globalAlpha = 0.45; c.setLineDash(dash); c.lineWidth = lw * 0.75; strokeLines(dashLater); }
   }
   c.globalAlpha = 1; c.setLineDash([]);
 }
