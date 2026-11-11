@@ -338,6 +338,8 @@ function newStyle(S, ch) {
   return lineStyle(mixHex(base.color, "#ffffff", Math.min(0.6, 0.12 * (k + 1))), base.width, DASH_NAMES[1 + k % (DASH_NAMES.length - 1)], base.opacity);
 }
 function ensureStyles(S) { for (const ch of S.pattern) if (ch !== "." && !S.styles[ch]) S.styles[ch] = newStyle(S, ch); }
+// A drawing's own pixels to the inch: what its inches and millimeters measure, and the size a PDF prints at
+const DRAW_PPI = 200;
 function defaultState() {
   return {
     mode: "2pt",
@@ -362,9 +364,8 @@ function defaultState() {
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
-    // US Letter, 8.5 × 11 inches upright at 200 px per inch, centered on the drawing's origin. Its size and place are
-    // shown in `units` (px, in or mm), inches and millimeters at `ppi` drawing pixels to the inch, which also sets how
-    // big a PDF prints.
+    // US Letter, 8.5 × 11 inches upright (at DRAW_PPI), centered on the drawing's origin. Its size and place are shown
+    // in `units` (px, in or mm). In inches and millimeters, `ppi` is how many pixels to the inch a PNG or JPG gets.
     viewport: { show: true, x: -850, y: -1100, w: 1700, h: 2200, dim: true, clip: false, lockAspect: false, units: "in", ppi: 200 },
     export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
@@ -3171,15 +3172,16 @@ const schema = [
     { t: "checks", items: [{ bind: "viewport.show", label: "Show" }, { bind: "viewport.dim", label: "Shade outside" }, { bind: "viewport.clip", label: "Clip guides" }, { bind: "viewport.lockAspect", label: "Lock aspect" }] },
     { t: "toggle", bind: "viewport.units", label: "Units", options: [["px", "Pixels"], ["in", "Imperial"], ["mm", "Metric"]] },
     { t: "dims" },
-    { t: "range", bind: "viewport.ppi", label: "Pixels per inch", min: 50, max: 600, step: 1, lo: 10, hi: 2400, when: () => state.viewport.units !== "px" },
     { t: "btns", items: [["Center on horizon", () => { const g = geo(), V = state.viewport; V.x = Math.round(g.O.x - V.w / 2); V.y = Math.round(g.O.y - V.h / 2); commit(); touch(); }, "", () => !isIso()], ["Swap W / H", () => { const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; [V.w, V.h] = [V.h, V.w]; V.x = Math.round(cx - V.w / 2); V.y = Math.round(cy - V.h / 2); commit(); touch(); }, ""]] },
     { t: "sub", label: "Output" },
     { t: "toggle", bind: "export.format", label: "Format", options: Object.entries(EXPORT_FORMATS) },
-    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]], when: () => state.export.format !== "pdf" },
+    { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]], when: () => state.export.format !== "pdf" && state.viewport.units === "px" },
+    // (in inches and millimeters the detail goes by pixels per inch, and the label says what that comes to)
+    { t: "range", bind: "viewport.ppi", label: () => { const [w, h] = exportPx(); return `Pixels per inch (${w} × ${h} px)`; }, min: 50, max: 600, step: 1, lo: 10, hi: 2400, when: () => state.export.format !== "pdf" && state.viewport.units !== "px" },
     { t: "range", bind: "export.quality", label: "JPG quality (%)", min: 50, max: 100, step: 1, lo: 1, hi: 100, when: () => state.export.format === "jpg" },
     { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]], when: () => state.export.format !== "jpg" },
     { t: "note", html: "JPG has no transparency, so the background is always white.", when: () => state.export.format === "jpg" },
-    { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area at its print size: inches or millimeters as shown under Imperial or Metric, at the pixels per inch set there.", when: () => state.export.format === "pdf" },
+    { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area at its print size, the inches or millimeters shown under Imperial or Metric (a new drawing's is 8.5 × 11 in).", when: () => state.export.format === "pdf" },
     { t: "sub", label: "Include" },
     { t: "checks", items: [{ bind: "export.rays", label: "Rays" }, { bind: "export.verticals", label: () => (is1() ? "Guides" : "Vertical guides"), when: () => !isIso() }, { bind: "export.horizon", label: "Horizon", when: () => !isIso() }, { bind: "export.vps", label: "VP markers", when: () => !isIso() }, { bind: "export.cone", label: "Cone and lens edge", when: () => !isIso() }, { bind: "export.boxes", label: "Boxes" }] },
     { t: "btns", items: [[() => "Export " + EXPORT_FORMATS[state.export.format], exportFile, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
@@ -3510,9 +3512,9 @@ function makeRow(r) {
       break;
     }
     case "dims": {
-      // The export area's size and place in the units chosen: whole pixels, or inches or millimeters at its pixels per
-      // inch, kept as typed
-      const V = () => state.viewport, per = () => ({ px: 1, in: V().ppi, mm: V().ppi / 25.4 })[V().units] || 1;
+      // The export area's size and place in the units chosen: whole pixels, or inches or millimeters (at the drawing's
+      // own pixels per inch), kept as typed
+      const V = () => state.viewport, per = () => ({ px: 1, in: DRAW_PPI, mm: DRAW_PPI / 25.4 })[V().units] || 1;
       const shown = v => { const u = V().units, x = v / per(); return String(u === "px" ? Math.round(x) : +x.toFixed(u === "in" ? 3 : 2)); };
       const cells = [["w", "W"], ["h", "H"], ["x", "X"], ["y", "Y"]].map(([k, lab]) => {
         const iid = "f-viewport-" + k, inp = el("input", { class: "num", type: "number", id: iid }), unit = el("span", { class: "unit" });
@@ -3593,10 +3595,16 @@ function drawExport(c, k) {
   drawScene(c, k, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
 }
 // The export area as pixels, at its resolution (kept to 64 megapixels), on white or see-through
+// How much an exported PNG or JPG enlarges the drawing's pixels: the Resolution multiple, or in inches and millimeters
+// the pixels per inch over the drawing's own, kept to 64 megapixels; and the size that comes to
+function exportScale() {
+  const V = state.viewport, s = V.units === "px" ? state.export.scale : V.ppi / DRAW_PPI, maxPx = 64e6;
+  return V.w * V.h * s * s > maxPx ? Math.sqrt(maxPx / (V.w * V.h)) : s;
+}
+const exportPx = () => { const V = state.viewport, s = exportScale(); return [Math.max(1, Math.round(V.w * s)), Math.max(1, Math.round(V.h * s))]; };
 function renderExport(white = state.export.bg === "white") {
-  const V = state.viewport, E = state.export;
-  let s = E.scale; const maxPx = 64e6; if (V.w * V.h * s * s > maxPx) s = Math.sqrt(maxPx / (V.w * V.h));
-  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(V.w * s)); c.height = Math.max(1, Math.round(V.h * s));
+  const V = state.viewport, s = exportScale(), [w, h] = exportPx();
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
   const x = c.getContext("2d");
   if (white) { x.fillStyle = "#ffffff"; x.fillRect(0, 0, c.width, c.height); }
   x.scale(s, s); x.translate(-V.x, -V.y);
@@ -3693,8 +3701,8 @@ function pdfContext() {
 }
 // The export area as a one-page vector PDF, a point for each pixel
 async function exportPDF() {
-  // The page is the export area at its print size: 72 points to the inch at its pixels per inch
-  const V = state.viewport, k = 72 / V.ppi, W = +(V.w * k).toFixed(3), H = +(V.h * k).toFixed(3), c = pdfContext();
+  // The page is the export area at its print size: 72 points to the inch, at the drawing's own pixels per inch
+  const V = state.viewport, k = 72 / DRAW_PPI, W = +(V.w * k).toFixed(3), H = +(V.h * k).toFixed(3), c = pdfContext();
   if (state.export.bg === "white") c.ops.push(`1 1 1 rg 0 0 ${W} ${H} re f`);
   c.ops.push(`0 0 ${W} ${H} re W n`, `${+k.toFixed(6)} 0 0 ${-k.toFixed(6)} 0 ${H} cm`); // keep to the page, then pixels to points, y downward like the canvas
   c.translate(-V.x, -V.y);
@@ -3750,7 +3758,7 @@ function exportFile() {
   }
   const jpg = E.format === "jpg", type = jpg ? "image/jpeg" : "image/png", quality = jpg ? E.quality / 100 : undefined;
   const c = renderExport(jpg || E.bg === "white"); // a JPG can't be see-through
-  const capped = c.width < Math.round(V.w * E.scale) - 1;
+  const capped = c.width < Math.round(V.w * (V.units === "px" ? E.scale : V.ppi / DRAW_PPI)) - 1; // (asked for more than exportScale allows)
   const note = capped ? `Kept to 64 megapixels, so it is ${c.width} × ${c.height} px` : "";
   c.toBlob(blob => {
     if (!blob) { toast("Export failed. Try a lower resolution."); return; }
