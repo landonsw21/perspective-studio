@@ -108,6 +108,15 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .row.check label { cursor: pointer; }
 .sub { font: 600 10.5px/1 var(--f-ui); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); padding-top: 6px; border-top: 1px dashed var(--rule); margin-top: 2px; }
 .note { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+/* Longer explanations sit behind an Info button; hovering it shows them in #infoTip */
+.info { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: 500 11.5px/1 var(--f-ui); letter-spacing: .02em; cursor: help; justify-self: start; }
+.info .i { width: 17px; height: 17px; border-radius: 50%; border: 1px solid var(--rule); background: var(--chrome); color: var(--accent); font: italic 700 11px/1 Georgia, "Times New Roman", serif; display: grid; place-items: center; }
+.info:hover, .info[aria-expanded="true"] { color: var(--ink); border-color: var(--rule); background: var(--chrome); }
+.info:hover .i, .info[aria-expanded="true"] .i { border-color: var(--accent); background: var(--accent-soft); }
+#infoTip { position: fixed; z-index: 60; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; padding: 9px 11px; box-shadow: 0 6px 20px rgb(0 0 0 / .2); font: 400 12px/1.45 var(--f-ui); }
+#infoTip p { margin: 0; } #infoTip p + p { margin-top: 6px; }
+#infoTip code { font-family: var(--f-data); font-size: 11px; }
+.ph .title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .note code { font-family: var(--f-data); font-size: 11px; color: var(--ink); }
 .seg { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
 .seg button { flex: 1; font: 600 12px/1 var(--f-ui); letter-spacing: .04em; padding: 8px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
@@ -181,9 +190,8 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
   </main>
   <aside class="panel" id="panel">
     <div class="ph">
-      <h1>Perspective Studio</h1>
-      <p>Choose 1- to 6-point perspective or isometric on the toolbar, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p>
-      <p class="tip">Number boxes take values past the end of their sliders, and the slider stretches to fit. Let go of a slider at its end to double its range.</p>
+      <div class="title"><h1>Perspective Studio</h1></div>
+      <div id="about" hidden><p>Choose 1- to 6-point perspective or isometric on the toolbar, set the eye level, place the vanishing points, and build boxes that lock to the grid. The outlined rectangle is what gets exported.</p><p>Number boxes take values past the end of their sliders, and the slider stretches to fit. Let go of a slider at its end to double its range.</p></div>
     </div>
     <div id="sections"></div>
   </aside>
@@ -3121,6 +3129,50 @@ const rows = [];
 function idFor(bind) { return "f-" + bind.replace(/[$.]/g, "-"); }
 function fmt(v, step) { const d = (String(step).split(".")[1] || "").length; return (+v).toFixed(d); }
 const fmtScale = v => String(Math.round(v * 1000) / 1000);
+/* ---------- info pop-ups ---------- */
+// Longer explanations sit behind an Info button. Hovering it, or focusing it, shows the text in a pop-up beside it,
+// which stays while the pointer is over the button or the pop-up; on a touch screen a tap opens and closes it. One
+// pop-up serves every button, kept on the page itself so the panel's scrolling doesn't cut it off.
+const infoTip = document.createElement("div");
+infoTip.id = "infoTip"; infoTip.setAttribute("role", "tooltip"); infoTip.hidden = true; document.body.append(infoTip);
+let infoAt = null, infoHide = 0;
+function showInfo(btn, html) {
+  clearTimeout(infoHide);
+  if (infoAt && infoAt !== btn) infoAt.setAttribute("aria-expanded", "false");
+  infoTip.innerHTML = html; infoTip.hidden = false; infoAt = btn;
+  btn.setAttribute("aria-expanded", "true"); btn.setAttribute("aria-describedby", "infoTip");
+  // below the button, or above it where there's more room there, kept on screen
+  const r = btn.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, w = Math.min(320, W - 16);
+  infoTip.style.width = w + "px"; infoTip.style.left = Math.max(8, Math.min(r.left, W - w - 8)) + "px";
+  const h = infoTip.offsetHeight, below = r.bottom + 6, above = r.top - 6 - h;
+  infoTip.style.top = Math.max(8, below + h <= H - 8 || above < 8 ? Math.min(below, H - 8 - h) : above) + "px";
+}
+function hideInfo(now = false) {
+  clearTimeout(infoHide);
+  const go = () => { infoTip.hidden = true; if (infoAt) { infoAt.setAttribute("aria-expanded", "false"); infoAt.removeAttribute("aria-describedby"); } infoAt = null; };
+  if (now) go(); else infoHide = setTimeout(go, 150);
+}
+function infoButton(html, label = "Info") {
+  const b = document.createElement("button"), i = document.createElement("span");
+  b.type = "button"; b.className = "info"; b.setAttribute("aria-expanded", "false");
+  i.className = "i"; i.setAttribute("aria-hidden", "true"); i.textContent = "i"; b.append(i, label);
+  let touch = false;
+  b.addEventListener("pointerenter", e => { if (e.pointerType !== "touch") showInfo(b, html); });
+  b.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") hideInfo(); });
+  b.addEventListener("pointerdown", e => { touch = e.pointerType === "touch"; });
+  b.addEventListener("focus", () => { if (!touch) showInfo(b, html); });
+  b.addEventListener("blur", () => hideInfo(true));
+  b.addEventListener("click", () => { if (touch && infoAt === b && !infoTip.hidden) hideInfo(true); else showInfo(b, html); touch = false; });
+  return b;
+}
+infoTip.addEventListener("pointerenter", () => clearTimeout(infoHide));
+infoTip.addEventListener("pointerleave", () => hideInfo());
+// Escape closes it (and goes no further), as does a press anywhere else or scrolling it out of place
+window.addEventListener("keydown", e => { if (e.key === "Escape" && !infoTip.hidden) { hideInfo(true); e.stopImmediatePropagation(); } }, true);
+document.addEventListener("pointerdown", e => { if (!infoTip.hidden && !infoTip.contains(e.target) && !(infoAt && infoAt.contains(e.target))) hideInfo(true); });
+window.addEventListener("scroll", () => { if (!infoTip.hidden) hideInfo(true); }, true);
+document.querySelector(".ph .title").append(infoButton(document.getElementById("about").innerHTML, "About"));
+
 function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v); } kids.forEach(k => e.append(k)); return e; }
 // What isometric doesn't have: its horizon and VPs (only the page-centering button still means something, for
 // the middle of the grid), and vertical guides, which its vertical rays stand in for. One count serves all
@@ -3327,7 +3379,7 @@ function makeRow(r) {
     }
     case "readout": node = el("div", { class: "note readout" }); update = () => { const t = r.text(); if (node.textContent !== t) node.textContent = t; }; break;
     case "sub": node = el("div", { class: "sub" }, r.label); update = () => {}; break;
-    case "note": node = el("div", { class: "note" }); node.innerHTML = r.html; update = () => {}; break;
+    case "note": node = el("div", { class: "row note" }, infoButton(r.html)); update = () => {}; break;
     case "btns": {
       // a label can be worked out (the Export button names the format), like other rows' labels
       const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, labelText({ label: t })); b.addEventListener("click", fn); return [b, en, t, fn]; });
