@@ -172,6 +172,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
       <button class="tb" id="tbFit" type="button">Fit view</button>
       <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout (3-, 4-, 5- and 6-point)">Even out VPs</button>
       <select class="tb" id="tbMode" aria-label="Perspective" title="Perspective"></select>
+      <button class="tb" id="tbReset" type="button">Reset</button>
       <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
       <button class="tb" id="tbExport" type="button">Export PNG</button>
     </div>
@@ -2805,9 +2806,7 @@ const schema = [
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
     { t: "note", html: "The whole sphere in one continuous view, as if you were inside a globe: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag a box past the rim and it goes through the point behind you and comes in from the opposite side, stretching around the rim as it passes. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
-    { t: "readout", text: lensInfo, when: camMode },
-    { t: "btns", items: [[() => "Reset " + modeName().toLowerCase(), resetPerspective, ""]] },
-    { t: "note", html: "Puts this view's horizon, vanishing points and lens back as they start, and leaves one box in the middle of the page. Undo (⌘ Z or Ctrl Z) brings back what was there." }
+    { t: "readout", text: lensInfo, when: camMode }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
     { t: "check", bind: "horizon.show", label: "Show horizon line" },
@@ -3285,6 +3284,9 @@ function syncToolbar() {
   document.getElementById("tbSnap").setAttribute("aria-pressed", String(state.snap.on));
   document.getElementById("tbEven").disabled = !camMode() && !is3(); // only 3-point and the curved views have VPs to even out
   document.getElementById("tbMode").value = modeKey();
+  const reset = document.getElementById("tbReset"), name = "Reset " + modeName().toLowerCase();
+  reset.setAttribute("aria-label", name);
+  reset.title = name + ": its horizon, vanishing points and lens back as they start, with one box in the middle of the page. Undo (Ctrl/⌘ Z) brings back what was there.";
   document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
 
@@ -3908,6 +3910,7 @@ window.addEventListener("keydown", e => {
 document.getElementById("tbAdd").addEventListener("click", addBox);
 document.getElementById("tbFit").addEventListener("click", fitView);
 document.getElementById("tbEven").addEventListener("click", evenVPs);
+document.getElementById("tbReset").addEventListener("click", resetPerspective);
 document.getElementById("tbSnap").addEventListener("click", () => { state.snap.on = !state.snap.on; commit(); touch(); });
 document.getElementById("tbUndo").addEventListener("click", doUndo);
 // The perspective dropdown on the toolbar, with 4-point's fisheye and panorama as choices of their own
