@@ -469,7 +469,7 @@ try { const raw = localStorage.getItem(STORE_KEY); state = raw ? normalize(JSON.
 const freshStart = !state;
 if (!state) state = defaultState();
 
-const ui = { vp: 0, resetArm: false, scales: {} };
+const ui = { vp: 0, guides: false, resetArm: false, scales: {} };
 const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
@@ -2905,6 +2905,7 @@ const camMode = () => CAM_MODES.includes(state.mode);
 const lensMode = () => camMode() && !isPano();        // modes with a curvature setting
 const radiusMode = () => isFish4() || is5() || is6(); // lenses sized by their 90° circle
 const usesVerticals = () => is1() || is2() || isPano();
+const guidesTab = () => ui.guides && usesVerticals(); // (the rays section's Verticals tab is open)
 const usesVPDist = () => is2() || is3();
 const markerShowLabel = vi => { const nm = famName(vi); return nm.includes(" and ") ? `Show the ${nm} markers` : nm === "center" ? "Show the center marker" : `Show ${nm} marker`; };
 function camCheck3() {
@@ -2990,7 +2991,7 @@ const schema = [
     { t: "note", html: "A panorama has no single center of vision, so there's no cone. The color above draws the ends of the strip.", when: isPano },
     { t: "note", html: "One vanishing point doesn't fix how far you stand from the picture, so 1-point has no cone of vision.", when: is1 }
   ]},
-  { id: "rays", title: "Rays", rows: [
+  { id: "rays", title: "Rays and vertical guides", rows: [
     { t: "seg" },
     { t: "readout", text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
@@ -3011,20 +3012,18 @@ const schema = [
     { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() && !isIso() },
     { t: "toggle", bind: "vps.$v.rays.from", uid: "iso", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !rayBox() && isIso() },
     { t: "styles", of: RAY_PATTERN },
-    { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." }
-  ]},
-  { id: "verticals", title: "Vertical guides", open: false, rows: [
-    { t: "note", html: "In 3-point, vertical lines run to VP3. Set them under Rays → VP3.", when: is3 },
-    { t: "note", html: "Here vertical lines curve to the up and down points. Set them under Rays → Up &amp; down.", when: radiusMode },
-    { t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
-    { t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
-    { t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side"), min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
-    { t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => usesVerticals() && !rayBox() },
-    { t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => usesVerticals() && !rayBox() },
-    { t: "color", bind: "verticals.color", label: "Color", when: usesVerticals },
-    { t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: usesVerticals },
-    { t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: usesVerticals },
-    { t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: usesVerticals }
+    { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." },
+    // the Verticals tab: 1-, 2-point and the panorama's vertical guides (3-point and the other curved views draw their
+    // verticals as rays, under VP3 or Up & down)
+    { guide: true, t: "readout", text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
+    { guide: true, t: "check", bind: "verticals.show", label: () => (isPano() ? "Show verticals (they stay straight in a panorama)" : "Show verticals (perpendicular to horizon)"), when: usesVerticals },
+    { guide: true, t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side"), min: 0, max: 80, step: 1, hi: 400, when: usesVerticals },
+    { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => usesVerticals() && !rayBox() },
+    { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => usesVerticals() && !rayBox() },
+    { guide: true, t: "color", bind: "verticals.color", label: "Color", when: usesVerticals },
+    { guide: true, t: "range", bind: "verticals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500, when: usesVerticals },
+    { guide: true, t: "select", bind: "verticals.dash", label: "Line style", options: DASH, when: usesVerticals },
+    { guide: true, t: "range", bind: "verticals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: usesVerticals }
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
     { t: "readout", text: () => (rayBox().rayFaces === "caps"
@@ -3185,7 +3184,8 @@ function isoOnly(id, html, keep = () => false) {
 }
 isoOnly("horizon", "An isometric view has no horizon. Center on page puts the middle of the grid in the middle of the export area.", r => r.t === "btns");
 isoOnly("vps", "An isometric view has no vanishing points: its three sets of lines stay parallel. Set them under Rays.");
-isoOnly("verticals", "In isometric, vertical lines are the vertical axis under Rays.");
+// The rays section shows the chosen tab's rows: a VP's rays, or with Verticals the vertical guides
+{ const sec = schema.find(s => s.id === "rays"); sec.rows.forEach(r => { if (r.t === "seg") return; const w = r.when, g = !!r.guide; r.when = () => guidesTab() === g && (!w || w()); }); }
 { const r = schema.find(s => s.id === "rays").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!rayBox()) && (!w || w()); }
 
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
@@ -3366,15 +3366,20 @@ function makeRow(r) {
       break;
     }
     case "seg": {
-      // one tab per ray family in the current mode, each with a swatch of its primary color
+      // one tab per ray family in the current mode, each with a swatch of its primary color, and one for the vertical guides
       node = el("div", { class: "seg", role: "group", "aria-label": "Choose which rays to edit" });
       let sig = "";
       update = () => {
-        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + tabs.map(([vi]) => state.vps[vi].rays.styles.A.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
+        const tabs = rayTabs(), s = JSON.stringify(tabs) + ui.vp + guidesTab() + usesVerticals() + state.verticals.color + tabs.map(([vi]) => state.vps[vi].rays.styles.A.color).join(); if (s === sig) return; sig = s; node.innerHTML = "";
         tabs.forEach(([vi, t]) => {
           const sw = el("span", { class: "swatch" }); sw.style.background = state.vps[vi].rays.styles.A.color;
-          const b = el("button", { type: "button", "aria-pressed": String(ui.vp === vi) }, sw, t); b.addEventListener("click", () => { ui.vp = vi; touch(); }); node.append(b);
+          const b = el("button", { type: "button", "aria-pressed": String(!guidesTab() && ui.vp === vi) }, sw, t); b.addEventListener("click", () => { ui.vp = vi; ui.guides = false; touch(); }); node.append(b);
         });
+        // and where there are vertical guides, a tab for them too
+        if (usesVerticals()) {
+          const sw = el("span", { class: "swatch" }); sw.style.background = state.verticals.color;
+          const b = el("button", { type: "button", "aria-pressed": String(guidesTab()) }, sw, "Verticals"); b.addEventListener("click", () => { ui.guides = true; touch(); }); node.append(b);
+        }
       };
       break;
     }
