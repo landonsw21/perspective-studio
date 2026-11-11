@@ -2655,25 +2655,6 @@ function scaleRange(s) {
 }
 // The middle of the export area, which the drawing scales around
 const exportMid = () => { const V = state.viewport; return P(V.x + V.w / 2, V.y + V.h / 2); };
-// Dragging the scale handle: the drawing scales by how much nearer to (or further from) the middle of the export area
-// the pointer is than where the drag began, in whole percent, always from the drawing as it was
-function scaleToPointer() {
-  const d0 = len(sub(drag.w0, drag.C)); if (d0 < 1e-9) return;
-  const k = Math.min(drag.range.hi, Math.max(drag.range.lo, Math.round(len(sub(toW(drag.at), drag.C)) / d0 * 100) / 100));
-  if (k !== drag.k) { drag.k = k; scaleDrawing(k, drag.C, drag.from); }
-}
-// The screen only reaches so far, so held at the edge of the canvas (or past it) while enlarging, the handle keeps going:
-// the view zooms out around the middle of the export area, faster the further past the edge, and the same spot on
-// screen lies further out in the drawing, which keeps growing
-function scaleAtEdge() {
-  if (!drag || drag.type !== "vscale") return;
-  requestAnimationFrame(scaleAtEdge);
-  const s = drag.at, past = Math.max(12 - s.x, s.x - (cw - 12), 12 - s.y, s.y - (ch - 12));
-  if (!drag.moved || past <= 0 || drag.k <= 1 || drag.k >= drag.range.hi || view.z <= 0.02) return;
-  const c = toS(drag.C), z = Math.max(0.02, view.z / (1 + Math.min(0.04, 0.002 + 0.001 * past)));
-  view.x = c.x - drag.C.x * z; view.y = c.y - drag.C.y * z; view.z = z;
-  scaleToPointer(); touch();
-}
 const pctText = k => (k < 0.1 ? (k * 100).toFixed(1) : String(Math.round(k * 100))) + "%";
 // The panel's Smaller and Larger buttons: one step of 10%, as far as the drawing can go
 function scaleBy(f) {
@@ -3705,7 +3686,7 @@ canvas.addEventListener("pointerdown", e => {
     drag.rig = { cam, B, H, c0, seen, ci: onScreen(0) < onScreen(2) ? 0 : 2, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
-  else if (hit.type === "vscale") { Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s }); requestAnimationFrame(scaleAtEdge); }
+  else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
   else if (hit.type === "vp" && g.cam) { drag.cv0 = state.cone.cv; drag.lens0 = clone(state.curvi); drag.cam0 = g.cam; }
   else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
@@ -3821,7 +3802,15 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "vmove": { const V = state.viewport; V.x = Math.round(drag.vp0.x + w.x - drag.w0.x); V.y = Math.round(drag.vp0.y + w.y - drag.w0.y); break; }
-    case "vscale": drag.at = s; scaleToPointer(); break;
+    case "vscale": {
+      // the drawing scales by how much nearer to (or further from) the middle of the export area the pointer
+      // is than where the drag began, in whole percent, always from the drawing as it was
+      const d0 = len(sub(drag.w0, drag.C)); drag.at = s;
+      if (d0 < 1e-9) break;
+      const k = Math.min(drag.range.hi, Math.max(drag.range.lo, Math.round(len(sub(w, drag.C)) / d0 * 100) / 100));
+      if (k !== drag.k) { drag.k = k; scaleDrawing(k, drag.C, drag.from); }
+      break;
+    }
     case "vresize": {
       const V = state.viewport, o = drag.vp0, dx = w.x - drag.w0.x, dy = w.y - drag.w0.y;
       let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
