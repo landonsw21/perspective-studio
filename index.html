@@ -2805,7 +2805,9 @@ const schema = [
     { t: "note", html: "A 360° panorama. Each horizontal direction vanishes at two points 180° apart, VP1 and VP3 or VP2 and VP4, and edges curve between them. Vertical lines stay straight, which is what makes it a panorama, so its curvature is horizontal only. Drag any VP along the horizon to move just that one, and turn the view with the slider. Lines that run off one end of the strip continue from the other, and so does a box dragged past it, which can then be held by the piece at either end.", when: isPano },
     { t: "note", html: "A fisheye looking straight ahead. Depth lines run straight to the center VP, lines across curve to the left and right points, and lines up and down curve to the up and down points. Drag any point to move just that one; the side it is on bends to match.", when: is5 },
     { t: "note", html: "The whole sphere in one continuous view, as if you were inside a globe: the front VP at the center, left, right, up and down on the 90° ring, and the back VP stretched around the outer rim, where everything heading behind you meets. Lines run unbroken from the front, past the sides, to the back. Drag a box past the rim and it goes through the point behind you and comes in from the opposite side, stretching around the rim as it passes. Drag any point to move just that one; dragging the rim moves the back VP.", when: is6 },
-    { t: "readout", text: lensInfo, when: camMode }
+    { t: "readout", text: lensInfo, when: camMode },
+    { t: "btns", items: [[() => "Reset " + modeName().toLowerCase(), resetPerspective, ""]] },
+    { t: "note", html: "Puts this view's horizon, vanishing points and lens back as they start, and leaves one box in the middle of the page. Undo (⌘ Z or Ctrl Z) brings back what was there." }
   ]},
   { id: "horizon", title: "Horizon line", rows: [
     { t: "check", bind: "horizon.show", label: "Show horizon line" },
@@ -3181,9 +3183,9 @@ function makeRow(r) {
     case "note": node = el("div", { class: "note" }); node.innerHTML = r.html; update = () => {}; break;
     case "btns": {
       // a label can be worked out (the Export button names the format), like other rows' labels
-      const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, labelText({ label: t })); b.addEventListener("click", fn); return [b, en, t]; });
+      const btns = r.items.map(([t, fn, cls, en]) => { const b = el("button", { type: "button", class: "btn " + (cls || "") }, labelText({ label: t })); b.addEventListener("click", fn); return [b, en, t, fn]; });
       node = el("div", { class: "btns" }, ...btns.map(x => x[0]));
-      update = () => btns.forEach(([b, en, t]) => { b.disabled = en ? !en() : false; if (typeof t === "function") b.textContent = t(); if (b.textContent.startsWith("Reset") || b.textContent.startsWith("Click again")) b.textContent = ui.resetArm ? "Click again to reset" : "Reset everything"; });
+      update = () => btns.forEach(([b, en, t, fn]) => { b.disabled = en ? !en() : false; if (typeof t === "function") b.textContent = t(); if (fn === resetAll) b.textContent = ui.resetArm ? "Click again to reset" : "Reset everything"; });
       break;
     }
     case "boxlist": {
@@ -3489,6 +3491,25 @@ document.getElementById("fileIn").addEventListener("change", e => {
 function resetAll() {
   if (!ui.resetArm) { ui.resetArm = true; touch(); setTimeout(() => { ui.resetArm = false; touch(); }, 3000); return; }
   ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
+}
+// Puts the perspective in use back as it starts: the horizon, the VPs and this view's lens at their defaults, the horizon
+// placed on the page as it first is, and in place of the boxes one default box in the middle of the page. Colors, rays,
+// guides and the page itself stay as they are. One undo brings it all back.
+function resetPerspective() {
+  const d = defaultState(), s = state, V = s.viewport, D = d.viewport, mid = P(V.x + V.w / 2, V.y + V.h / 2);
+  s.horizon.x = mid.x + d.horizon.x - (D.x + D.w / 2); s.horizon.y = mid.y + d.horizon.y - (D.y + D.h / 2); s.horizon.tilt = d.horizon.tilt;
+  s.vps.forEach((v, i) => { v.dist = d.vps[i].dist; v.drop = d.vps[i].drop; });
+  s.cone.cv = d.cone.cv; s.drawingScale = d.drawingScale;
+  const lens = { "4pt-fish": ["f4", "turn"], "4pt-pano": ["pano", "panoHc", "panoK", "turn"], "5pt": ["f5", "coverage"], "6pt": ["f6"] }[modeKey()] || [];
+  lens.forEach(k => { s.curvi[k] = clone(d.curvi[k]); });
+  // the box a new drawing starts with, moved to the middle of the page at the same size
+  s.boxes = [];
+  const g = geo(), bx = makeBox(g), G = homeGeo(bx, g);
+  fitBox(bx, boxDims(bx, g), mid, screenBox([...G.B, ...G.T]).s, g); captureFit(bx, g);
+  s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null;
+  if (!fams().includes(ui.vp)) ui.vp = fams()[0];
+  commit(); touch(); fitView();
+  toast(`Reset ${modeName().toLowerCase()}. Undo brings back what was there.`);
 }
 
 /* ---------- view ---------- */
@@ -3891,6 +3912,7 @@ document.getElementById("tbSnap").addEventListener("click", () => { state.snap.o
 document.getElementById("tbUndo").addEventListener("click", doUndo);
 // The perspective dropdown on the toolbar, with 4-point's fisheye and panorama as choices of their own
 const MODES = [["1pt", "1-point"], ["2pt", "2-point"], ["3pt", "3-point"], ["iso", "Isometric"], ["4pt-fish", "4-point fisheye"], ["4pt-pano", "4-point panorama"], ["5pt", "5-point"], ["6pt", "6-point"]];
+const modeName = () => MODES.find(m => m[0] === modeKey())[1]; // (the perspective in use, as the dropdown names it)
 const tbMode = document.getElementById("tbMode");
 MODES.forEach(([v, t]) => tbMode.append(el("option", { value: v }, t)));
 tbMode.addEventListener("change", () => chooseMode(tbMode.value));
