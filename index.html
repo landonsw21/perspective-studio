@@ -355,7 +355,7 @@ function defaultState() {
     export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
 }
-const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
+const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, planes: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
 // (A box's subdividing planes: at most this many slices each way, and a plane's id, "x1" or "z3", read as its
@@ -1167,9 +1167,30 @@ function boxPlanes(bx, g, G = boxGeo(bx, g)) {
     const Q = quad([spot(a0, b0), spot(a1, b0), spot(a1, b1), spot(a0, b1)], [a1 - a0, b1 - b0]);
     // each side: the direction and slice it runs along, and which side of it the piece lies (1 above, -1 below)
     const along = [[b, r[b][0], 1], [a, r[a][1], -1], [b, r[b][1], -1], [a, r[a][0], 1]];
+    const sides = Q.sides.map((pl, e) => { const [d, j, side] = along[e], p = on(d, j); return { pl, on: p, d, j, mine: !p || (eye[d] - j / n[d]) * side > 0 }; });
+    // Its division lines are those of the face it lies parallel to (across X the side s12, across Y the side s01, across
+    // Z the top), so they carry on from the faces through the box, over just this piece of the plane. A line along one
+    // of its sides is left to the piece that draws that side.
+    const uF = [1, 0, 0][f], vF = [2, 2, 1][f], mine = (d, j) => sides.find(sd => sd.d === d && sd.j === j).mine;
+    const lo = [uF, vF].map(d => r[d][0] / n[d] + (mine(d, r[d][0]) ? 0 : 1e-9)), hi = [uF, vF].map(d => r[d][1] / n[d] - (mine(d, r[d][1]) ? 0 : 1e-9));
+    const local = (u, v) => { const q = [0, 0, 0]; q[f] = t; q[uF] = u; q[vF] = v; return q; };
+    const line = (u0, v0, u1, v1) => {
+      const p = [u0, v0], dd = [u1 - u0, v1 - v0]; let s0 = 0, s1 = 1;
+      for (let k = 0; k < 2; k++) {
+        if (Math.abs(dd[k]) < 1e-12) { if (p[k] < lo[k] || p[k] > hi[k]) return []; continue; }
+        let ta = (lo[k] - p[k]) / dd[k], tb = (hi[k] - p[k]) / dd[k]; if (ta > tb) [ta, tb] = [tb, ta];
+        s0 = Math.max(s0, ta); s1 = Math.min(s1, tb);
+      }
+      if (s1 - s0 < 1e-9) return [];
+      const e0 = at(local(u0 + dd[0] * s0, v0 + dd[1] * s0)), e1 = at(local(u0 + dd[0] * s1, v0 + dd[1] * s1));
+      if (!in3) return [[e0, e1]];
+      const m = Math.max(2, Math.ceil(steps * Math.max(Math.abs(dd[0]), Math.abs(dd[1])) * (s1 - s0))), pts = [];
+      for (let j = 0; j <= m; j++) pts.push(lerp3(e0, e1, j / m));
+      return projPath(cam, pts, false);
+    };
     return {
-      id: id(f, i), k: f, t, shade: f < 2 ? PLANE_SHADE[f] : eye[2] > t ? 1 : 0.62, fills: Q.fills,
-      sides: Q.sides.map((pl, e) => { const [d, j, side] = along[e], p = on(d, j); return { pl, on: p, mine: !p || (eye[d] - j / n[d]) * side > 0 }; })
+      id: id(f, i), k: f, t, shade: f < 2 ? PLANE_SHADE[f] : eye[2] > t ? 1 : 0.62, fills: Q.fills, sides,
+      div: { id: ["s12", "s01", "top"][f], line, range: { u: [lo[0], hi[0]], v: [lo[1], hi[1]] } }
     };
   };
   const all = [[0, n[0]], [0, n[1]], [0, n[2]]], planes = [];
@@ -1699,8 +1720,10 @@ function drawDivisions(c, f, bx, k, alphaMul, near) {
     c.stroke();
   };
   const weight = (s, i, n) => Math.max(0.5 / k, s.width * (D.hier ? Math.pow(0.7, Math.log2(n / gcd(i, n)) - 1) : 1));
-  for (let i = 1; i < nu; i++) { const s = styleAt(from(au, i, nu)); if (s) line(i / nu, 0, i / nu, 1, s, weight(s, i, nu)); }
-  for (let j = 1; j < nv; j++) { const s = styleAt(from(av, j, nv)); if (s) line(0, j / nv, 1, j / nv, s, weight(s, j, nv)); }
+  // (a plane's piece covers only part of its plane, f.range, and draws only the lines over it)
+  const R = f.range || { u: [0, 1], v: [0, 1] }, first = (r, n) => Math.max(1, Math.ceil(r[0] * n - 1e-6)), last = (r, n) => Math.min(n - 1, Math.floor(r[1] * n + 1e-6));
+  for (let i = first(R.u, nu); i <= last(R.u, nu); i++) { const s = styleAt(from(au, i, nu)); if (s) line(i / nu, 0, i / nu, 1, s, weight(s, i, nu)); }
+  for (let j = first(R.v, nv); j <= last(R.v, nv); j++) { const s = styleAt(from(av, j, nv)); if (s) line(0, j / nv, 1, j / nv, s, weight(s, j, nv)); }
   const A = D.styles.A, base = Math.max(A.width, 0.5 / k), dg = D.diag;
   // an X across each of n strips side by side along u, or stacked along v
   const strips = (n, alongU) => {
@@ -1717,8 +1740,8 @@ function drawDivisions(c, f, bx, k, alphaMul, near) {
     const alongU = (dg === "columns") !== (f.id === "bottom");
     strips(alongU ? nu : nv, alongU);
   } else if ((dg === "cells" || dg === "cellsOne" || dg === "cellsFlip") && nu * nv <= 4096) { // past 64×64 cells the face would just turn solid
-    const w = base * 0.75;
-    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const w = base * 0.75, cells = (r, n) => [Math.max(0, Math.floor(r[0] * n + 1e-6)), Math.min(n - 1, Math.ceil(r[1] * n - 1e-6) - 1)], [i0, i1] = cells(R.u, nu), [j0, j1] = cells(R.v, nv);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
       const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
       if (dg !== "cellsFlip") line(u0, v0, u1, v1, A, w);
       if (dg !== "cellsOne") line(u1, v0, u0, v1, A, w);
@@ -1851,6 +1874,7 @@ function drawBox(c, bx, g, k, skip = null) {
   // the planes, inside, as the faces behind them are: seen through the faces in front, or where those are hidden
   for (const p of planes) {
     if (!wire) fill(p, ghostly(bx.ghost * 0.6, 1), p.shade * 0.85);
+    if (bx.div.planes) drawDivisions(c, p.div, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
     c.setLineDash(!solid && bx.dashHidden ? dash : []);
@@ -3035,9 +3059,9 @@ const schema = [
     ...["top", "bottom", "s01", "s23", "s12", "s30"].map(id => ({ t: "check", bind: "boxes.$b.faces." + id, label: () => faceLabel(id), when: hasBox })),
     { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
     { t: "sub", label: "Planes", when: hasBox },
-    ...[["x", "Slices across X (width)"], ["y", "Slices across Y (length)"], ["z", "Slices up Z (height)"]].map(([k, label]) => ({ t: "parts", bind: "boxes.$b.planes." + k, label, hi: PLANES_MAX, when: hasBox })),
+    ...[["x", "Planes across X (width)"], ["y", "Planes across Y (length)"], ["z", "Planes up Z (height)"]].map(([k, label]) => ({ t: "parts", bind: "boxes.$b.planes." + k, label, hi: PLANES_MAX, planes: true, when: hasBox })),
     { t: "btns", items: [["Show all planes", () => { state.boxes[state.sel].planes.hidden = []; commit(); touch(); }, "", () => hasBox() && state.boxes[state.sel].planes.hidden.length > 0]], when: hasBox },
-    { t: "note", html: "Planes cut the box into equal slices each way, measured in depth like the face divisions. They're drawn like its faces: in its face color, see-through when it's ghosted, as outlines in a wireframe, and out of sight inside a solid box until the faces in front of them are hidden. Shift-click a plane to hide it and ⌘-click (Ctrl-click) to bring it back, as with faces. The pointer reaches the nearest face or plane you can see, so a plane only once whatever is in front of it is hidden.", when: hasBox },
+    { t: "note", html: "Planes cut the box into equal slices each way, measured in depth like the face divisions; the number beside each choice counts the planes, 0 for none. They're drawn like its faces: in its face color, see-through when it's ghosted, as outlines in a wireframe, and out of sight inside a solid box until the faces in front of them are hidden. Shift-click a plane to hide it and ⌘-click (Ctrl-click) to bring it back, as with faces. The pointer reaches the nearest face or plane you can see, so a plane only once whatever is in front of it is hidden.", when: hasBox },
     { t: "sub", label: "Face divisions", when: hasBox },
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
     { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
@@ -3046,6 +3070,7 @@ const schema = [
     { t: "readout", text: diagNote, when: () => hasDiv() && ["columns", "rows"].includes(getP("boxes.$b.div.diag")) },
     { t: "check", bind: "boxes.$b.div.sides", label: "Divide the four sides", when: hasDiv },
     { t: "check", bind: "boxes.$b.div.caps", label: "Divide top and bottom", when: hasDiv },
+    { t: "check", bind: "boxes.$b.div.planes", label: "Divide the planes", when: () => hasDiv() && ["x", "y", "z"].some(a => state.boxes[state.sel].planes[a] > 1) },
     { t: "check", bind: "boxes.$b.div.hier", label: "Thinner lines at each finer split", when: hasDiv },
     { t: "note", html: "Halves, quarters and eighths are measured in depth, not on screen, so each part shrinks as it recedes toward its vanishing point.", when: hasDiv },
     { t: "sub", label: "Division pattern and styles", when: hasDiv },
@@ -3163,14 +3188,15 @@ function makeRow(r) {
       break;
     }
     case "parts": {
-      // Preset fractions plus a number box for any count up to r.hi
-      const sel = el("select", { id }); PARTS.filter(([v]) => v <= r.hi).forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
-      const num = el("input", { class: "num", type: "number", id: id + "-n", min: "1", max: String(r.hi), step: "1", "aria-label": labelText(r) + ", number of parts" });
+      // Preset fractions plus a number box for any count up to r.hi. With r.planes the number box counts the planes
+      // that cut the parts, one fewer, so none reads 0.
+      const off = r.planes ? 1 : 0, sel = el("select", { id }); PARTS.filter(([v]) => v <= r.hi).forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
+      const num = el("input", { class: "num", type: "number", id: id + "-n", min: String(1 - off), max: String(r.hi - off), step: "1", "aria-label": labelText(r) + (off ? ", number of planes" : ", number of parts") });
       sel.addEventListener("change", () => { if (sel.value === "custom") { num.focus(); num.select(); return; } setP(r.bind, +sel.value); commit(); });
-      num.addEventListener("input", () => { const v = Math.round(+num.value); if (num.value !== "" && Number.isFinite(v)) setP(r.bind, Math.min(r.hi, Math.max(1, v))); });
-      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = v; commit(); });
+      num.addEventListener("input", () => { const v = Math.round(+num.value) + off; if (num.value !== "" && Number.isFinite(v)) setP(r.bind, Math.min(r.hi, Math.max(1, v))); });
+      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = v - off; commit(); });
       node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), el("div", { class: "pick" }, sel, num));
-      update = () => { const v = getP(r.bind); if (v === undefined) return; sel.value = PARTS.some(p => p[0] === v) ? String(v) : "custom"; if (document.activeElement !== num) num.value = v; };
+      update = () => { const v = getP(r.bind); if (v === undefined) return; sel.value = PARTS.some(p => p[0] === v) ? String(v) : "custom"; if (document.activeElement !== num) num.value = v - off; };
       break;
     }
     case "color": {
