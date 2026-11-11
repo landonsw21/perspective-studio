@@ -136,6 +136,8 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pair .row { grid-template-columns: auto minmax(0, 1fr); }
 .pair .num { width: 100%; }
+.dims .pick .num { flex: 1 1 auto; width: auto; min-width: 0; } /* (the whole slot, beside its unit) */
+.dims .unit { color: var(--muted); font: 400 11px/1 var(--f-data); min-width: 1.6em; }
 .pick { display: flex; gap: 6px; align-items: center; min-width: 0; }
 [hidden] { display: none !important; }
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
@@ -360,8 +362,10 @@ function defaultState() {
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
-    // US Letter, 8.5 × 11 inches upright at 200 px per inch, centered on the drawing's origin
-    viewport: { show: true, x: -850, y: -1100, w: 1700, h: 2200, dim: true, clip: false, lockAspect: false },
+    // US Letter, 8.5 × 11 inches upright at 200 px per inch, centered on the drawing's origin. Its size and place are
+    // shown in `units` (px, in or mm), inches and millimeters at `ppi` drawing pixels to the inch, which also sets how
+    // big a PDF prints.
+    viewport: { show: true, x: -850, y: -1100, w: 1700, h: 2200, dim: true, clip: false, lockAspect: false, units: "in", ppi: 200 },
     export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
 }
@@ -431,6 +435,9 @@ function normalize(s) {
     r.back = Math.min(BACK_MAX, Math.max(BACK_MIN, r.back));
   });
   cv.panoHc = Math.max(0, cv.panoHc);
+  // (a page saved before it had units was set in pixels)
+  if (!["px", "in", "mm"].includes(out.viewport.units) || (s && s.viewport && !s.viewport.units)) out.viewport.units = "px";
+  out.viewport.ppi = Math.min(2400, Math.max(10, out.viewport.ppi));
   const E = out.export, q = +E.quality;
   if (!EXPORT_FORMATS[E.format]) E.format = "png";
   E.quality = Number.isFinite(q) ? Math.min(100, Math.max(1, Math.round(q))) : 92;
@@ -2875,13 +2882,6 @@ function scaleRange(s) {
 // The middle of the export area, which the drawing scales around
 const exportMid = () => { const V = state.viewport; return P(V.x + V.w / 2, V.y + V.h / 2); };
 const pctText = k => (k < 0.1 ? (k * 100).toFixed(1) : String(Math.round(k * 100))) + "%";
-// The panel's Smaller and Larger buttons: one step of 10%, as far as the drawing can go
-function scaleBy(f) {
-  const r = scaleRange(state), k = Math.min(r.hi, Math.max(r.lo, f));
-  if (Math.abs(k - 1) < 1e-9) { toast(f < 1 ? "The drawing can't get any smaller" : "The drawing can't get any larger"); return; }
-  scaleDrawing(k, exportMid(), clone(state)); commit(); touch();
-  toast(`Scaled the drawing to ${pctText(k)}`);
-}
 
 /* ---------- history & persistence ---------- */
 let undoStack = [], redoStack = [], lastSaved = JSON.stringify(state);
@@ -2946,7 +2946,6 @@ function setP(path, val) {
 
 const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"], ["longdash", "Long dash"], ["dashdotdot", "Dash-dot-dot"]];
 const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["ABC", "Three styles: A, B, C"], ["ABCD", "Four styles: A to D"], ["ABAC", "A, then B and C in turn"], ["custom", "Custom…"]];
-const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"], ["1700x2200", "Letter portrait 200 dpi (default)"]];
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing" || isIso();
 // A new ray pattern gives any letter it adds a style of its own. VP1 and VP2 rays edited together share the
 // pattern, and a letter new to the other family copies the edited family's weight, line and opacity in a
@@ -3169,30 +3168,20 @@ const schema = [
     { t: "btns", items: [["Use these divisions on all boxes", () => { const d = state.boxes[state.sel].div; state.boxes.forEach(b => b.div = clone(d)); commit(); touch(); toast("Divisions copied to every box"); }, ""]], when: hasDiv }
   ]},
   { id: "export", title: "Export area", rows: [
-    { t: "check", bind: "viewport.show", label: "Show export area" },
-    { t: "pair", items: [{ bind: "viewport.w", label: "W" }, { bind: "viewport.h", label: "H" }] },
-    { t: "pair", items: [{ bind: "viewport.x", label: "X" }, { bind: "viewport.y", label: "Y" }] },
-    { t: "sizepreset" },
+    { t: "checks", items: [{ bind: "viewport.show", label: "Show" }, { bind: "viewport.dim", label: "Shade outside" }, { bind: "viewport.clip", label: "Clip guides" }, { bind: "viewport.lockAspect", label: "Lock aspect" }] },
+    { t: "toggle", bind: "viewport.units", label: "Units", options: [["px", "Pixels"], ["in", "Imperial"], ["mm", "Metric"]] },
+    { t: "dims" },
+    { t: "range", bind: "viewport.ppi", label: "Pixels per inch", min: 50, max: 600, step: 1, lo: 10, hi: 2400, when: () => state.viewport.units !== "px" },
     { t: "btns", items: [["Center on horizon", () => { const g = geo(), V = state.viewport; V.x = Math.round(g.O.x - V.w / 2); V.y = Math.round(g.O.y - V.h / 2); commit(); touch(); }, "", () => !isIso()], ["Swap W / H", () => { const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; [V.w, V.h] = [V.h, V.w]; V.x = Math.round(cx - V.w / 2); V.y = Math.round(cy - V.h / 2); commit(); touch(); }, ""]] },
-    { t: "check", bind: "viewport.lockAspect", label: "Lock aspect ratio" },
-    { t: "check", bind: "viewport.dim", label: "Shade the area outside" },
-    { t: "check", bind: "viewport.clip", label: "Clip guides to the export area" },
-    { t: "sub", label: "Scale the drawing" },
-    { t: "btns", items: [["Smaller", () => scaleBy(0.9), ""], ["Larger", () => scaleBy(1 / 0.9), ""]] },
-    { t: "note", html: "With the export area shown, drag the round handle off its bottom-right corner in toward the middle to shrink the whole drawing (horizon, VPs, rays, guides and boxes), or out to enlarge it. Everything scales around the middle of the export area, and the area itself and line weights stay as they are. Smaller and Larger step by 10%." },
     { t: "sub", label: "Output" },
     { t: "toggle", bind: "export.format", label: "Format", options: Object.entries(EXPORT_FORMATS) },
     { t: "select", bind: "export.scale", label: "Resolution", num: true, options: [[0.5, "0.5×"], [1, "1× (as sized)"], [2, "2×"], [3, "3×"], [4, "4×"], [6, "6×"], [8, "8×"]], when: () => state.export.format !== "pdf" },
     { t: "range", bind: "export.quality", label: "JPG quality (%)", min: 50, max: 100, step: 1, lo: 1, hi: 100, when: () => state.export.format === "jpg" },
     { t: "select", bind: "export.bg", label: "Background", options: [["white", "White"], ["transparent", "Transparent"]], when: () => state.export.format !== "jpg" },
     { t: "note", html: "JPG has no transparency, so the background is always white.", when: () => state.export.format === "jpg" },
-    { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area, one point for each pixel.", when: () => state.export.format === "pdf" },
-    { t: "check", bind: "export.rays", label: "Include rays" },
-    { t: "check", bind: "export.verticals", label: () => (is1() ? "Include vertical and horizontal guides" : "Include vertical guides"), when: () => !isIso() },
-    { t: "check", bind: "export.horizon", label: "Include horizon line", when: () => !isIso() },
-    { t: "check", bind: "export.vps", label: "Include VP markers", when: () => !isIso() },
-    { t: "check", bind: "export.cone", label: "Include cone of vision and lens edge", when: () => !isIso() },
-    { t: "check", bind: "export.boxes", label: "Include boxes" },
+    { t: "note", html: "A PDF keeps every line, face and label as shapes rather than pixels, so it stays sharp at any size. Its page is the export area at its print size: inches or millimeters as shown under Imperial or Metric, at the pixels per inch set there.", when: () => state.export.format === "pdf" },
+    { t: "sub", label: "Include" },
+    { t: "checks", items: [{ bind: "export.rays", label: "Rays" }, { bind: "export.verticals", label: () => (is1() ? "Guides" : "Vertical guides"), when: () => !isIso() }, { bind: "export.horizon", label: "Horizon", when: () => !isIso() }, { bind: "export.vps", label: "VP markers", when: () => !isIso() }, { bind: "export.cone", label: "Cone and lens edge", when: () => !isIso() }, { bind: "export.boxes", label: "Boxes" }] },
     { t: "btns", items: [[() => "Export " + EXPORT_FORMATS[state.export.format], exportFile, "solid"], ["Save setup", saveSetup, ""], ["Load setup", () => document.getElementById("fileIn").click(), ""]] }
   ]},
   { id: "snap", title: "Snapping", open: false, rows: [
@@ -3520,17 +3509,30 @@ function makeRow(r) {
       };
       break;
     }
+    case "dims": {
+      // The export area's size and place in the units chosen: whole pixels, or inches or millimeters at its pixels per
+      // inch, kept as typed
+      const V = () => state.viewport, per = () => ({ px: 1, in: V().ppi, mm: V().ppi / 25.4 })[V().units] || 1;
+      const shown = v => { const u = V().units, x = v / per(); return String(u === "px" ? Math.round(x) : +x.toFixed(u === "in" ? 3 : 2)); };
+      const cells = [["w", "W"], ["h", "H"], ["x", "X"], ["y", "Y"]].map(([k, lab]) => {
+        const iid = "f-viewport-" + k, inp = el("input", { class: "num", type: "number", id: iid }), unit = el("span", { class: "unit" });
+        inp.addEventListener("input", () => {
+          const v = +inp.value; if (inp.value === "" || !Number.isFinite(v)) return;
+          const px = V().units === "px" ? Math.round(v) : v * per();
+          if ((k === "w" || k === "h") && !(px >= 1)) return;
+          setP("viewport." + k, px);
+        });
+        inp.addEventListener("change", onCommit);
+        return [el("div", { class: "row" }, el("label", { for: iid }, lab), el("span", { class: "pick" }, inp, unit)), inp, k, unit];
+      });
+      node = el("div", { class: "pair dims" }, ...cells.map(c => c[0]));
+      update = () => cells.forEach(([, inp, k, unit]) => { const u = V().units; inp.step = u === "px" ? "1" : u === "in" ? "0.01" : "0.1"; unit.textContent = u; if (document.activeElement !== inp) inp.value = shown(V()[k]); });
+      break;
+    }
     case "pair": {
       const cells = r.items.map(it => { const iid = idFor(it.bind); const inp = el("input", { class: "num", type: "number", id: iid, step: "1" }); inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) { const v = Math.round(+inp.value); if (it.bind.endsWith(".w") || it.bind.endsWith(".h")) { if (v >= 1) setP(it.bind, v); } else setP(it.bind, v); } }); inp.addEventListener("change", onCommit); return [el("div", { class: "row" }, el("label", { for: iid }, it.label), inp), inp, it]; });
       node = el("div", { class: "pair" }, ...cells.map(c => c[0]));
       update = () => cells.forEach(([, inp, it]) => { if (document.activeElement !== inp) inp.value = getP(it.bind); });
-      break;
-    }
-    case "sizepreset": {
-      const sel = el("select", { id: "f-size-preset" }); PRESETS.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
-      sel.addEventListener("change", () => { if (!sel.value) return; const [w, h] = sel.value.split("x").map(Number); const V = state.viewport, cx = V.x + V.w / 2, cy = V.y + V.h / 2; V.w = w; V.h = h; V.x = Math.round(cx - w / 2); V.y = Math.round(cy - h / 2); sel.value = ""; commit(); touch(); });
-      node = el("div", { class: "row" }, el("label", { for: "f-size-preset" }, "Size preset"), sel);
-      update = () => {};
       break;
     }
   }
@@ -3691,11 +3693,12 @@ function pdfContext() {
 }
 // The export area as a one-page vector PDF, a point for each pixel
 async function exportPDF() {
-  const V = state.viewport, W = V.w, H = V.h, c = pdfContext();
+  // The page is the export area at its print size: 72 points to the inch at its pixels per inch
+  const V = state.viewport, k = 72 / V.ppi, W = +(V.w * k).toFixed(3), H = +(V.h * k).toFixed(3), c = pdfContext();
   if (state.export.bg === "white") c.ops.push(`1 1 1 rg 0 0 ${W} ${H} re f`);
-  c.ops.push(`0 0 ${W} ${H} re W n`, `1 0 0 -1 0 ${H} cm`); // keep to the page, then turn y downward like the canvas
+  c.ops.push(`0 0 ${W} ${H} re W n`, `${+k.toFixed(6)} 0 0 ${-k.toFixed(6)} 0 ${H} cm`); // keep to the page, then pixels to points, y downward like the canvas
   c.translate(-V.x, -V.y);
-  drawExport(c, 1);
+  drawExport(c, k); // (hairlines, dashes and labels sized for the page, as a PNG's are for its pixels)
   const text = new TextEncoder();
   let body = text.encode(c.ops.join("\n")), filter = "";
   // the drawing operators squeeze to a fraction of their size, where the browser can compress
@@ -3709,7 +3712,7 @@ async function exportPDF() {
     `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 5 0 R >> /ExtGState << ${gs} >> >> /Contents 4 0 R >>`,
     [`<< /Length ${body.length}${filter} >>\nstream\n`, body, "\nendstream"],
     "<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>",
-    `<< /Title (Perspective drawing ${W} x ${H}) /Producer (Perspective Studio) >>`
+    `<< /Title (Perspective drawing ${Math.round(V.w)} x ${Math.round(V.h)}) /Producer (Perspective Studio) >>`
   ];
   // a header with a few high bytes, so file transfers treat it as binary
   const parts = [Uint8Array.of(...text.encode("%PDF-1.4\n%"), 0xe2, 0xe3, 0xcf, 0xd3, 10)], at = [];
