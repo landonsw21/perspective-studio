@@ -364,8 +364,8 @@ function defaultState() {
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
-    // US Letter, 8.5 × 11 inches upright (at DRAW_PPI), centered on the drawing's origin. Its size and place are shown
-    // in `units` (px, in or mm). In inches and millimeters, `ppi` is how many pixels to the inch a PNG or JPG gets.
+    // US Letter, 8.5 × 11 inches upright (at DRAW_PPI), centered on the drawing's origin. Its size is shown in `units`
+    // (px, in or mm). In inches and millimeters, `ppi` is how many pixels to the inch a PNG or JPG gets.
     viewport: { show: true, x: -850, y: -1100, w: 1700, h: 2200, dim: true, clip: false, lockAspect: false, units: "in", ppi: 200 },
     export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
@@ -3512,11 +3512,11 @@ function makeRow(r) {
       break;
     }
     case "dims": {
-      // The export area's size and place in the units chosen: whole pixels, or inches or millimeters (at the drawing's
-      // own pixels per inch), kept as typed
+      // The export area's size in the units chosen: whole pixels, or inches or millimeters (at the drawing's own pixels
+      // per inch), kept as typed. (Dragging its edge on the canvas moves it.)
       const V = () => state.viewport, per = () => ({ px: 1, in: DRAW_PPI, mm: DRAW_PPI / 25.4 })[V().units] || 1;
       const shown = v => { const u = V().units, x = v / per(); return String(u === "px" ? Math.round(x) : +x.toFixed(u === "in" ? 3 : 2)); };
-      const cells = [["w", "W"], ["h", "H"], ["x", "X"], ["y", "Y"]].map(([k, lab]) => {
+      const cells = [["w", "W"], ["h", "H"]].map(([k, lab]) => {
         const iid = "f-viewport-" + k, inp = el("input", { class: "num", type: "number", id: iid }), unit = el("span", { class: "unit" });
         inp.addEventListener("input", () => {
           const v = +inp.value; if (inp.value === "" || !Number.isFinite(v)) return;
