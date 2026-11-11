@@ -345,11 +345,11 @@ function defaultState() {
     mode: "2pt",
     horizon: { show: true, x: 0, y: -60, tilt: 0, color: "#1b252d", width: 1.5, dash: "solid", opacity: 1 },
     vps: [
-      { dist: -1300, drop: 0, size: 8, show: true, rays: raysDefault("#3d93c9", "#9ccbe6") },
-      { dist: 1300, drop: 0, size: 8, show: true, rays: raysDefault("#cc5a4c", "#e9aaa2") },
-      { dist: 0, drop: 2600, size: 8, show: true, rays: raysDefault("#3f9a63", "#a3d4b4", { count: 12, spacing: 120, pattern: "AB" }) },
+      { dist: -1300, drop: 0, rays: raysDefault("#3d93c9", "#9ccbe6") },
+      { dist: 1300, drop: 0, rays: raysDefault("#cc5a4c", "#e9aaa2") },
+      { dist: 0, drop: 2600, rays: raysDefault("#3f9a63", "#a3d4b4", { count: 12, spacing: 120, pattern: "AB" }) },
       // the center (5-point) or front/back (6-point) VP: its rays fan out evenly all the way around
-      { dist: 0, drop: 0, size: 8, show: true, rays: raysDefault("#8a63c4", "#c9b6e8", { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
+      { dist: 0, drop: 0, rays: raysDefault("#8a63c4", "#c9b6e8", { mode: "angle", count: 36, spread: 360, spacing: 60, measure: 300, pattern: "AB" }) }
     ],
     // The curved views: a lens for each of 4-point (fisheye), 5- and 6-point, and the panorama's settings
     curvi: { coverage: 180, circle: true, f4: lensDefaults(400), f5: lensDefaults(400), f6: lensDefaults(215), pano: 400, panoHc: 100, panoK: [0, 0, 0, 0], turn: 0, style4: "fish" },
@@ -423,6 +423,7 @@ function normalize(s) {
   delete out.rotateClick; // the setting's name while it started off
   if (out.boxOrder !== "custom") out.boxOrder = "distance";
   out.vps = [0, 1, 2, 3].map(i => deepMerge(d.vps[i], (s && s.vps && s.vps[i]) || {}));
+  out.vps.forEach(v => { delete v.show; delete v.size; }); // (markers once had their own size and could be hidden)
   if (out.mode === "curvi") out.mode = "2pt"; // drawings saved in the old curvilinear mode open in 2-point
   if (!["1pt", "2pt", "3pt", "iso", "4pt", "5pt", "6pt"].includes(out.mode)) out.mode = "2pt";
   if (!["fish", "pano"].includes(out.curvi.style4)) out.curvi.style4 = "fish";
@@ -532,14 +533,6 @@ function fams() {
     case "5pt": case "6pt": return [0, 3, 2];
     default: return [0, 1];
   }
-}
-function famName(vi) {
-  if (isIso()) return vi === 2 ? "vertical" : "axis " + (vi + 1);
-  if (state.mode === "1pt") return "VP";
-  if (isPanoMode()) return vi === 0 ? "VP1 and VP3" : "VP2 and VP4";
-  if (state.mode === "4pt") return vi === 2 ? "up and down" : "VP" + (vi + 1);
-  if (["5pt", "6pt"].includes(state.mode)) return vi === 0 ? "left and right" : vi === 2 ? "up and down" : state.mode === "6pt" ? "front and back" : "center";
-  return "VP" + (vi + 1);
 }
 
 // The single-curvature lens family that older setups were saved with, used to bring them in: by curvature
@@ -1984,11 +1977,12 @@ function vpMarkers(g) {
   if (state.mode === "1pt") return [marker(g.vp[3], "VP", 3, "anywhere")];
   return fams().map(i => marker(g.vp[i], "VP" + (i + 1), i, i === 2 ? "free" : "dist"));
 }
-// Each marker takes the color of its A rays, so recoloring them recolors the VP too
+// Each marker takes the color of its A rays, so recoloring them recolors the VP too. Markers are always drawn, all at
+// one size (a box's own VPs a little smaller).
+const VP_MARKER = 8;
 function drawVPs(c, k, g) {
   for (const mk of vpMarkers(g)) {
-    const v = state.vps[mk.vi]; if (!v.show) continue;
-    const p = mk.p, r = v.size / k, color = v.rays.styles.A.color;
+    const v = state.vps[mk.vi], p = mk.p, r = VP_MARKER / k, color = v.rays.styles.A.color;
     c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = color; c.fillStyle = "#ffffff";
     c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
     c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
@@ -1997,7 +1991,7 @@ function drawVPs(c, k, g) {
   }
   // each rotated box's own, smaller and in its axis colors
   for (const bx of state.boxes) for (const { p, k: axis, label } of boxVPs(bx, g)) {
-    const r = 0.75 * state.vps[0].size / k, color = AXIS_COLORS[axis];
+    const r = 0.75 * VP_MARKER / k, color = AXIS_COLORS[axis];
     c.globalAlpha = 1; c.setLineDash([]); c.lineWidth = 1.5 / k; c.strokeStyle = color; c.fillStyle = "#ffffff";
     c.beginPath(); c.arc(p.x, p.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
     c.beginPath(); c.moveTo(p.x - r * 1.8, p.y); c.lineTo(p.x + r * 1.8, p.y); c.moveTo(p.x, p.y - r * 1.8); c.lineTo(p.x, p.y + r * 1.8); c.stroke();
@@ -2980,7 +2974,6 @@ const radiusMode = () => isFish4() || is5() || is6(); // lenses sized by their 9
 const usesVerticals = () => is1() || is2() || isPano();
 const guidesTab = () => ui.guides && usesVerticals(); // (the rays section's Verticals tab is open)
 const usesVPDist = () => is2() || is3();
-const markerShowLabel = vi => { const nm = famName(vi); return nm.includes(" and ") ? `Show the ${nm} markers` : nm === "center" ? "Show the center marker" : `Show ${nm} marker`; };
 function camCheck3() {
   const o = ortho3(geo());
   return o ? `Camera check: this setup matches a real camera (focal length about ${Math.round(o.f)} px). The cone of vision centers itself where the three VP directions meet at right angles.`
@@ -3048,9 +3041,7 @@ const schema = [
     // (VP1 and VP2 are placed by dragging their markers along the horizon)
     { t: "check", bind: "symmetric", label: "Mirror VPs around the center point", when: usesVPDist },
     { t: "check", bind: "lockFrame", label: "Lock horizon and VPs in place" },
-    ...[0, 1, 2, 3].map(vi => ({ t: "check", bind: `vps.${vi}.show`, label: () => markerShowLabel(vi), when: () => fams().includes(vi) })),
     { t: "note", html: "Each marker takes the color of its rays' style A, set under Rays." },
-    { t: "range", bind: "vps.0.size", label: "Marker size", min: 3, max: 24, step: 1, lo: 1, hi: 200, also: ["vps.1.size", "vps.2.size", "vps.3.size"] },
     { t: "sub", label: "Cone of vision" },
     { t: "check", bind: "cone.show", label: "Show 60° cone (distortion limit)", when: () => !isPano() && !is1() },
     { t: "range", bind: "cone.angle", label: "Cone angle (°)", min: 20, max: 120, step: 1, lo: 1, hi: 179, when: () => !isPano() && !is1() },
@@ -3842,7 +3833,7 @@ const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX
 function hitTest(s, reach = "") {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
-  const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * state.vps[0].size + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
+  const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * VP_MARKER + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
   if (bx) {
     const G = boxGeo(bx, g);
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
@@ -3855,7 +3846,7 @@ function hitTest(s, reach = "") {
     // (where a VP sits on the diamond, as 1-point's and the panorama's do to begin with, Alt reaches the diamond under it)
     const onAnchor = state.horizon.show && len(sub(toS(g.O), s)) < 9;
     if (onAnchor && reach === "behind") return { type: "anchor" };
-    for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < state.vps[mk.vi].size + 7) return { type: "vp", i: mk.vi, mk, onAnchor };
+    for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < VP_MARKER + 7) return { type: "vp", i: mk.vi, mk, onAnchor };
     if (onAnchor) return { type: "anchor" };
   }
   for (let bi = 0; bi < state.boxes.length; bi++) { const h = bi !== state.sel && vpOf(bi); if (h) return h; }
