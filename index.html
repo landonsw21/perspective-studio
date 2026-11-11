@@ -3031,15 +3031,14 @@ const schema = [
   ]},
   { id: "horizon", title: "Horizon line", rows: [
     { t: "check", bind: "horizon.show", label: "Show horizon line" },
-    { t: "range", bind: "horizon.y", label: "Eye level (Y)", min: -3000, max: 3000, step: 1 },
-    { t: "range", bind: "horizon.x", label: "Center point (X)", min: -3000, max: 3000, step: 1 },
+    // (eye level and the center point move on the canvas: drag the line, or the diamond at its center)
     { t: "range", bind: "horizon.tilt", label: "Tilt (°)", min: -45, max: 45, step: 0.1, lo: -180, hi: 180 },
     { t: "btns", items: [["Center on page", centerHorizonOnPage, ""]] },
     { t: "color", bind: "horizon.color", label: "Color" },
     { t: "range", bind: "horizon.width", label: "Weight", min: 0.25, max: 10, step: 0.25, hi: 500 },
     { t: "select", bind: "horizon.dash", label: "Line style", options: DASH },
     { t: "range", bind: "horizon.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 },
-    { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame." }
+    { t: "note", html: "Drag the line to raise or lower eye level. Drag the diamond to move the whole frame; where a vanishing point sits on it, hold Alt (⌥) to grab the diamond." }
   ]},
   { id: "vps", title: "Vanishing points", rows: [
     { t: "range", bind: "vps.0.dist", label: "VP1 distance from center", min: -8000, max: 8000, step: 1, when: usesVPDist },
@@ -3850,8 +3849,11 @@ function hitTest(s, reach = "") {
     const own = vpOf(state.sel); if (own) return own; // (its own before the page's, which move far more)
   }
   if (!state.lockFrame) {
-    for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < state.vps[mk.vi].size + 7) return { type: "vp", i: mk.vi, mk };
-    if (state.horizon.show && len(sub(toS(g.O), s)) < 9) return { type: "anchor" };
+    // (where a VP sits on the diamond, as 1-point's and the panorama's do to begin with, Alt reaches the diamond under it)
+    const onAnchor = state.horizon.show && len(sub(toS(g.O), s)) < 9;
+    if (onAnchor && reach === "behind") return { type: "anchor" };
+    for (const mk of vpMarkers(g)) if (mk.drag && len(sub(toS(mk.p), s)) < state.vps[mk.vi].size + 7) return { type: "vp", i: mk.vi, mk, onAnchor };
+    if (onAnchor) return { type: "anchor" };
   }
   for (let bi = 0; bi < state.boxes.length; bi++) { const h = bi !== state.sel && vpOf(bi); if (h) return h; }
   const V = state.viewport;
@@ -3920,7 +3922,7 @@ function showHover(h) {
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
-  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
+  document.getElementById("stHint").textContent = vd ? vd[0] + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) showHover(hitTest(lastPos, faceReach(e))); };
 // VP markers drag in different ways depending on the mode
