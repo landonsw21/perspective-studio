@@ -358,7 +358,11 @@ function defaultState() {
 const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, diag: "none", hier: true, pattern: "A", styles: { A: lineStyle("#000000", 1, "solid", 0.85), B: lineStyle("#000000", 0.6, "solid", 0.5) } });
 // `fit` remembers where a box sits on screen and how big it looks (set when you place or edit it), so
 // switching perspective can rebuild it at that size even after a mode that had to shrink it.
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, div: divDefaults() });
+// (A box's subdividing planes: at most this many slices each way, and a plane's id, "x1" or "z3", read as its
+// direction: 0 across the width, 1 the length, 2 the height; -1 for a face. Loading a setup needs them, so they're here.)
+const PLANES_MAX = 10;
+const planeAxis = id => (/^[xyz]\d+$/.test(id) ? "xyz".indexOf(id[0]) : -1);
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -442,6 +446,9 @@ function normalize(s) {
     ["x", "y", "z"].forEach(k => { b.rot[k] = Number.isFinite(b.rot[k]) ? wrapAngle(b.rot[k]) : 0; });
     if (!(b.H > 0)) b.H = 0.3;
     if (b.fit && !(okPt(b.fit) && b.fit.s > 0)) b.fit = null;
+    const pl = b.planes;
+    ["x", "y", "z"].forEach(k => { pl[k] = Number.isFinite(pl[k]) ? Math.min(PLANES_MAX, Math.max(1, Math.round(pl[k]))) : 1; });
+    pl.hidden = [...new Set(pl.hidden.filter(id => typeof id === "string" && planeAxis(id) >= 0 && +id.slice(1) >= 1 && +id.slice(1) < pl[id[0]]))];
   });
   out.sel = Number.isInteger(out.sel) ? Math.max(-1, Math.min(out.sel, out.boxes.length - 1)) : -1;
   return out;
@@ -1104,6 +1111,94 @@ function geoFrom3(B, T, cam, n) {
   });
   return { B: B.map(pr), T: T.map(pr), faces, verts: B.map((b, i) => projPath(cam, samples(b, T[i], 12), false)), B3: B };
 }
+// ---- Subdividing planes ----
+// bx.planes cuts a box into equal slices across its width (x), along its length (y) and up its height (z): each count is
+// the number of slices, so 1 is no planes and 2 halves the box with one plane. Plane i of a direction (id "x1", "y2"…)
+// sits i slices in from corner 0 (toward corner 1 for x, corner 3 for y, and up for z), measured in depth. They're
+// drawn, picked and hidden the way faces are; bx.planes.hidden lists the hidden ones.
+const PLANE_SHADE = [0.75, 0.88];
+const surfaceShown = (bx, id) => (planeAxis(id) < 0 ? bx.faces[id] !== false : !bx.planes.hidden.includes(id));
+function setSurfaceShown(bx, id, on) {
+  if (planeAxis(id) < 0) { bx.faces[id] = on; return; }
+  bx.planes.hidden = bx.planes.hidden.filter(x => x !== id);
+  if (!on) bx.planes.hidden.push(id);
+}
+// A box's planes, or null without any: `planes`, each whole, with fills and edges on screen like a face's; `pieces`,
+// the planes cut where they cross, in the order to draw them, back to front from where you are; and `depth`, how far
+// along the line of sight through a spot on the drawing each plane lies. A piece's sides run along the box's faces or
+// along another plane; one along a plane is drawn by the piece on your side of it, which comes after that plane.
+function boxPlanes(bx, g, G = boxGeo(bx, g)) {
+  const n = [bx.planes.x, bx.planes.y, bx.planes.z];
+  if (n.every(v => v <= 1)) return null;
+  // the box in 3D: which side of each plane you're on, and where along a line of sight a plane lies
+  let cam, B, T;
+  if (turned(bx)) ({ cam, B, T } = turnFrame(bx, g));
+  else { const r = box3(bx, g); cam = r.cam; B = r.B; T = B.map(p => a3(p, m3(UP3, r.H))); }
+  const O = B[0], ax = [s3(B[1], O), s3(B[3], O), s3(T[0], O)], eye = ax.map(v => -d3(O, v) / d3(v, v));
+  // A spot (x, y, z) in the box, 0 to 1 each way: a point in 3D, projected (and curved through a lens), for a turned box
+  // or a lens; otherwise straight on screen, mapped from the side faces at its height, so the planes meet the faces
+  // exactly where they're drawn
+  const in3 = !!g.cam || turned(bx), steps = g.cam ? EDGE_N : 1;
+  const at = in3 ? q => a3(O, a3(a3(m3(ax[0], q[0]), m3(ax[1], q[1])), m3(ax[2], q[2]))) : (() => {
+    const [b0, b1, b2, b3] = G.B, [t0, t1, t2, t3] = G.T, m01 = quadMap([b0, b1, t1, t0]), m23 = quadMap([b2, b3, t3, t2]);
+    return q => quadMap([m01(0, q[2]), m01(1, q[2]), m23(0, q[2]), m23(1, q[2])])(q[0], q[1]);
+  })();
+  const pr = p => { const s = cam.proj(p); return P(s.x, s.y); };
+  // a flat four-sided piece of the box on screen, from its four spots: its fills, split where it crosses a seam, and the
+  // lines of each side (`span`: how much of the box its sides run along, for how finely to follow a lens)
+  const quad = (q, span) => {
+    const c = q.map(at);
+    if (!in3) return { fills: [c], sides: c.map((p, e) => [[p, c[(e + 1) % 4]]]) };
+    const ring = [], sides = [];
+    for (let e = 0; e < 4; e++) {
+      const k = steps > 1 ? Math.max(2, Math.ceil(steps * span[e % 2])) : 1, s = [];
+      for (let i = 0; i <= k; i++) s.push(lerp3(c[e], c[(e + 1) % 4], i / k));
+      sides.push(projPath(cam, s, false)); s.pop(); ring.push(...s);
+    }
+    const parts = cam.clip ? cam.clip(ring, c) : null;
+    return { fills: parts ? parts.map(pc => pc.screen || pc.pts.map(p => cam.projChart(p, pc.chart))) : [ring.map(pr)], sides };
+  };
+  const id = (f, i) => "xyz"[f] + i, on = (f, i) => (i > 0 && i < n[f] ? id(f, i) : null);
+  // Plane i across direction f, over the slices r of the other two directions. A plane across the height looks like
+  // the top from above and the bottom from below.
+  const piece = (f, i, r) => {
+    const a = (f + 1) % 3, b = (f + 2) % 3, t = i / n[f], [a0, a1] = r[a].map(j => j / n[a]), [b0, b1] = r[b].map(j => j / n[b]);
+    const spot = (u, v) => { const q = [0, 0, 0]; q[f] = t; q[a] = u; q[b] = v; return q; };
+    const Q = quad([spot(a0, b0), spot(a1, b0), spot(a1, b1), spot(a0, b1)], [a1 - a0, b1 - b0]);
+    // each side: the direction and slice it runs along, and which side of it the piece lies (1 above, -1 below)
+    const along = [[b, r[b][0], 1], [a, r[a][1], -1], [b, r[b][1], -1], [a, r[a][0], 1]];
+    return {
+      id: id(f, i), k: f, t, shade: f < 2 ? PLANE_SHADE[f] : eye[2] > t ? 1 : 0.62, fills: Q.fills,
+      sides: Q.sides.map((pl, e) => { const [d, j, side] = along[e], p = on(d, j); return { pl, on: p, mine: !p || (eye[d] - j / n[d]) * side > 0 }; })
+    };
+  };
+  const all = [[0, n[0]], [0, n[1]], [0, n[2]]], planes = [];
+  for (let f = 0; f < 3; f++) for (let i = 1; i < n[f]; i++) { const p = piece(f, i, all); planes.push({ id: p.id, k: f, t: p.t, shade: p.shade, fills: p.fills, edges: p.sides.flatMap(s => s.pl) }); }
+  let pieces = null;
+  return {
+    planes,
+    // Each plane splits the slices it runs through in two: the far half first, then the plane, then the near half
+    get pieces() {
+      if (pieces) return pieces;
+      pieces = [];
+      const walk = r => {
+        const f = [0, 1, 2].find(k => r[k][1] - r[k][0] >= 2); if (f === undefined) return;
+        const [lo, hi] = r[f], i = (lo + hi) >> 1, low = r.map((x, k) => (k === f ? [lo, i] : x)), high = r.map((x, k) => (k === f ? [i, hi] : x));
+        const nearHigh = eye[f] > i / n[f];
+        walk(nearHigh ? low : high); pieces.push(piece(f, i, r)); walk(nearHigh ? high : low);
+      };
+      walk(all);
+      return pieces;
+    },
+    depth: w => { const d = n3(cam.unproj(cam.wrapS ? cam.wrapS(w) : w)); return p => d3(a3(O, m3(ax[p.k], p.t)), ax[p.k]) / d3(d, ax[p.k]); }
+  };
+}
+// A face or plane of box bx by its id, as on screen
+function surfaceGeo(bx, g, id, G = boxGeo(bx, g)) {
+  if (planeAxis(id) < 0) return G.faces.find(f => f.id === id);
+  const PL = boxPlanes(bx, g, G);
+  return PL && PL.planes.find(p => p.id === id);
+}
 // ---- Rotated boxes ----
 // A box stays stored square to the page's axes, its home, which sizes, moves, fitting and perspective switches all
 // work on. bx.rot then turns it about its middle: around X (the width axis), then Y (length), then Z (height), the
@@ -1241,7 +1336,7 @@ const ringFace = () => (state.rotateFaces && ui.ring && ui.ring.bi === state.sel
 // Before that, a selected box's face under the pointer shows its circle ghosted, to look at but not to grab
 const ghostFace = () => (state.rotateFaces && !drag && hover && hover.type === "body" && hover.bi === state.sel ? hover.face : null);
 function ringOf(bx, face, g) {
-  const F = turnFrame(bx, g), k = face === "top" || face === "bottom" ? 2 : face === "s01" || face === "s23" ? 1 : 0, i = (k + 1) % 3, j = (k + 2) % 3;
+  const F = turnFrame(bx, g), k = planeAxis(face) >= 0 ? planeAxis(face) : face === "top" || face === "bottom" ? 2 : face === "s01" || face === "s23" ? 1 : 0, i = (k + 1) % 3, j = (k + 2) % 3;
   const side = [Math.abs(F.a), Math.abs(F.c), F.H], r = 0.58 * Math.hypot(side[i], side[j]);
   return { F, k, r, at: t => a3(F.C, a3(m3(F.ax[i], r * Math.cos(t)), m3(F.ax[j], r * Math.sin(t)))) };
 }
@@ -1726,7 +1821,7 @@ function drawOrder(g) {
   return order;
 }
 function drawBox(c, bx, g, k, skip = null) {
-  const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill);
+  const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill), PL = boxPlanes(bx, g, G);
   const near = bx.div && bx.div.on ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
   const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
@@ -1736,6 +1831,9 @@ function drawBox(c, bx, g, k, skip = null) {
     for (const pts of f.fills) { c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); c.fill(); }
   };
   const edges = f => { c.beginPath(); for (const pl of f.edges) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.stroke(); };
+  // A plane's pieces, inside the box, with the lines where they meet its faces and the other planes you can see
+  const showsPlane = id => surfaceShown(bx, id) && id !== skip, planes = PL ? PL.pieces.filter(p => showsPlane(p.id)) : [];
+  const planeEdges = p => { c.beginPath(); for (const sd of p.sides) if (sd.mine && (!sd.on || showsPlane(sd.on))) for (const pl of sd.pl) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
   const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
   c.lineJoin = "round"; c.lineCap = "round";
   const solid = bx.mode === "solid", wire = bx.mode === "wire";
@@ -1750,6 +1848,14 @@ function drawBox(c, bx, g, k, skip = null) {
     c.setLineDash(!solid && bx.dashHidden ? dash : []);
     edges(f);
   }
+  // the planes, inside, as the faces behind them are: seen through the faces in front, or where those are hidden
+  for (const p of planes) {
+    if (!wire) fill(p, ghostly(bx.ghost * 0.6, 1), p.shade * 0.85);
+    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
+    c.globalAlpha = ghostly(0.75, 1);
+    c.setLineDash(!solid && bx.dashHidden ? dash : []);
+    planeEdges(p);
+  }
   for (const f of fronts) {
     if (!wire) fill(f, solid ? 1 : bx.ghost, f.shade);
     drawDivisions(c, f, bx, k, 1, near);
@@ -1759,6 +1865,7 @@ function drawBox(c, bx, g, k, skip = null) {
   if (solid && bx.dashHidden) {
     c.globalAlpha = 0.45; c.setLineDash(dash); c.lineWidth = lw * 0.75;
     for (const f of backs) edges(f);
+    for (const p of planes) planeEdges(p);
   }
   c.globalAlpha = 1; c.setLineDash([]);
 }
@@ -1866,13 +1973,14 @@ function frame() {
   }
   // a hidden face under the pointer with ⌘ or Ctrl held: a ghost of it, which a ⌘-click brings back. With Shift
   // held, the face under the pointer is drawn the same way, as it would be once a Shift-click hides it.
-  const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && boxGeo(hb, g).faces.find(f => f.id === hover.face);
+  const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && surfaceGeo(hb, g, hover.face);
   if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
   // selected box handles
   const bx = state.boxes[state.sel];
   if (bx) {
     const G = boxGeo(bx, g), rf = ringFace(), gf = ghostFace(), solid = rf && ringOf(bx, rf, g), ghost = gf && ringOf(bx, gf, g);
-    if (ghost) drawFaceGhost(G.faces.find(f => f.id === gf), AXIS_COLORS[ghost.k], AXIS_COLORS[ghost.k], 0.25);
+    const gs = ghost && surfaceGeo(bx, g, gf, G);
+    if (gs) drawFaceGhost(gs, AXIS_COLORS[ghost.k], AXIS_COLORS[ghost.k], 0.25);
     if (ghost && !(solid && solid.k === ghost.k)) drawRing(ghost, paper, true); // (a face on the same axis has the same circle)
     if (solid) drawRing(solid, paper);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
@@ -2689,6 +2797,12 @@ function setP(path, val) {
     keepBoxes(() => rawSet(parts, val), path === "curvi.turn" && typeof old === "number" && is4() ? (val - old) * deg : 0);
     touch(); return;
   }
+  if (/^boxes\.\$b\.planes\.[xyz]$/.test(path)) {
+    // a new count moves every plane across that way, so none of them stays hidden
+    const bx = state.boxes[state.sel]; rawSet(parts, val);
+    if (bx) bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1));
+    touch(); return;
+  }
   if (path === "boxes.$b.rayFit") {
     // only one box at a time spaces the rays
     if (val) state.boxes.forEach(b => { b.rayFit = false; });
@@ -2920,6 +3034,10 @@ const schema = [
     { t: "sub", label: "Faces", when: hasBox },
     ...["top", "bottom", "s01", "s23", "s12", "s30"].map(id => ({ t: "check", bind: "boxes.$b.faces." + id, label: () => faceLabel(id), when: hasBox })),
     { t: "btns", items: [["Show all faces", () => { const bx = state.boxes[state.sel]; Object.keys(bx.faces).forEach(k => bx.faces[k] = true); commit(); touch(); }, ""], ["Open top", () => { state.boxes[state.sel].faces.top = false; commit(); touch(); }, ""]], when: hasBox },
+    { t: "sub", label: "Planes", when: hasBox },
+    ...[["x", "Slices across X (width)"], ["y", "Slices across Y (length)"], ["z", "Slices up Z (height)"]].map(([k, label]) => ({ t: "parts", bind: "boxes.$b.planes." + k, label, hi: PLANES_MAX, when: hasBox })),
+    { t: "btns", items: [["Show all planes", () => { state.boxes[state.sel].planes.hidden = []; commit(); touch(); }, "", () => hasBox() && state.boxes[state.sel].planes.hidden.length > 0]], when: hasBox },
+    { t: "note", html: "Planes cut the box into equal slices each way, measured in depth like the face divisions. They're drawn like its faces: in its face color, see-through when it's ghosted, as outlines in a wireframe, and out of sight inside a solid box until the faces in front of them are hidden. Shift-click a plane to hide it and ⌘-click (Ctrl-click) to bring it back, as with faces. The pointer reaches the nearest face or plane you can see, so a plane only once whatever is in front of it is hidden.", when: hasBox },
     { t: "sub", label: "Face divisions", when: hasBox },
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
     { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
@@ -3046,7 +3164,7 @@ function makeRow(r) {
     }
     case "parts": {
       // Preset fractions plus a number box for any count up to r.hi
-      const sel = el("select", { id }); PARTS.forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
+      const sel = el("select", { id }); PARTS.filter(([v]) => v <= r.hi).forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
       const num = el("input", { class: "num", type: "number", id: id + "-n", min: "1", max: String(r.hi), step: "1", "aria-label": labelText(r) + ", number of parts" });
       sel.addEventListener("change", () => { if (sel.value === "custom") { num.focus(); num.select(); return; } setP(r.bind, +sel.value); commit(); });
       num.addEventListener("input", () => { const v = Math.round(+num.value); if (num.value !== "" && Number.isFinite(v)) setP(r.bind, Math.min(r.hi, Math.max(1, v))); });
@@ -3578,16 +3696,25 @@ function hitTest(s, reach = "") {
     if (len(sub(scaleHome(), s)) < 10) return { type: "vscale" };
   }
   for (const bi of drawOrder(g).reverse()) {
-    const b = state.boxes[bi], G = boxGeo(b, g), front = G.faces.filter(f => f.front), back = G.faces.filter(f => !f.front);
-    const under = f => f.fills.some(poly => inPoly(w, poly)), shown = f => b.faces[f.id] !== false;
-    const hid = reach === "restore" && [...back, ...front].find(f => !shown(f) && under(f));
-    if (hid) return { type: "hidden", bi, face: hid.id };
-    if (state.rotateFaces && bi === state.sel && (!reach || reach === "behind")) {
-      const at = [...front, ...back].filter(under);
-      if (at.length) return { type: "body", bi, face: at[reach ? at.length - 1 : 0].id };
+    const b = state.boxes[bi], G = boxGeo(b, g), under = f => f.fills.some(poly => inPoly(w, poly));
+    const front = G.faces.filter(f => f.front && under(f)), back = G.faces.filter(f => !f.front && under(f));
+    if (!front.length && !back.length) continue;
+    // everything under the pointer, nearest first: the face the line of sight enters by, the planes inside, the face it
+    // leaves by. The pointer reaches the nearest one you can see, so a plane only once whatever is in front of it is hidden.
+    const PL = boxPlanes(b, g, G), far = PL && PL.depth(w), inside = PL ? PL.planes.filter(under).sort((p, q) => far(p) - far(q)) : [];
+    const at = [...front, ...inside, ...back], shown = f => surfaceShown(b, f.id), seen = at.findIndex(shown);
+    if (reach === "restore") {
+      // hidden faces come back furthest back first, even where faces you can see are in the way; a hidden plane comes
+      // back from where nothing in front of it shows
+      const hid = [...at].reverse().find(f => !shown(f) && (planeAxis(f.id) < 0 || at.slice(0, at.indexOf(f)).every(o => !shown(o))));
+      if (hid) return { type: "hidden", bi, face: hid.id };
     }
-    const f = [...front, ...back].find(f => shown(f) && under(f));
-    if (f) return { type: reach === "hide" ? "hide" : "body", bi, face: f.id };
+    if (state.rotateFaces && bi === state.sel && (!reach || reach === "behind")) {
+      // the nearest face or plane you can see (over empty space, the nearest hidden face), or with Alt the one behind it
+      const near = Math.max(0, seen);
+      return { type: "body", bi, face: at[reach ? Math.min(near + 1, at.length - 1) : near].id };
+    }
+    if (seen >= 0) return { type: reach === "hide" ? "hide" : "body", bi, face: at[seen].id };
   }
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
@@ -3627,7 +3754,8 @@ function showHover(h) {
   if (key(h) !== key(hover)) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
-  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? "Click this face to grab its rotation circle · hold Alt for the face behind it · drag to move the box" : "Click to select this box · drag to move it") : HINTS[h.type] || "";
+  const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
+  document.getElementById("stHint").textContent = vd ? vd[0] : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) showHover(hitTest(lastPos, faceReach(e))); };
 // VP markers drag in different ways depending on the mode
@@ -3657,7 +3785,7 @@ canvas.addEventListener("pointerdown", e => {
   const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
   if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && (hit.type === "hide" || hit.type === "body"))) {
     // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
-    const b = state.boxes[hit.bi]; b.faces[hit.face] = hit.type === "hidden"; state.sel = hit.bi; commit(); touch();
+    const b = state.boxes[hit.bi]; setSurfaceShown(b, hit.face, hit.type === "hidden"); state.sel = hit.bi; commit(); touch();
     showHover(hitTest(s, faceReach(e))); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view }, wasSel: state.sel === hit.bi };
