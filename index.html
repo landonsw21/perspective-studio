@@ -3499,7 +3499,8 @@ function resetAll() {
   ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
 }
 // Puts the perspective in use back as it starts: the horizon, the VPs and this view's lens at their defaults, the horizon
-// placed on the page as it first is, and in place of the boxes one default box in the middle of the page. A scaled
+// placed on the page as it first is, with the VPs pushed out past the page if they'd land on it, and in place of the
+// boxes the box a new drawing starts with, in the middle of the page and taking up about a quarter of it. A scaled
 // drawing first goes back to 100%, so the lengths that scaled with it (ray and guide spacing, the other views' lenses)
 // are as they were before. Colors, rays, guides and the page itself stay as they are. One undo brings it all back.
 function resetPerspective() {
@@ -3510,10 +3511,18 @@ function resetPerspective() {
   s.cone.cv = d.cone.cv; s.drawingScale = d.drawingScale;
   const lens = { "4pt-fish": ["f4", "turn"], "4pt-pano": ["pano", "panoHc", "panoK", "turn"], "5pt": ["f5", "coverage"], "6pt": ["f6"] }[modeKey()] || [];
   lens.forEach(k => { s.curvi[k] = clone(d.curvi[k]); });
-  // the box a new drawing starts with, moved to the middle of the page at the same size
+  // The VPs off the page: the system grows (the VP distances, or the lens) until every VP is clear of the page by a tenth
+  // of its height, all but the one straight ahead (1-point's VP, 5-point's center, 6-point's front), which is its middle
+  const m = 0.1 * Math.min(V.w, V.h), off = p => p.x < V.x - m || p.x > V.x + V.w + m || p.y < V.y - m || p.y > V.y + V.h + m;
+  const grow = k => { if (camMode()) { const { obj, key } = lensScale(); obj[key] *= k; } else s.vps.forEach(v => { v.dist *= k; v.drop *= k; }); };
+  for (let i = 0; i < 300 && s.mode !== "1pt" && !vpMarkers(geo()).every(mk => mk.drag === "center" || off(mk.p)); i++) grow(1.02);
+  // the box a new drawing starts with, in the middle of the page, sized so its outline takes up about a quarter of it
   s.boxes = [];
-  const g = geo(), bx = makeBox(g), G = homeGeo(bx, g);
-  fitBox(bx, boxDims(bx, g), mid, screenBox([...G.B, ...G.T]).s, g); captureFit(bx, g);
+  const g = geo(), bx = makeBox(g), dims = boxDims(bx, g);
+  const cover = () => { const G = homeGeo(bx, g), xs = [...G.B, ...G.T].map(p => p.x), ys = [...G.B, ...G.T].map(p => p.y); return (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)) / (V.w * V.h); };
+  let size = 0.5 * Math.hypot(V.w, V.h);
+  for (let i = 0; i < 4; i++) { fitBox(bx, dims, mid, size, g); const c = cover(); if (!(c > 0) || Math.abs(c - 0.25) < 0.005) break; size *= Math.sqrt(0.25 / c); }
+  captureFit(bx, g);
   s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null;
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch(); fitView();
