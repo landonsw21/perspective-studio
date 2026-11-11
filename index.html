@@ -359,7 +359,8 @@ function defaultState() {
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
     boxes: [], sel: -1,
-    viewport: { show: true, x: -800, y: -450, w: 1600, h: 900, dim: true, clip: false, lockAspect: false },
+    // US Letter, 8.5 × 11 inches upright at 200 px per inch, centered on the drawing's origin
+    viewport: { show: true, x: -850, y: -1100, w: 1700, h: 2200, dim: true, clip: false, lockAspect: false },
     export: { format: "png", scale: 1, quality: 92, bg: "white", rays: true, verticals: true, horizon: true, vps: false, boxes: true, cone: false }
   };
 }
@@ -2867,7 +2868,7 @@ function setP(path, val) {
 
 const DASH = [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"], ["dashdot", "Dash-dot"], ["longdash", "Long dash"], ["dashdotdot", "Dash-dot-dot"]];
 const PATTERNS = [["A", "Solid, every ray primary"], ["AB", "Alternate A / B"], ["ABB", "Major every 3rd"], ["ABBB", "Major every 4th"], ["ABBBB", "Major every 5th"], ["A.", "Every other ray"], ["AAB", "Two A, one B"], ["AB.", "A, B, gap"], ["A..", "Every 3rd ray"], ["ABC", "Three styles: A, B, C"], ["ABCD", "Four styles: A to D"], ["ABAC", "A, then B and C in turn"], ["custom", "Custom…"]];
-const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"]];
+const PRESETS = [["", "Choose a size…"], ["1920x1080", "HD 1920 × 1080"], ["3840x2160", "4K 3840 × 2160"], ["1920x1200", "16:10 1920 × 1200"], ["2048x2048", "Square 2048"], ["1080x1350", "Portrait post 1080 × 1350"], ["3508x2480", "A4 landscape 300 dpi"], ["2480x3508", "A4 portrait 300 dpi"], ["3300x2550", "Letter landscape 300 dpi"], ["2550x3300", "Letter portrait 300 dpi"], ["1700x2200", "Letter portrait 200 dpi (default)"]];
 const isSpacing = () => getP("vps.$v.rays.mode") === "spacing" || isIso();
 // A new ray pattern gives any letter it adds a style of its own. VP1 and VP2 rays edited together share the
 // pattern, and a letter new to the other family copies the edited family's weight, line and opacity in a
