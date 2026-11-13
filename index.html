@@ -992,29 +992,36 @@ function surfaceRect(bx, { B, H }, id) {
 }
 // The points the lines along `dir` run through, on the chosen surfaces, each with its count j from the surface's
 // corner nearest you (as its division lines count). Every surface has lines up and down (see below), so the vertical
-// guides, VP3's rays and the up and down VPs' rays snap to the box whatever is chosen.
+// guides, VP3's rays and the up and down VPs' rays snap to the box whatever is chosen. Where just one of the chosen
+// surfaces has lines along `dir`, they carry on past it, `extra` at each end (a VP's rays as many as its count says); where
+// more than one has, they cross just those and stop at the box.
 function surfaceSpots(bx, g, b3, dir, extra) {
-  const ids = raySnapIds(bx, g), e = ids.length === 1 ? extra : 0, out = [];
-  const upright = Math.abs(d3(n3(dir), UP3)) > 0.999;
-  for (const id of ids) {
-    const r = surfaceRect(bx, b3, id); if (!r) continue;
-    for (const [along, across, n] of [[r.U, r.V, r.nV], [r.V, r.U, r.nU]]) {
-      if (!(l3(along) > 1e-12) || Math.abs(d3(n3(along), n3(dir))) < 0.999) continue;
-      for (let j = -e; j <= n + e; j++) out.push({ p: a3(r.O, m3(across, j / n)), j });
-    }
-    // A top, bottom or plane across the height has no upright lines of its own: the lines up and down stand where its
-    // edges and division lines meet its two edges from the corner nearest you, as they meet the sides there
-    if (upright && Math.abs(d3(n3(r.U), UP3)) < 1e-6 && Math.abs(d3(n3(r.V), UP3)) < 1e-6) {
-      for (let j = -e; j <= r.nU + e; j++) out.push({ p: a3(r.O, m3(r.U, j / r.nU)), j });
-      for (let j = -e; j <= r.nV + e; j++) if (j) out.push({ p: a3(r.O, m3(r.V, j / r.nV)), j });
-    }
+  const rects = surfacesAlong(bx, g, b3, dir), e = rects.length === 1 ? extra : 0;
+  return rects.flatMap(r => spotsOn(r, dir, e));
+}
+// The chosen surfaces (as surfaceRect has them) with lines along `dir`
+function surfacesAlong(bx, g, b3, dir) { return raySnapIds(bx, g).map(id => surfaceRect(bx, b3, id)).filter(r => r && spotsOn(r, dir, 0).length); }
+// One surface's points for the lines along `dir`, with e more past it at each end
+function spotsOn(r, dir, e) {
+  const out = [], upright = Math.abs(d3(n3(dir), UP3)) > 0.999;
+  for (const [along, across, n] of [[r.U, r.V, r.nV], [r.V, r.U, r.nU]]) {
+    if (!(l3(along) > 1e-12) || Math.abs(d3(n3(along), n3(dir))) < 0.999) continue;
+    for (let j = -e; j <= n + e; j++) out.push({ p: a3(r.O, m3(across, j / n)), j });
+  }
+  // A top, bottom or plane across the height has no upright lines of its own: the lines up and down stand where its
+  // edges and division lines meet its two edges from the corner nearest you, as they meet the sides there
+  if (upright && Math.abs(d3(n3(r.U), UP3)) < 1e-6 && Math.abs(d3(n3(r.V), UP3)) < 1e-6) {
+    for (let j = -e; j <= r.nU + e; j++) out.push({ p: a3(r.O, m3(r.U, j / r.nU)), j });
+    for (let j = -e; j <= r.nV + e; j++) if (j) out.push({ p: a3(r.O, m3(r.V, j / r.nV)), j });
   }
   return out;
 }
 // The direction a VP's lines run in, in box3's frame
-// (for the panel: is the selected box spacing the rays, and on how many surfaces)
+// (for the panel: is the selected box spacing the rays)
 const rayFitOn = () => !!(state.boxes[state.sel] && state.boxes[state.sel].rayFit);
-const snapCount = () => { const fit = rayBox(); return fit ? raySnapIds(fit, geo()).length : 0; };
+// How many of the chosen surfaces have lines running the way `dirOf` gives (from the view and box3): with just one, those
+// lines carry on past the box and their count says how far
+const snapSources = dirOf => { const fit = rayBox(); if (!fit) return 0; const g = geo(), b3 = box3(fit, g); return surfacesAlong(fit, g, b3, dirOf(g, b3)).length; };
 const rayDir = (vi, g, cam) => (g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? cam.axes[1] : vi === 2 ? UP3 : cam.axes[0]);
 // The box VP vi's rays snap to, if the surfaces chosen have lines running to it (with none, its rays keep their own
 // spacing); and the box the vertical guides (or 1-point's horizontal ones, `upright` false) snap to
@@ -3294,7 +3301,7 @@ const schema = [
     // verticals as rays, under VP3 or Up & down)
     { guide: true, t: "readout", label: () => `Verticals spaced along ${rayBox().name}`, text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the upright edges and division lines of the faces and planes chosen under Rays snap to (for a top, bottom or plane across the height, where its edges and division lines meet its two edges nearest you); with one face or plane chosen they carry on past it, with more they stay within the box. Turn that off under Boxes to space them here again.`, when: () => !!guideFit(true) },
     { guide: true, t: "checks", items: [{ bind: "verticals.show", label: "Show" }] },
-    { guide: true, t: "range", bind: "verticals.count", label: () => (guideFit(true) ? "Lines past the box at each end" : "Lines each side of the middle"), when: () => !guideFit(true) || snapCount() === 1, min: 0, max: 80, step: 1, hi: 400 },
+    { guide: true, t: "range", bind: "verticals.count", label: () => (guideFit(true) ? "Lines past the box at each end" : "Lines each side of the middle"), when: () => !guideFit(true) || snapSources(() => UP3) === 1, min: 0, max: 80, step: 1, hi: 400 },
     { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !guideFit(true) },
     { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !guideFit(true) },
     { guide: true, t: "sub", label: "Pattern and styles" },
@@ -3306,7 +3313,7 @@ const schema = [
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
     { t: "readout", label: () => `Horizontals spaced along ${rayBox().name}`, text: () => `The horizontals are spaced along ${rayBox().name}, like the rays: they run along the level lines, across the picture, of the faces and planes chosen under Rays snap to; with one face or plane chosen they carry on past it, with more they stay within the box. Turn that off under Boxes to space them here again.`, when: () => !!guideFit(false) },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
-    { t: "range", bind: "horizontals.count", label: () => (guideFit(false) ? "Lines past the box at each end" : "Lines above and below"), when: () => !guideFit(false) || snapCount() === 1, min: 0, max: 80, step: 1, hi: 400 },
+    { t: "range", bind: "horizontals.count", label: () => (guideFit(false) ? "Lines past the box at each end" : "Lines above and below"), when: () => !guideFit(false) || snapSources((g, b3) => b3.cam.axes[0]) === 1, min: 0, max: 80, step: 1, hi: 400 },
     { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !guideFit(false) },
     { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !guideFit(false) },
     { t: "color", bind: "horizontals.color", label: "Color" },
@@ -3333,7 +3340,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
     // the face (or plane) the rays snap to
     { t: "multi", bind: "boxes.$b.raySnap", label: "Rays snap to", options: () => snapChoices(), get: () => { const bx = state.boxes[state.sel]; return bx ? raySnapIds(bx, geo()) : []; }, set: (id, on) => setSnap(id, on), when: rayFitOn },
-    { t: "note", html: "Tick the faces (and, once the box has subdividing planes, the planes) the rays snap to: they run through the edges and division lines of each, each VP's through the lines running to it and the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones, or for a top, bottom or plane across the height, where its edges and division lines meet its two edges nearest you. With one ticked, the rays carry on past it to the sides, as many at each end as each VP's count says; with more, they cross just those faces and planes and stop at the box. A VP with no lines on what's ticked keeps its own spacing.", when: rayFitOn },
+    { t: "note", html: "Tick the faces (and, once the box has subdividing planes, the planes) the rays snap to: they run through the edges and division lines of each, each VP's through the lines running to it and the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones, or for a top, bottom or plane across the height, where its edges and division lines meet its two edges nearest you. Where just one of those ticked has lines running to a VP, its rays carry on past it to the sides, as many at each end as its count says (so with the two front faces ticked, each VP's rays run on from its own face); where more than one has, they cross just those faces and planes and stop at the box. The vertical guides go the same way, by how many ticked have lines up and down. A VP with no lines on what's ticked keeps its own spacing.", when: rayFitOn },
     { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays below the horizon continue the division lines across its bottom instead, and the rays above it the ones across its top (a box below eye level has only the first, one above it only the second), and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden. Front faces, even hidden, works like Vertical faces but stays on the front faces when they're hidden.", when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: hasBox },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
@@ -3451,7 +3458,7 @@ function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); f
 // The rays section shows the chosen tab's rows: a VP's own and its rays, or with Verticals the vertical guides (the
 // rows above the tabs show with all of them)
 { const sec = schema.find(s => s.id === "vps"); sec.rows.forEach(r => { if (r.t === "seg" || r.top) return; const w = r.when, g = !!r.guide; r.when = () => guidesTab() === g && (!w || w()); }); }
-{ const r = schema.find(s => s.id === "vps").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!fitFor(ui.vp)) && !(fitFor(ui.vp) && snapCount() > 1) && (!w || w()); }
+{ const r = schema.find(s => s.id === "vps").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!fitFor(ui.vp)) && !(fitFor(ui.vp) && snapSources((g, b3) => rayDir(ui.vp, g, b3.cam)) > 1) && (!w || w()); }
 
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
@@ -3807,7 +3814,7 @@ function syncToolbar() {
   document.getElementById("tbMode").value = modeKey();
   const reset = document.getElementById("tbReset"), name = "Reset " + modeName().toLowerCase();
   reset.setAttribute("aria-label", name);
-  reset.title = name + ": everything back to its defaults (the horizon, vanishing points and lenses, rays, guides, colors, snapping and the export settings), staying in this view, on an 11 × 8.5 in page with one box in the middle, the rays snapping to it, all in one style. Undo (Ctrl/⌘ Z) brings back what was there.";
+  reset.title = name + ": everything back to its defaults (the horizon, vanishing points and lenses, rays, guides, colors, snapping and the export settings), staying in this view, on an 11 × 8.5 in page with one box in the middle, the rays snapping to it (in 2- and 3-point, each VP's to the front face running to it), all in one style. Undo (Ctrl/⌘ Z) brings back what was there.";
   document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
 
@@ -4026,8 +4033,8 @@ function resetAll() {
 // rays, guides, colors, snapping and the export settings, with the VPs pushed out past the page if they'd land on it, and
 // in place of the boxes the box a new drawing starts with, in the middle of the page and taking up about a quarter of it.
 // Reset's own starting point differs from a new drawing's in three ways: the page is Letter on its side (11 × 8.5 in),
-// every VP's rays are in one style (pattern A), and the rays are spaced along the box, snapping to the face you look at most
-// squarely, as ticking it in the panel would.
+// every VP's rays are in one style (pattern A), and the rays are spaced along the box: in 2- and 3-point each VP's along the
+// front face running to it, elsewhere the face you look at most squarely, as ticking it in the panel would.
 // One undo brings it all back.
 function resetPerspective() {
   const d = defaultState(); d.mode = state.mode; d.curvi.style4 = state.curvi.style4;
@@ -4048,9 +4055,11 @@ function resetPerspective() {
   for (let i = 0; i < 4; i++) { fitBox(bx, dims, mid, size, g); const c = cover(); if (!(c > 0) || Math.abs(c - 0.25) < 0.005) break; size *= Math.sqrt(0.25 / c); }
   captureFit(bx, g);
   s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null; latch = null; closeFaces();
-  // (to the face a tick in the panel starts with, the one you look at most squarely: its rays carry on past it above and below
-  // the horizon, where a top or bottom seen nearly edge-on would crowd them into a band beside it)
-  bx.rayFit = true; bx.raySnap = { [squarestFace(bx, g)]: true };
+  // (in 2- and 3-point, to both front faces, each VP's rays running on from the face whose lines run to it; elsewhere to the
+  // face a tick in the panel starts with, the one you look at most squarely. Either way the rays carry on past the box above
+  // and below the horizon, where a top or bottom seen nearly edge-on would crowd them into a band beside it.)
+  const fronts = homeGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
+  bx.rayFit = true; bx.raySnap = Object.fromEntries(((s.mode === "2pt" || s.mode === "3pt") && fronts.length ? fronts : [squarestFace(bx, g)]).map(id => [id, true]));
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch(); fitView();
   toast(`Reset ${modeName().toLowerCase()}: everything is back to its defaults. Undo brings back what was there.`);
