@@ -78,7 +78,7 @@ Choose the mode from the perspective dropdown on the toolbar, which lists 4-poin
 
 ## Shapes
 
-**Add shape**, the dropdown at the start of the toolbar (where Add box was), adds a box or one of twelve other shapes, each where a new box would land. B still adds a box.
+At the start of the toolbar, a dropdown chooses a shape and the **+** joined to it adds one, where a new box would land: press it again for another of the same. The dropdown lists a box and twelve other shapes, then, under **Imported**, the models that have been imported (below), so the + adds another of one of those too. B still adds a box.
 
 - **Sphere** and **Hemisphere**
 - **Cylinder** and **Tube** (a hollow one)
@@ -108,7 +108,7 @@ A shape is made from its kind and that one number, so a drawing only keeps those
 
 ## Importing 3D models
 
-**Import 3D model…**, under Boxes, brings in a model from a file, as does dropping the file on the page. It reads:
+**Import**, on the toolbar beside the shape dropdown, brings in a model from a file, as does dropping the file on the page. The model is added to the drawing, and it joins the dropdown under Imported, already chosen, so the + adds another of it (they share the one mesh). It reads:
 
 - **OBJ** (faces of any number of sides, counted from the start or back from the end)
 - **STL**, text or binary
@@ -131,7 +131,7 @@ A model arrives in a box of its own, which it fills. The box is the model's boun
 
 A model's surfaces, the areas its creases bound, can each be picked and edited on their own (shown or hidden, its own color, opacity and edges), just as a shape's can: see Shapes above.
 
-Triangles are drawn furthest first, so nearer parts cover what's behind them, and a line is covered where a nearer part hides it. A model is never mirrored, whichever way round its box was built. One with more than 60,000 triangles is thinned to under that when it's imported, so it stays quick to draw (about 40 ms a redraw at 50,000), and the message says from how many. Models are kept on the device beside the drawing (in the browser's IndexedDB, where it allows it), so they're there when the page is opened again, and they're written into a saved setup file; a drawing whose model isn't on the device shows its box with a note to import it again. They're in the PNG, JPG and PDF exports, as vectors in the PDF.
+Triangles are drawn furthest first, so nearer parts cover what's behind them, and a line is covered where a nearer part hides it. A model is never mirrored, whichever way round its box was built. One with more than 60,000 triangles is thinned to under that when it's imported, so it stays quick to draw (about 40 ms a redraw at 50,000), and the message says from how many. Models are kept on the device beside the drawing (in the browser's IndexedDB, where it allows it), so they're there when the page is opened again, in the drawing and in the dropdown: every model the drawing uses, and the last twelve imported that it doesn't (older ones go). They're written into a saved setup file; a drawing whose model isn't on the device shows its box with a note to import it again. They're in the PNG, JPG and PDF exports, as vectors in the PDF.
 
 ## Boxes keep their place, size and proportions
 
@@ -169,7 +169,11 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
   - **Edges:** a face's own edge color and weight drew on the edges it shares with plain faces, and on its own. The box's other edges drew exactly as before, and of two faces with their own edges, the first in front won.
   - **Saving and loading:** a face's own line count moved the rays spaced along the box. The settings lasted through saving and loading, with bad values dropped. An older save's O-key opacities opened as the faces' own, and a plane's settings went when its direction's count changed.
   - **Export:** the PDF exported with faces' own settings. No errors in the console.
-  - **Surfaces of shapes and models:**
+  - **Shape dropdown with its +, and Import, on the toolbar:**
+  - **Choosing and adding:** the dropdown listed Box and the twelve shapes and started on Box. Choosing Cone added nothing; the + added a cone, and another when pressed again, the dropdown still on Cone. Back on Box the + added a plain box, and B still added one.
+  - **Import:** the button opened the file chooser. An imported model was added to the drawing, listed under Imported and chosen, and the + added another that shared its mesh and its up axis. A second import was listed first and chosen.
+  - **Kept:** with one model in the drawing and fifteen more imported and taken out again, a reload listed thirteen: the one in use and the twelve most recent. Thirteen were on the device, none missing. One no longer in the drawing was added back from the list. No errors in the console.
+- **Surfaces of shapes and models:**
   - **Found right:** the shapes came out with the surfaces they should: sphere, torus and capsule 1; hemisphere and cone 2; cylinder and truncated cone 3 (Base, Curved surface, Top); tube 4; pyramid and wedge 5; six-sided prism 8; an eight-sided cylinder 10; the polyhedra 4, 8, 12, 20 and 32.
   - **Picking, with real pointer events on a cylinder:** hovering its side tinted it and the hint read Click to edit this surface. A click opened Curved surface · Cylinder 1 with Show, Opacity, Color, the Edges rows and Use the shape's settings, and none of the box's rows. Shift-click on the top made it 2 surfaces, and an opacity set went to both, undid and redid.
   - **Hiding:** unticking Show hid both. ⌘ over where the top had been found it and a ⌘-click brought it back, and Show all surfaces brought back the rest. With nothing picked, Shift-click hid the side.

@@ -59,6 +59,10 @@ body { background: var(--chrome); color: var(--ink); font-family: var(--f-ui); f
 .tb.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 .tb:disabled { opacity: .45; cursor: default; }
 select.tb { padding: 7px 6px; max-width: none; }
+/* (the shape dropdown and the + that adds it, joined as one control) */
+.tbjoin { display: inline-flex; }
+.tbjoin > select.tb { border-radius: 6px 0 0 6px; border-right-width: 0; max-width: 136px; text-overflow: ellipsis; }
+.tbjoin > button.tb { border-radius: 0 6px 6px 0; padding-inline: 11px; font-size: 16px; line-height: 12px; }
 .status {
   position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 10px; right: 12px;
   display: flex; gap: 14px; flex-wrap: wrap; pointer-events: none;
@@ -206,7 +210,8 @@ details.multi .multi-grp { font-size: 10px; letter-spacing: .08em; text-transfor
   <main class="stage" id="stage">
     <canvas id="cv" tabindex="0" aria-label="Perspective drawing canvas"></canvas>
     <div class="toolbar" role="toolbar" aria-label="Canvas tools">
-      <select class="tb primary" id="tbAdd" aria-label="Add a shape" title="Add a box or another shape (B adds a box)"></select>
+      <span class="tbjoin" role="group" aria-label="Add a shape"><select class="tb" id="tbShape" aria-label="Shape to add" title="The shape the + adds: a box, another shape, or a model you've imported"></select><button class="tb primary" id="tbAdd" type="button" aria-label="Add the chosen shape" title="Add the chosen shape (B adds a box)">+</button></span>
+      <button class="tb" id="tbImport" type="button" title="Import a 3D model from an OBJ, STL, PLY, OFF, glTF, 3MF or AMF file. It joins the shapes the + adds.">Import</button>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
       <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout, centered on the page (3-, 4-, 5- and 6-point)">Even out VPs</button>
@@ -556,7 +561,7 @@ try { const raw = localStorage.getItem(STORE_KEY); state = raw ? normalize(JSON.
 const freshStart = !state;
 if (!state) state = defaultState();
 
-const ui = { vp: 0, guides: false, resetArm: false, scales: {}, faces: [] }; // (faces: those picked to edit, each { bi, id })
+const ui = { vp: 0, guides: false, resetArm: false, scales: {}, faces: [], shape: "box" }; // (faces: those picked to edit, each { bi, id }; shape: what the toolbar's + adds)
 const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
@@ -2417,9 +2422,11 @@ const touch = () => { dirty = true; panelDirty = true; };
 // resizing the box does the same to the model, in every view, and everything a box can do still works on it. The mesh
 // itself is kept here, apart from the drawing (which only names it, in bx.model), so undo and the saved drawing stay
 // small; it's stored on this device beside the drawing, and written into a saved setup file.
-// A mesh: { name, pos: Float32Array of x y z as the file has them, idx: Uint32Array of triangles, thin: whether it was thinned }.
+// A mesh: { name, pos: Float32Array of x y z as the file has them, idx: Uint32Array of triangles, thin: whether it was
+// thinned, up: the axis its format usually has up, at: when it was imported }. The models imported stay on the device,
+// in use or not, for Add shape to offer again: the ones in the drawing, and the last KEEP_MODELS others.
 const meshes = new Map(), meshMissing = new Set(); // by id; and the ids whose mesh couldn't be found on this device
-const MAX_TRIS = 60000, MAX_MODEL_BYTES = 300 * 1048576;
+const MAX_TRIS = 60000, MAX_MODEL_BYTES = 300 * 1048576, KEEP_MODELS = 12;
 const MODEL_TYPES = { obj: "OBJ", stl: "STL", ply: "PLY", off: "OFF", glb: "glTF", gltf: "glTF", "3mf": "3MF", amf: "AMF" };
 const MODEL_ACCEPT = Object.keys(MODEL_TYPES).map(x => "." + x).join(",");
 
@@ -3163,23 +3170,40 @@ function meshDB(mode, work) {
     } catch (e) { done(null); }
   });
 }
-function keepMesh(id, m) { meshes.set(id, m); meshMissing.delete(id); return meshDB("readwrite", st => st.put({ name: m.name, pos: m.pos, idx: m.idx, thin: !!m.thin }, id)); }
-// The meshes the drawing names, fetched if they aren't here yet; and those nothing names any more, forgotten
+const upOf = v => (["x", "y", "z"].includes(v) ? v : "z");
+function keepMesh(id, m) {
+  m.up = upOf(m.up); m.at = Number.isFinite(m.at) ? m.at : Date.now();
+  meshes.set(id, m); meshMissing.delete(id);
+  return meshDB("readwrite", st => st.put({ name: m.name, pos: m.pos, idx: m.idx, thin: !!m.thin, up: m.up, at: m.at }, id));
+}
+const meshFrom = rec => ({ name: rec.name, pos: new Float32Array(rec.pos), idx: new Uint32Array(rec.idx), thin: !!rec.thin, up: upOf(rec.up), at: Number.isFinite(rec.at) ? rec.at : 0 });
+// The meshes the drawing names, fetched if they aren't here yet, then the other models kept on the device; and of those
+// not in the drawing, all but the last few imported are forgotten
+const namedMeshes = () => new Set(state.boxes.filter(b => b.model).map(b => b.model.id));
 async function loadMeshes() {
-  const want = [...new Set(state.boxes.filter(b => b.model).map(b => b.model.id))];
-  for (const id of want) {
+  for (const id of namedMeshes()) {
     if (meshes.has(id) || meshMissing.has(id) || /^shape-/.test(id)) continue;
     const rec = await meshDB("readonly", st => st.get(id));
-    if (rec && rec.pos && rec.idx) meshes.set(id, { name: rec.name, pos: new Float32Array(rec.pos), idx: new Uint32Array(rec.idx), thin: !!rec.thin }); else meshMissing.add(id);
+    if (rec && rec.pos && rec.idx) meshes.set(id, meshFrom(rec)); else meshMissing.add(id);
     touch();
   }
+  for (const id of (await meshDB("readonly", st => st.getAllKeys())) || []) {
+    if (meshes.has(id)) continue;
+    const rec = await meshDB("readonly", st => st.get(id));
+    if (rec && rec.pos && rec.idx) meshes.set(id, meshFrom(rec));
+  }
+  syncShapeList();
 }
-async function pruneMeshes() { const keys = await meshDB("readonly", st => st.getAllKeys()), want = new Set(state.boxes.filter(b => b.model).map(b => b.model.id)); for (const k of keys || []) if (!want.has(k) && !meshes.has(k)) await meshDB("readwrite", st => st.delete(k)); }
+async function pruneMeshes() {
+  const want = namedMeshes(), spare = [...meshes.entries()].filter(([id, m]) => !m.shape && !want.has(id)).sort((x, y) => y[1].at - x[1].at);
+  for (const [id] of spare.slice(KEEP_MODELS)) { meshes.delete(id); await meshDB("readwrite", st => st.delete(id)); }
+  syncShapeList();
+}
 // For a saved setup file: the meshes its boxes name, as text
 const bytesB64 = bytes => { let sOut = ""; for (let i = 0; i < bytes.length; i += 0x8000) sOut += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(sOut); };
 function packMeshes() {
   const out = {};
-  for (const b of state.boxes) { const m = modelOf(b); if (m && !m.shape && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
+  for (const b of state.boxes) { const m = modelOf(b); if (m && !m.shape && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, up: m.up, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
   return out;
 }
 function unpackMeshes(raw) {
@@ -3189,14 +3213,22 @@ function unpackMeshes(raw) {
       if (!/^[\w-]{4,40}$/.test(id) || !r || typeof r.pos !== "string" || typeof r.idx !== "string") continue;
       const pb = b64bytes(r.pos), ib = b64bytes(r.idx), pos = new Float32Array(pb.buffer.slice(0, pb.length - pb.length % 4)), idx = new Uint32Array(ib.buffer.slice(0, ib.length - ib.length % 4));
       if (!pos.length || idx.length < 3 || idx.length % 3 || idx.some(v => v >= pos.length / 3)) continue;
-      keepMesh(id, { name: typeof r.name === "string" ? r.name.slice(0, 80) : "Model", pos, idx, thin: !!r.thin });
+      keepMesh(id, { name: typeof r.name === "string" ? r.name.slice(0, 80) : "Model", pos, idx, thin: !!r.thin, up: r.up });
     } catch (e) { /* a mesh that can't be read is left out; its box says it's missing */ }
   }
 }
 
 // ---- Bringing one in ----
-// The file is read, tidied and kept, and a new box made for it: the model's proportions, about twice a new box's size,
-// its faces see-through and undivided so the model shows, and selected.
+// A box for a model kept here: the model's proportions, about twice a new box's size, its faces see-through and undivided
+// so the model shows, and selected. (Add shape's + makes another the same way.)
+function addModel(id) {
+  const m = meshes.get(id); if (!m) return;
+  const g = geo(), bx = makeBox(g, state.boxes.length), G0 = homeGeo(bx, g), sb = screenBox([...G0.B, ...G0.T]);
+  bx.name = m.name.slice(0, 28); bx.model = cleanModel({ id, name: m.name, up: m.up }); bx.ghost = 0; bx.div.on = false;
+  fitBox(bx, modelDims(bx, g), sb.c, sb.s * 1.8, g, boxPlace(bx, g)); captureFit(bx, g);
+  state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch();
+}
+// The file is read, tidied and kept, and a box made for it.
 async function importModel(file) {
   try {
     if (file.size > MAX_MODEL_BYTES) throw new Error("it is over " + Math.round(MAX_MODEL_BYTES / 1048576) + " MB");
@@ -3204,11 +3236,9 @@ async function importModel(file) {
     await new Promise(r => setTimeout(r, 30)); // (so the message shows before the work starts)
     const raw = await readModel(file.name, await file.arrayBuffer()), mesh = tidyMesh(raw.pos, raw.idx);
     const name = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 60) || "Model", id = "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    keepMesh(id, { name, pos: mesh.pos, idx: mesh.idx, thin: !!mesh.from });
-    const g = geo(), bx = makeBox(g, state.boxes.length), G0 = homeGeo(bx, g), sb = screenBox([...G0.B, ...G0.T]);
-    bx.name = name.slice(0, 28); bx.model = cleanModel({ id, name, up: raw.up }); bx.ghost = 0; bx.div.on = false;
-    fitBox(bx, modelDims(bx, g), sb.c, sb.s * 1.8, g, boxPlace(bx, g)); captureFit(bx, g);
-    state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch();
+    keepMesh(id, { name, pos: mesh.pos, idx: mesh.idx, thin: !!mesh.from, up: raw.up });
+    ui.shape = "model:" + id; syncShapeList(); // (it joins the shapes Add shape offers, and is the one chosen)
+    addModel(id);
     const n = mesh.idx.length / 3;
     toast(mesh.from ? `Imported ${name}: thinned from ${mesh.from.toLocaleString()} to ${n.toLocaleString()} triangles to keep drawing quick` : `Imported ${name}: ${n.toLocaleString()} triangles`);
   } catch (e) { toast(`Couldn't import ${file.name}: ${e && e.message ? e.message : "it can't be read"}`); }
@@ -4204,8 +4234,7 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
-    { t: "btns", items: [["Import 3D model…", pickModel, ""]] },
-    { t: "note", html: "Add shape, on the toolbar, adds a box or another shape: a sphere, hemisphere, cylinder, tube, cone, truncated cone, pyramid, prism, wedge, torus, capsule or polyhedron. Each sits in a box of its own, which it fills, like a model. Import 3D model brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF or AMF file, or drop the file on the page. It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. Models are kept on this device and written into a saved setup file." },
+    { t: "note", html: "On the toolbar, choose a shape from the dropdown and press the + beside it to add one: a box, sphere, hemisphere, cylinder, tube, cone, truncated cone, pyramid, prism, wedge, torus, capsule or polyhedron. Each sits in a box of its own, which it fills, like a model. Import, next to it, brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF or AMF file, or drop the file on the page. It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. A model that's been imported joins the dropdown, under Imported, so the + adds another of it. Models are kept on this device (those in the drawing, and the last " + KEEP_MODELS + " others) and written into a saved setup file." },
     { t: "sub", label: "3D model", when: () => hasModel() && !shapeHere() },
     { t: "sub", label: "Shape", when: () => !!shapeHere() },
     { t: "readout", label: () => (shapeHere() ? "About this shape" : modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
@@ -4599,7 +4628,7 @@ function makeRow(r) {
       update = () => {
         const order = drawOrder(geo()).reverse(), many = order.length > 1;
         const s = JSON.stringify([order, state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
-        if (!state.boxes.length) { node.append(el("div", { class: "row note" }, infoButton("Add one with Add box, or pick a shape from Add shape on the toolbar, and it lands below the horizon, ready to drag.", "No boxes yet"))); return; }
+        if (!state.boxes.length) { node.append(el("div", { class: "row note" }, infoButton("Add one with Add box, or choose a shape on the toolbar and press the + beside it, and it lands below the horizon, ready to drag.", "No boxes yet"))); return; }
         const put = (at, slot) => { const list = [...order], [i] = list.splice(at, 1); list.splice(slot > at ? slot - 1 : slot, 0, i); if (list.join() !== order.join()) stackBoxes(list); };
         if (many) node.append(el("span", { class: "stack-end" }, "Front"));
         order.forEach((i, at) => {
@@ -5573,10 +5602,23 @@ window.addEventListener("keydown", e => { if (e.key === "Escape" && !facePop.hid
 document.addEventListener("pointerdown", e => { if (!facePop.hidden && !facePop.contains(e.target) && e.target !== canvas && !ringEntry.contains(e.target)) closeFaces(); }, true);
 
 /* ---------- toolbar ---------- */
-// Add shape: a box, or one of the other shapes, each in a box of its own
-const tbAdd = document.getElementById("tbAdd");
-tbAdd.append(el("option", { value: "", disabled: "disabled", selected: "selected" }, "Add shape"), el("option", { value: "box" }, "Box"), ...Object.entries(SHAPES).map(([k, S]) => el("option", { value: k }, S.name)));
-tbAdd.addEventListener("change", () => { const kind = tbAdd.value; tbAdd.value = ""; if (kind) addShape(kind); });
+// Add shape: the dropdown chooses a box, one of the other shapes, or a model that's been imported, and the + joined to it
+// adds one, in a box of its own. Import brings a model in from a file, which adds it and puts it in the list.
+const tbShape = document.getElementById("tbShape");
+function syncShapeList() {
+  const models = [...meshes.entries()].filter(([, m]) => !m.shape).sort((x, y) => y[1].at - x[1].at), sig = JSON.stringify(models.map(([id, m]) => [id, m.name]));
+  if (tbShape.dataset.sig !== sig) {
+    tbShape.dataset.sig = sig; tbShape.innerHTML = "";
+    tbShape.append(el("option", { value: "box" }, "Box"), ...Object.entries(SHAPES).map(([k, S]) => el("option", { value: k }, S.name)));
+    if (models.length) tbShape.append(el("optgroup", { label: "Imported" }, ...models.map(([id, m]) => el("option", { value: "model:" + id }, m.name))));
+  }
+  if (![...tbShape.options].some(o => o.value === ui.shape)) ui.shape = "box";
+  tbShape.value = ui.shape;
+}
+syncShapeList();
+tbShape.addEventListener("change", () => { ui.shape = tbShape.value; });
+document.getElementById("tbAdd").addEventListener("click", () => { if (ui.shape.startsWith("model:")) addModel(ui.shape.slice(6)); else addShape(ui.shape); });
+document.getElementById("tbImport").addEventListener("click", pickModel);
 document.getElementById("tbFit").addEventListener("click", fitView);
 document.getElementById("tbEven").addEventListener("click", evenVPs);
 document.getElementById("tbReset").addEventListener("click", resetPerspective);
