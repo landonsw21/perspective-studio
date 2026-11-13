@@ -115,6 +115,13 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .info:hover .i, .info[aria-expanded="true"] .i { border-color: var(--accent); background: var(--accent-soft); }
 #infoTip { position: fixed; z-index: 60; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; padding: 9px 11px; box-shadow: 0 6px 20px rgb(0 0 0 / .2); font: 400 12px/1.45 var(--f-ui); }
 #infoTip p { margin: 0; } #infoTip p + p { margin-top: 6px; }
+#opPop { position: fixed; z-index: 61; box-sizing: border-box; width: 232px; display: grid; gap: 8px; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; padding: 9px 11px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); font: 400 12px/1.3 var(--f-ui); }
+#opPop .op-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#opPop .op-head { font-weight: 600; }
+#opPop .btn { padding: 4px 8px; font-size: 11px; }
+#opPop .op-row { display: flex; align-items: center; gap: 6px; }
+#opPop input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+#opPop .num { width: 52px; }
 #infoTip code { font-family: var(--f-data); font-size: 11px; }
 .ph .title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .note code { font-family: var(--f-data); font-size: 11px; color: var(--ink); }
@@ -392,7 +399,7 @@ const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, 
 // direction: 0 across the width, 1 the length, 2 the height; -1 for a face. Loading a setup needs them, so they're here.)
 const PLANES_MAX = 10;
 const planeAxis = id => (/^[xyz]\d+$/.test(id) ? "xyz".indexOf(id[0]) : -1);
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, ghost: 0.3, opacity: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -475,9 +482,15 @@ function normalize(s) {
     const o = deepMerge(boxDefaults(), b), raw = b.div && typeof b.div === "object" ? b.div : {};
     // division lines saved before they had a pattern had one color, weight and opacity, which become A's
     loadPattern(o.div, raw.styles && typeof raw.styles === "object" ? raw.styles : { A: { color: raw.color, width: raw.width, opacity: raw.opacity } }, divDefaults().styles);
+    // From the box as saved, what merging with the defaults would leave out: boxes were solid, ghosted or wireframes, and
+    // solid ones open fully opaque and wireframes see-through, at either end of the one opacity there is now; and the
+    // faces' and planes' own opacities, by id
+    if (b.mode === "solid") o.ghost = 1; else if (b.mode === "wire") o.ghost = 0;
+    o.opacity = b.opacity && typeof b.opacity === "object" ? Object.fromEntries(Object.entries(b.opacity).filter(([k, v]) => /^(s01|s12|s23|s30|top|bottom|[xyz][1-9])$/.test(k) && Number.isFinite(v)).map(([k, v]) => [k, Math.max(0, Math.min(1, v))])) : {};
     return o;
   });
   out.boxes.forEach(b => {
+    b.ghost = Number.isFinite(b.ghost) ? Math.max(0, Math.min(1, b.ghost)) : 0.3;
     if (![0, 1, 2, 3].includes(b.anchor)) b.anchor = 0;
     if (!(b.h > 0)) b.h = 220;
     if (!["sides", "front", "caps"].includes(b.rayFaces)) b.rayFaces = "sides";
@@ -2017,16 +2030,20 @@ function drawBox(c, bx, g, k, skip = null) {
   const sortOut = runs => { const o = { seen: [], hidden: [] }; runs.forEach(([q0, q1, span]) => { const r = split(q0, q1, span); o.seen.push(...r.seen); o.hidden.push(...r.hidden); }); seenLines.push(...o.seen); return o.hidden; };
   const faceRuns = f => { const v = FACES.find(x => x.id === f.id).v; return v.map((cn, e) => [cornerSpot(cn), cornerSpot(v[(e + 1) % 4]), 1]); };
   const pieceRuns = p => drawn(p).map(sd => [sd.q[0], sd.q[1], sd.span]);
-  // each run's hidden part: dashed now through a see-through box, or over everything at the end of a solid one
-  const hiddenEdges = runs => { const h = sortOut(runs); if (solid) dashLater.push(...h); else { c.setLineDash(dash); strokeLines(h); } };
+  // each run's hidden part: dashed now, seen through the faces in front, and kept to dash again over them at the end
+  const hiddenEdges = runs => { const h = sortOut(runs); c.setLineDash(dash); strokeLines(h); dashLater.push(...h); };
   const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
   c.lineJoin = "round"; c.lineCap = "round";
-  const solid = bx.mode === "solid", wire = bx.mode === "wire";
-  // A ghosted box firms up toward solid as its opacity rises: at full opacity the faces behind (seen through
-  // a hidden face) are as opaque as the front
-  const firm = bx.mode === "ghost" ? Math.min(1, Math.max(0, bx.ghost)) ** 4 : 0, ghostly = (v, full) => (solid ? full : v + (full - v) * firm);
+  // A box is drawn ghosted at its opacity, from see-through (0, a wireframe) to opaque (1, solid); a face or plane given
+  // its own opacity (hold O and click it) takes that instead. It firms up toward solid as its opacity rises: at full
+  // opacity the faces behind (seen through a hidden face) are as opaque as the front.
+  const op = id => { const o = bx.opacity && bx.opacity[id]; return Number.isFinite(o) ? o : Math.min(1, Math.max(0, bx.ghost)); };
+  const firm = op("") ** 4, ghostly = (v, full) => v + (full - v) * firm, behind = id => { const o = op(id); return o * 0.6 + (1 - o * 0.6) * o ** 4; };
+  // (hidden edges seen through the faces are dashed as they're drawn; once a face in front is near opaque, they're dashed
+  // over it too, faintly, as a solid box's were)
+  const over = Math.max(0, ...fronts.map(f => op(f.id))) ** 4;
   for (const f of backs) {
-    if (!wire) fill(f, ghostly(bx.ghost * 0.6, 1), f.shade * 0.72);
+    if (behind(f.id) > 0) fill(f, behind(f.id), f.shade * 0.72);
     drawDivisions(c, f, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
@@ -2035,7 +2052,7 @@ function drawBox(c, bx, g, k, skip = null) {
   }
   // the planes, inside, as the faces behind them are: seen through the faces in front, or where those are hidden
   for (const p of planes) {
-    if (!wire) fill(p, ghostly(bx.ghost * 0.6, 1), p.shade * 0.85);
+    if (behind(p.id) > 0) fill(p, behind(p.id), p.shade * 0.85);
     if (bx.div.planes) drawDivisions(c, p.div, bx, k, ghostly(0.45, 1), near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = ghostly(0.75, 1);
@@ -2043,14 +2060,14 @@ function drawBox(c, bx, g, k, skip = null) {
     else { c.setLineDash([]); planeEdges(p); }
   }
   for (const f of fronts) {
-    if (!wire) fill(f, solid ? 1 : bx.ghost, f.shade);
+    if (op(f.id) > 0) fill(f, op(f.id), f.shade);
     drawDivisions(c, f, bx, k, 1, near);
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
     c.globalAlpha = 1; c.setLineDash([]); edges(f);
   }
   if (split) {
     c.strokeStyle = bx.stroke; c.lineWidth = lw; c.globalAlpha = 1; c.setLineDash([]); strokeLines(seenLines);
-    if (solid) { c.globalAlpha = 0.45; c.setLineDash(dash); c.lineWidth = lw * 0.75; strokeLines(dashLater); }
+    if (over > 0.01) { c.globalAlpha = 0.45 * over; c.setLineDash(dash); c.lineWidth = lw * 0.75; strokeLines(dashLater); }
   }
   c.globalAlpha = 1; c.setLineDash([]);
 }
@@ -2161,6 +2178,14 @@ function frame() {
   // held, the face under the pointer is drawn the same way, as it would be once a Shift-click hides it.
   const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && surfaceGeo(hb, g, hover.face);
   if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
+  // the faces and planes picked for their opacity, outlined while the slider's up
+  if (!opPop.hidden) for (const { bi, id } of opPick) {
+    const pb = state.boxes[bi], f = pb && surfaceGeo(pb, g, id); if (!f) continue;
+    const trace = pl => pl.forEach((p, i) => { const q = toS(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+    ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.globalAlpha = 0.95;
+    for (const poly of f.fills) { ctx.beginPath(); trace(poly); ctx.closePath(); ctx.stroke(); }
+    ctx.restore();
+  }
   // selected box handles
   const bx = state.boxes[state.sel];
   if (bx) {
@@ -3204,7 +3229,7 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold O and click faces or planes, on any box, to pick them and set their own opacity on the slider that comes up (O-click one again to drop it); hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -3220,8 +3245,7 @@ const schema = [
     { t: "multi", bind: "boxes.$b.raySnap", label: "Rays snap to", options: () => snapChoices(), get: () => { const bx = state.boxes[state.sel]; return bx ? raySnapIds(bx, geo()) : []; }, set: (id, on) => setSnap(id, on), when: rayFitOn },
     { t: "note", html: "Tick the faces (and, once the box has subdividing planes, the planes) the rays snap to: they run through the edges and division lines of each, each VP's through the lines running to it and the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones. With one ticked, the rays carry on past it to the sides, as many at each end as each VP's count says; with more, they cross just those faces and planes and stop at the box. A VP with no lines on what's ticked keeps its own spacing.", when: rayFitOn },
     { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays below the horizon continue the division lines across its bottom instead, and the rays above it the ones across its top (a box below eye level has only the first, one above it only the second), and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden. Front faces, even hidden, works like Vertical faces but stays on the front faces when they're hidden.", when: hasBox },
-    { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
-    { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
+    { t: "range", bind: "boxes.$b.ghost", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: hasBox },
     { t: "check", bind: "boxes.$b.dashHidden", label: "Show hidden edges as dashes", when: hasBox },
     { t: "color", bind: "boxes.$b.stroke", label: "Edge color", when: hasBox },
     { t: "color", bind: "boxes.$b.fill", label: "Face color", when: hasBox },
@@ -3674,6 +3698,7 @@ function rayTabs() {
 function refreshPanel() {
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   for (const [sec, det] of sections) det.hidden = !sec.when();
+  syncOpacity();
   for (const [sec, sum] of titled) { const t = titleOf(sec); if (sum.textContent !== t) sum.textContent = t; }
   for (const { r, node, update } of rows) {
     const show = r.when ? r.when() : true;
@@ -4045,6 +4070,7 @@ function showHover(h) {
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
+  if (oHeld) { const on = (h.type === "body" || h.type === "hide") && h.face; canvas.style.cursor = on ? "pointer" : "default"; document.getElementById("stHint").textContent = on ? `Click to pick this ${what} for its opacity · click more with O held to add them` : "Hold O and click faces or planes to set their opacity"; return; }
   document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) showHover(hitTest(lastPos, faceReach(e))); };
@@ -4083,6 +4109,11 @@ canvas.addEventListener("pointerdown", e => {
   }
   if (pointers.size > 2) return;
   const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
+  if (oHeld) {
+    // an O-click picks the face or plane under the pointer for its opacity (one you can see), or drops it
+    if ((hit.type === "body" || hit.type === "hide") && hit.face && surfaceShown(state.boxes[hit.bi], hit.face)) togglePick(hit.bi, hit.face, s);
+    return;
+  }
   if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && (hit.type === "hide" || hit.type === "body"))) {
     // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
     const b = state.boxes[hit.bi]; setSurfaceShown(b, hit.face, hit.type === "hidden"); state.sel = hit.bi; commit(); touch();
@@ -4117,12 +4148,13 @@ canvas.addEventListener("pointerdown", e => {
     const { cam, B, H } = box3(bx, g), T = turnFrame(bx, g);
     const c0 = m3([...B, ...B.map(p => a3(p, m3(UP3, H)))].reduce(a3, V3(0, 0, 0)), 1 / 8);
     // Snapping goes by the corner you can see that's nearest where you took hold, top or bottom, wherever a turned box has
-    // put it: the corners of the faces turned toward you, or with the box ghosted, a wireframe or a face toward you
-    // hidden, any corner (you see them all through it)
+    // put it: the corners of the faces turned toward you, or with a face toward you see-through or hidden, any corner (you
+    // see them all through it)
     const Bc = turned(bx) ? T.B : B, Tc = turned(bx) ? T.T : B.map(p => a3(p, m3(UP3, H)));
     const corner3 = n => (n[0] === "b" ? Bc : Tc)[+n[1]], mid3 = m3([...Bc, ...Tc].reduce(a3, V3(0, 0, 0)), 1 / 8);
     const toward = FACES.filter(f => { const fc = m3(f.v.map(corner3).reduce(a3, V3(0, 0, 0)), 1 / 4); return d3(s3(fc, mid3), fc) < 0; });
-    const seeThrough = bx.mode !== "solid" || toward.some(f => bx.faces[f.id] === false);
+    const faceOp = id => { const o = bx.opacity && bx.opacity[id]; return Number.isFinite(o) ? o : bx.ghost; };
+    const seeThrough = toward.some(f => bx.faces[f.id] === false || faceOp(f.id) < 0.999);
     const names = seeThrough ? ["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"] : [...new Set(toward.flatMap(f => f.v))];
     const onScreen = q => { const p = cam.proj(q); return len(sub(P(p.x, p.y), w)); };
     const corner = names.map(corner3).reduce((a, q) => (onScreen(q) < onScreen(a) ? q : a));
@@ -4355,7 +4387,58 @@ window.addEventListener("keydown", e => {
   else if (e.key === "f" || e.key === "F") fitView();
   else if (e.key === "b" || e.key === "B") addBox();
   else if (e.key === "s" || e.key === "S") { state.snap.on = !state.snap.on; commit(); touch(); }
+  else if ((e.key === "o" || e.key === "O") && !e.metaKey && !e.ctrlKey && !e.altKey) { if (!oHeld) { oHeld = true; if (lastPos && !drag) showHover(hitTest(lastPos, faceReach(e))); } }
 });
+
+/* ---------- the opacity of faces picked with O ---------- */
+// Hold O and click a face or plane (one you can see) to pick it, and more to add them, on any box; an O-click on one
+// already picked drops it. A slider comes up beside the click and sets the picked ones' own opacity, which takes the
+// place of their box's. Escape, or a click anywhere else, puts it away.
+let oHeld = false, opPick = []; // (each { bi, id })
+const opPop = el("div", { id: "opPop", role: "dialog", "aria-label": "Opacity of the faces picked" });
+const opHead = el("span", { class: "op-head" }), opRange = el("input", { type: "range", min: "0", max: "100", step: "1", "aria-label": "Opacity" });
+const opNum = el("input", { type: "number", class: "num", min: "0", max: "100", step: "1", "aria-label": "Opacity, percent" });
+const opReset = el("button", { type: "button", class: "btn" }, "Use the box's");
+opPop.append(el("div", { class: "op-top" }, opHead, opReset), el("div", { class: "op-row" }, opRange, opNum, el("span", { class: "unit" }, "%")));
+opPop.hidden = true; document.body.append(opPop);
+const pickValid = () => { opPick = opPick.filter(({ bi, id }) => state.boxes[bi] && (planeAxis(id) < 0 || planeIdsOf(state.boxes[bi]).includes(id))); };
+const pickOpacity = () => { const { bi, id } = opPick[0], bx = state.boxes[bi], o = bx.opacity[id]; return Number.isFinite(o) ? o : bx.ghost; };
+function syncOpacity() {
+  if (opPop.hidden) return;
+  pickValid(); if (!opPick.length) { closeOpacity(); return; }
+  const v = Math.round(pickOpacity() * 100), n = opPick.length, planes = opPick.filter(p => planeAxis(p.id) >= 0).length;
+  opHead.textContent = `Opacity · ${n === 1 ? (planes ? "1 plane" : "1 face") : `${n} ${planes === n ? "planes" : planes ? "faces and planes" : "faces"}`}`;
+  if (document.activeElement !== opRange) opRange.value = String(v);
+  if (document.activeElement !== opNum) opNum.value = String(v);
+}
+function setPicked(v) {
+  const o = Math.max(0, Math.min(1, v / 100));
+  for (const { bi, id } of opPick) state.boxes[bi].opacity[id] = o;
+  touch(); redraw();
+}
+opRange.addEventListener("input", () => { setPicked(+opRange.value); opNum.value = opRange.value; });
+opRange.addEventListener("change", () => commit());
+opNum.addEventListener("change", () => { const v = Math.max(0, Math.min(100, Math.round(+opNum.value || 0))); setPicked(v); opRange.value = String(v); commit(); });
+opReset.addEventListener("click", () => { for (const { bi, id } of opPick) delete state.boxes[bi].opacity[id]; commit(); touch(); redraw(); syncOpacity(); });
+function closeOpacity() { opPop.hidden = true; opPick = []; redraw(); }
+// beside screen point s on the canvas, kept on screen
+function openOpacity(s) {
+  const r = canvas.getBoundingClientRect(); opPop.hidden = false; syncOpacity();
+  const w = opPop.offsetWidth, h = opPop.offsetHeight, x = r.left + s.x + 16, y = r.top + s.y + 16;
+  opPop.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px"; opPop.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
+}
+function togglePick(bi, id, s) {
+  pickValid();
+  const k = opPick.findIndex(p => p.bi === bi && p.id === id);
+  if (k >= 0) opPick.splice(k, 1); else opPick.push({ bi, id });
+  if (opPick.length) openOpacity(s); else closeOpacity();
+  redraw();
+}
+window.addEventListener("keyup", e => { if (e.key === "o" || e.key === "O") { oHeld = false; if (lastPos && !drag) showHover(hitTest(lastPos, faceReach(e))); } });
+window.addEventListener("blur", () => { oHeld = false; });
+// Escape puts it away (and goes no further); so does a press anywhere but on it or an O-click on the canvas
+window.addEventListener("keydown", e => { if (e.key === "Escape" && !opPop.hidden) { closeOpacity(); e.stopImmediatePropagation(); } }, true);
+document.addEventListener("pointerdown", e => { if (!opPop.hidden && !opPop.contains(e.target) && !(oHeld && e.target === canvas)) closeOpacity(); }, true);
 
 /* ---------- toolbar ---------- */
 document.getElementById("tbAdd").addEventListener("click", addBox);
@@ -4377,7 +4460,7 @@ document.getElementById("tbExport").addEventListener("click", exportFile);
 if (freshStart) {
   const g = geo();
   const a = makeBox(g); a.name = "Box 1"; state.boxes.push(a);
-  const b = makeBox(g); b.name = "Box 2"; b.mode = "ghost"; b.fill = "#b9d4e4"; b.faces.top = false; b.h = 150;
+  const b = makeBox(g); b.name = "Box 2"; b.fill = "#b9d4e4"; b.faces.top = false; b.h = 150;
   const shift = P(-520, 40); b.b0 = add(b.b0, shift); b.b2 = add(b.b2, shift); state.boxes.push(b);
   state.sel = 0; lastSaved = JSON.stringify(state); persist(lastSaved);
 }
