@@ -122,7 +122,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 #facePop .fp-x:hover { color: var(--ink); border-color: var(--rule); }
 #facePop .fp-body { display: grid; gap: 7px; padding: 8px 11px 11px; }
 /* (sliders sit on one line with their label and number, to keep it short) */
-#facePop .row.range { grid-template-columns: 92px minmax(0, 1fr) 58px; }
+#facePop .row.range { grid-template-columns: 104px minmax(0, 1fr) 58px; }
 #facePop .row.range input[type=range] { grid-column: auto; order: 1; }
 #facePop .row.range .num { order: 2; width: 100%; }
 #facePop .pick .num { width: 52px; }
@@ -2082,8 +2082,8 @@ function drawBox(c, bx, g, k, skip = null) {
     for (const pts of f.fills) { c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); c.fill(); }
   };
   // A face's or plane's edges in their color, weight and opacity (`alpha` times theirs). An edge two faces share is drawn by
-  // both, unless a face has edges of its own: then by just one, the one with edges of its own, or failing that the one in
-  // front, so the edge shows in that face's look.
+  // both, unless either has edges of its own: then by just one, the one with edges of its own (if both have, the one in
+  // front), so the edge shows in that face's look.
   const dash = [6 / k, 4 / k];
   const pen = (id, alpha) => { const L = look(id); c.strokeStyle = L.stroke; c.lineWidth = Math.max(L.width, 0.6 / k); c.lineCap = "round"; c.globalAlpha = alpha * L.edgeOp; };
   const penKey = id => { const L = look(id); return L.stroke + " " + L.width + " " + L.edgeOp; };
@@ -2092,7 +2092,7 @@ function drawBox(c, bx, g, k, skip = null) {
   const draws = (f, e) => {
     if (plain) return true;
     const m = EDGE_MATE[f.id][e], mate = G.faces.find(x => x.id === m);
-    if (!vis(mate)) return true;
+    if (!vis(mate) || (!ownEdges(f.id) && !ownEdges(m))) return true;
     if (ownEdges(f.id) !== ownEdges(m)) return ownEdges(f.id);
     return f.front !== mate.front ? f.front : order(f.id) < order(m);
   };
@@ -4153,7 +4153,7 @@ const HINTS = {
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
   vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
-  ring: "Drag around the circle to rotate the box · click it to set the angle",
+  ring: "Drag around the circle to rotate the box · click it to type the angle",
   boxvp: "Drag to turn the box, its edges following this point · it catches on the horizon, hold Alt to stop that",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back",
@@ -4197,7 +4197,7 @@ function showHover(h) {
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
-  const body = () => `Click to edit this ${what} · drag to move the box${state.rotateFaces ? " · drag its circle to turn it" : ""} · Shift-click ${ui.faces.length ? "to edit it too" : "to hide it"}`;
+  const body = () => `Click to edit this ${what} · drag to move the box · Shift-click ${ui.faces.length ? "to edit it too" : "to hide it"}`;
   document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) { lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } };
@@ -4310,6 +4310,9 @@ canvas.addEventListener("pointermove", e => {
   }
   if (!drag) { lastPos = s; lastReach = faceReach(e); showHover(hitTest(s, lastReach)); return; }
   if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
+  // (a drag only ever moves things: one that follows straight on from the click that opened the face pop-up, as a tap and
+  // then a drag on a trackpad does, puts the pop-up away again)
+  if (!drag.moved && performance.now() - facesOpened < 500) closeFaces();
   drag.moved = true;
   const g = geo(), useSnap = state.snap.on && !e.altKey;
   snapMark = null;
@@ -4522,7 +4525,7 @@ window.addEventListener("keydown", e => {
 });
 
 /* ---------- editing faces ---------- */
-// Clicking a face or plane picks it to edit on its own, in a pop-up beside the click: whether it shows, the box's turn
+// Clicking a face or plane (a click, not a drag, which only moves the box) picks it to edit on its own, in a pop-up beside the click: whether it shows, the box's turn
 // around the axis through it, and the settings it can have of its own, each in place of its box's (its opacity and
 // color, its edges', and how it's divided, with its division lines' and diagonals' look). With one picked, Shift-click
 // more, on any box, to edit them together (Shift-click one again to drop it); with none, Shift-click still hides a face.
@@ -4559,7 +4562,7 @@ function turnPicked(k, v) {
 const sameAll = get => { const ps = picks(); return ps.length > 1 && new Set(ps.map(get)).size > 1; };
 const FACE_ROWS = [
   { t: "check", bind: "face.shown", label: () => (ui.faces.length > 1 ? "Show them" : "Show"), get: () => picks().every(p => surfaceShown(p.bx, p.id)), mixed: () => sameAll(p => surfaceShown(p.bx, p.id)), set: v => { picks().forEach(p => setSurfaceShown(p.bx, p.id, v)); touch(); } },
-  ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name], k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && picks().some(q => faceAxis(q.id) === k) })),
+  ...["x", "y", "z"].map((key, k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${AXIS_NAMES[k]}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && picks().some(q => faceAxis(q.id) === k) })),
   { t: "range", bind: "face.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("opacity"), set: ownSet("opacity") },
   { t: "color", bind: "face.fill", label: "Color", get: lookGet("fill"), set: ownSet("fill") },
   { t: "sub", label: "Edges" },
@@ -4596,8 +4599,9 @@ function clampFaces() {
   facePop.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px"; facePop.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
 }
 // Picks these to edit, the pop-up beside screen point s on the canvas (where it already is, if it's up)
+let facesOpened = -Infinity; // (when a click last opened it)
 function openFaces(list, s) {
-  ui.faces = list.map(p => ({ bi: p.bi, id: p.id }));
+  ui.faces = list.map(p => ({ bi: p.bi, id: p.id })); facesOpened = performance.now();
   if (facePop.hidden) {
     const r = canvas.getBoundingClientRect(); facePop.hidden = false;
     facePop.style.left = r.left + s.x + 18 + "px"; facePop.style.top = r.top + s.y - 20 + "px";
