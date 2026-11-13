@@ -3807,7 +3807,7 @@ function syncToolbar() {
   document.getElementById("tbMode").value = modeKey();
   const reset = document.getElementById("tbReset"), name = "Reset " + modeName().toLowerCase();
   reset.setAttribute("aria-label", name);
-  reset.title = name + ": its horizon, vanishing points and lens back as they start, with one box in the middle of the page. Undo (Ctrl/⌘ Z) brings back what was there.";
+  reset.title = name + ": everything back to its defaults (the horizon, vanishing points and lenses, rays, guides, colors, snapping, the page and the export settings), staying in this view, with one box in the middle of the page. Undo (Ctrl/⌘ Z) brings back what was there.";
   document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
 
@@ -4022,19 +4022,14 @@ function resetAll() {
   if (!ui.resetArm) { ui.resetArm = true; touch(); setTimeout(() => { ui.resetArm = false; touch(); }, 3000); return; }
   ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
 }
-// Puts the perspective in use back as it starts: the horizon, the VPs and this view's lens at their defaults, the horizon
-// placed on the page as it first is, with the VPs pushed out past the page if they'd land on it, and in place of the
-// boxes the box a new drawing starts with, in the middle of the page and taking up about a quarter of it. A scaled
-// drawing first goes back to 100%, so the lengths that scaled with it (ray and guide spacing, the other views' lenses)
-// are as they were before. Colors, rays, guides and the page itself stay as they are. One undo brings it all back.
+// Puts everything back as a new drawing has it, staying in the perspective in use: the horizon, the VPs and every view's
+// lens, the rays, guides, colors, snapping, the page and the export settings all at their defaults, with the VPs pushed out
+// past the page if they'd land on it, and in place of the boxes the box a new drawing starts with, in the middle of the
+// page and taking up about a quarter of it. One undo brings it all back.
 function resetPerspective() {
-  const d = defaultState(), s = state, V = s.viewport, D = d.viewport, mid = P(V.x + V.w / 2, V.y + V.h / 2);
-  if (s.drawingScale !== 1) scaleDrawing(1 / s.drawingScale, mid, clone(s));
-  s.horizon.x = mid.x + d.horizon.x - (D.x + D.w / 2); s.horizon.y = mid.y + d.horizon.y - (D.y + D.h / 2); s.horizon.tilt = d.horizon.tilt;
-  s.vps.forEach((v, i) => { v.dist = d.vps[i].dist; v.drop = d.vps[i].drop; });
-  s.cone.cv = d.cone.cv; s.drawingScale = d.drawingScale;
-  const lens = { "4pt-fish": ["f4", "turn"], "4pt-pano": ["pano", "panoHc", "panoK", "turn"], "5pt": ["f5", "coverage"], "6pt": ["f6"] }[modeKey()] || [];
-  lens.forEach(k => { s.curvi[k] = clone(d.curvi[k]); });
+  const d = defaultState(); d.mode = state.mode; d.curvi.style4 = state.curvi.style4;
+  state = d; ui.scales = {}; // (the sliders' reach too)
+  const s = state, V = s.viewport, mid = P(V.x + V.w / 2, V.y + V.h / 2);
   // The VPs off the page: the system grows (the VP distances, or the lens) until every VP is clear of the page by a tenth
   // of its height, all but the one straight ahead (1-point's VP, 5-point's center, 6-point's front), which is its middle
   const m = 0.1 * Math.min(V.w, V.h), off = p => p.x < V.x - m || p.x > V.x + V.w + m || p.y < V.y - m || p.y > V.y + V.h + m;
@@ -4047,10 +4042,10 @@ function resetPerspective() {
   let size = 0.5 * Math.hypot(V.w, V.h);
   for (let i = 0; i < 4; i++) { fitBox(bx, dims, mid, size, g); const c = cover(); if (!(c > 0) || Math.abs(c - 0.25) < 0.005) break; size *= Math.sqrt(0.25 / c); }
   captureFit(bx, g);
-  s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null;
+  s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null; latch = null; closeFaces();
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch(); fitView();
-  toast(`Reset ${modeName().toLowerCase()}. Undo brings back what was there.`);
+  toast(`Reset ${modeName().toLowerCase()}: everything is back to its defaults. Undo brings back what was there.`);
 }
 
 /* ---------- view ---------- */
