@@ -927,9 +927,26 @@ const capsInUse = ({ B, H }) => ({ bottom: B[0].y < -1e-9, top: B[0].y + H > 1e-
 // through the points on each one's edge along the other axis from the corner nearest you, at the caps' division
 // spacing and `extra` more past each end, counted from that corner as the caps' division lines are. Each such
 // line runs right across its cap, so the one edge serves.
-function capSpots(b3, D, extra, axis) {
-  const { B, H } = b3, use = capsInUse(b3), i = nearestOf(B), n = D.on && D.caps ? Math.max(1, Math.round(D.vp)) : 1, e = s3(B[axis ? i ^ 1 : i ^ 3], B[i]), out = [];
+function capSpots(b3, D, extra, axis, use = capsInUse(b3)) {
+  const { B, H } = b3, i = nearestOf(B), n = D.on && D.caps ? Math.max(1, Math.round(D.vp)) : 1, e = s3(B[axis ? i ^ 1 : i ^ 3], B[i]), out = [];
   for (const [on, h] of [[use.bottom, 0], [use.top, H]]) if (on) for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(a3(B[i], m3(e, j / n)), m3(UP3, h)), j });
+  return out;
+}
+// The caps whose division lines you can see: the top or bottom turned toward you, and not hidden
+const capsSeen = (bx, g) => { const f = homeGeo(bx, g).faces, on = id => f.find(x => x.id === id).front && bx.faces[id] !== false; return { bottom: on("bottom"), top: on("top") }; };
+// Every face you can see that's divided gets lines through its division lines, not just the faces the lines run along
+// (which also carry them on past the box): with the rays along the vertical faces, the lines on the top or bottom you
+// can see; along the top and bottom, the vertical faces' rows (and their columns, for the lines that run up and down) and
+// the top or bottom you can see where the lines follow the other one.
+// Those extra lines stop at the box's own edges (no more past each end). `axis` is the cap axis the lines run along.
+function moreSpots(bx, g, b3, wings, upright, onCaps, axis) {
+  const D = bx.div, out = []; if (!D.on) return out;
+  if (!upright && D.caps) {
+    // the caps you can see (along the top and bottom, the ones the lines don't already follow)
+    const seen = capsSeen(bx, g), used = onCaps ? capsInUse(b3) : { bottom: false, top: false };
+    out.push(...capSpots(b3, D, 0, axis, { bottom: seen.bottom && !used.bottom, top: seen.top && !used.top }));
+  }
+  if (onCaps && D.sides) out.push(...boxSpots(b3, D, 0, wings, upright, false));
   return out;
 }
 // What the panel says the rays follow: "bottom", "top", or both, each on its side of the horizon
@@ -939,7 +956,8 @@ function boxRays(vi, g, bx) {
   const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
   const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
   const upright = Math.abs(d3(n3(dir), UP3)) > 0.9, extra = Math.max(0, Math.round(R.count)), onCaps = bx.rayFaces === "caps", caps = onCaps && !upright;
-  const spots = caps ? capSpots(b3, bx.div, extra, Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0) : boxSpots(b3, bx.div, extra, boxWings(bx, g, b3.B), upright, onCaps);
+  const axis = Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0, wings = boxWings(bx, g, b3.B);
+  const spots = (caps ? capSpots(b3, bx.div, extra, axis) : boxSpots(b3, bx.div, extra, wings, upright, onCaps)).concat(moreSpots(bx, g, b3, wings, upright, onCaps, axis));
   for (let { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) {
       // behind you through a flat camera. A line across the top or bottom still comes into view further along,
@@ -964,11 +982,14 @@ function guidesAt(G, g, upright, from, dir, marks = false) {
   const fit = rayBox(), out = [];
   if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(marks ? { t: G.offset + j * G.spacing, j } : G.offset + j * G.spacing); return out; }
   const b3 = box3(fit, g), cam = b3.cam, extra = Math.max(0, Math.round(G.count)), onCaps = fit.rayFaces === "caps";
-  const spots = !upright && onCaps ? capSpots(b3, fit.div, extra, 0) : boxSpots(b3, fit.div, extra, boxWings(fit, g, b3.B), upright, onCaps);
+  const wings = boxWings(fit, g, b3.B);
+  const spots = (!upright && onCaps ? capSpots(b3, fit.div, extra, 0) : boxSpots(b3, fit.div, extra, wings, upright, onCaps)).concat(moreSpots(fit, g, b3, wings, upright, onCaps, 0));
+  const seen = [];
   for (const { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
-    if (Number.isFinite(t)) out.push(marks ? { t, j } : t);
+    if (!Number.isFinite(t) || seen.some(u => Math.abs(u - t) < 1e-6)) continue; // (a line two faces share comes once)
+    seen.push(t); out.push(marks ? { t, j } : t);
   }
   return out;
 }
@@ -980,6 +1001,15 @@ function verticalMarks(g) {
   return guidesAt(V, g, true, g.mc || g.O, g.u, true).map(({ t, j }) => ({ t, ch: pat[fit ? ((j % n) + n) % n : (V.from === "edge" ? j + c : Math.abs(j)) % n] }));
 }
 const horizontalsAt = g => guidesAt(state.horizontals, g, false, g.O, g.n);
+// Rays along a box, each line once: where two faces' division lines meet on one ray (a cap's edge on a side's top row,
+// say), the first kept. In a curved view two rays are one when they run on the same half great circle.
+function onceEach(rays, g, vi) {
+  const out = [], key = r => (g.cam ? n3(c3(g.cam.fam[vi], g.cam.unproj(r.q))) : null);
+  const same = (a, b) => g.cam ? l3(s3(a.k, b.k)) < 1e-7
+    : Math.abs(cross(a.d, b.d)) < 1e-9 && dot(a.d, b.d) > 0 && Math.abs(cross(sub(b.q, a.q), a.d)) < 1e-7 * (1 + len(sub(b.q, a.q)));
+  for (const r of rays) { const c = Object.assign({}, r, { k: key(r) }); if (!out.some(o => same(o, c))) out.push(c); }
+  return out.map(({ k, ...r }) => r);
+}
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
   const pat = R.pattern || "A", fit = rayBox();
@@ -987,12 +1017,12 @@ function rayList(vi, g) {
     // Parallel lines. All three axes share one spacing and count, measured square to the lines, so the lines
     // through the middle of the grid and every other crossing meet in threes.
     const d = g.iso[vi];
-    if (fit) return boxRays(vi, g, fit).map(r => Object.assign(r, { d }));
+    if (fit) return onceEach(boxRays(vi, g, fit).map(r => Object.assign(r, { d })), g, vi);
     const G = state.vps[0].rays, c = Math.max(0, Math.round(G.count)), side = P(-d.y, d.x);
     for (let k = -c; k <= c; k++) out.push({ d, q: add(anchor, mul(side, k * G.spacing + R.measure)), ch: pat[(R.from === "edge" ? k + c : Math.abs(k)) % pat.length] });
     return out;
   }
-  if (fit) return boxRays(vi, g, fit);
+  if (fit) return onceEach(boxRays(vi, g, fit), g, vi);
   if (R.mode === "spacing") {
     // VP1/VP2 measure along a vertical line; VP3, up/down and center rays measure along a horizontal one.
     const across = vi >= 2;
