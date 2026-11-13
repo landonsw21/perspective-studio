@@ -143,6 +143,21 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .checks .chk { display: inline-flex; align-items: center; gap: 6px; }
 .checks label { cursor: pointer; }
+.row.multi-row { grid-template-columns: auto minmax(0, 1fr); }
+details.multi { position: relative; min-width: 0; justify-self: end; max-width: 100%; }
+details.multi > summary {
+  list-style: none; cursor: pointer; font: 400 12px/1.2 var(--f-ui); color: var(--ink); background: var(--chrome);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 5px 22px 5px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative;
+}
+details.multi > summary::-webkit-details-marker { display: none; }
+details.multi > summary::after { content: "▾"; position: absolute; right: 7px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+details.multi .multi-list {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 200px; display: grid; gap: 6px;
+  background: var(--chrome); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+}
+details.multi .multi-list .chk { display: flex; align-items: center; gap: 6px; }
+details.multi .multi-list label { cursor: pointer; white-space: nowrap; }
+details.multi .multi-grp { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
 .seg.mini { display: inline-flex; }
 .seg.mini button { flex: none; padding: 6px 10px; font-size: 11.5px; }
 .seg .swatch { margin-right: 6px; }
@@ -467,10 +482,8 @@ function normalize(s) {
     if (!(b.h > 0)) b.h = 220;
     if (!["sides", "front", "caps"].includes(b.rayFaces)) b.rayFaces = "sides";
     delete b.rayThrough; // (the rays went through just the faces they ran along, or every face you saw, before you chose them)
-    // (one surface: where several were ticked, the first of them)
     const snapIds = b.raySnap && typeof b.raySnap === "object" ? Object.keys(b.raySnap).filter(k => b.raySnap[k] === true && /^(s01|s12|s23|s30|top|bottom|[xyz][1-9])$/.test(k)) : [];
-    const firstSnap = ["s01", "s12", "s23", "s30", "top", "bottom"].find(k => snapIds.includes(k)) || snapIds.sort()[0];
-    b.raySnap = firstSnap ? { [firstSnap]: true } : null;
+    b.raySnap = snapIds.length ? Object.fromEntries(snapIds.map(k => [k, true])) : null;
     if (!b.rot || typeof b.rot !== "object") b.rot = { x: 0, y: 0, z: 0 };
     ["x", "y", "z"].forEach(k => { b.rot[k] = Number.isFinite(b.rot[k]) ? wrapAngle(b.rot[k]) : 0; });
     if (!(b.H > 0)) b.H = 0.3;
@@ -898,9 +911,9 @@ const capsFollowed = (bx, g, b3) => { const s = capsSeen(bx, g); return s.bottom
 // The caps whose division lines you can see: the top or bottom turned toward you, and not hidden
 const capsSeen = (bx, g) => { const f = homeGeo(bx, g).faces, on = id => f.find(x => x.id === id).front && bx.faces[id] !== false; return { bottom: on("bottom"), top: on("top") }; };
 // ---- The faces and planes the rays snap to ----
-// A box spacing the rays has them snap to the face (or subdividing plane) chosen under Rays snap to: its edges and division
-// lines send a line through them, from the VP its lines run to, or up and down for its upright ones, and carry on past it,
-// R.count of them each way. (With more than one surface, as an older setup may have had, the lines would stop at the box.)
+// A box spacing the rays has them snap to the faces (and subdividing planes) ticked under Rays snap to: each one's edges
+// and division lines send a line through them, from the VP its lines run to, or up and down for its upright ones.
+// With one ticked, those lines carry on past it, R.count of them each way; with more, they cross the box and no more.
 const SNAP_FACES = ["s01", "s12", "s23", "s30", "top", "bottom"];
 const planeIdsOf = bx => ["x", "y", "z"].flatMap(k => Array.from({ length: Math.max(0, bx.planes[k] - 1) }, (_, i) => k + (i + 1)));
 // The side faces a box's rays used to run along, from before there was a choice: its front faces, or once they're all
@@ -981,10 +994,17 @@ function axisName(a) {
   if (["5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
   return a ? "VP2" : "VP1";
 }
-// The dropdown: every face, and the box's planes, by name; the one chosen; and choosing one
-const snapChoices = () => { const bx = state.boxes[state.sel]; return bx ? SNAP_FACES.concat(planeIdsOf(bx)).map(id => [id, snapLabel(id)]) : []; };
-const snapChoice = () => { const bx = state.boxes[state.sel]; return bx ? raySnapIds(bx, geo())[0] : undefined; };
-function chooseSnap(id) { const bx = state.boxes[state.sel]; if (bx) { bx.raySnap = { [id]: true }; touch(); } }
+// The dropdown's checkboxes: every face, then the box's planes, by name
+const snapChoices = () => { const bx = state.boxes[state.sel]; return bx ? SNAP_FACES.map(id => [id, snapLabel(id), "Faces"]).concat(planeIdsOf(bx).map(id => [id, snapLabel(id), "Planes"])) : []; };
+// Ticking or unticking one (a box from before there was a choice takes what it follows as its choice first). The last
+// one ticked stays: the rays always snap to something while they're spaced along the box.
+function setSnap(id, on) {
+  const bx = state.boxes[state.sel]; if (!bx) return;
+  const now = new Set(raySnapIds(bx, geo()));
+  if (on) now.add(id); else if (now.size > 1) now.delete(id);
+  bx.raySnap = Object.fromEntries([...now].map(k => [k, true]));
+  touch();
+}
 // The front face you look at most squarely (a box's first choice), or with none toward you, one of the two at its corner
 // nearest you
 function squarestFace(bx, g) {
@@ -3197,8 +3217,8 @@ const schema = [
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
     // the face (or plane) the rays snap to
-    { t: "select", bind: "boxes.$b.raySnap", label: "Rays snap to", options: () => snapChoices(), get: () => snapChoice(), apply: v => { chooseSnap(v); commit(); }, when: rayFitOn },
-    { t: "note", html: "The rays run through the edges and division lines of the face or plane chosen here, each VP's through the lines running to it and the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones, and carry on past it to the sides, as many at each end as each VP's count says. Once the box has subdividing planes, they can be chosen too. A VP with no lines on what's chosen keeps its own spacing.", when: rayFitOn },
+    { t: "multi", bind: "boxes.$b.raySnap", label: "Rays snap to", options: () => snapChoices(), get: () => { const bx = state.boxes[state.sel]; return bx ? raySnapIds(bx, geo()) : []; }, set: (id, on) => setSnap(id, on), when: rayFitOn },
+    { t: "note", html: "Tick the faces (and, once the box has subdividing planes, the planes) the rays snap to: they run through the edges and division lines of each, each VP's through the lines running to it and the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones. With one ticked, the rays carry on past it to the sides, as many at each end as each VP's count says; with more, they cross just those faces and planes and stop at the box. A VP with no lines on what's ticked keeps its own spacing.", when: rayFitOn },
     { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays below the horizon continue the division lines across its bottom instead, and the rays above it the ones across its top (a box below eye level has only the first, one above it only the second), and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden. Front faces, even hidden, works like Vertical faces but stays on the front faces when they're hidden.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
@@ -3305,6 +3325,8 @@ infoTip.addEventListener("pointerleave", () => hideInfo());
 window.addEventListener("keydown", e => { if (e.key === "Escape" && !infoTip.hidden) { hideInfo(true); e.stopImmediatePropagation(); } }, true);
 document.addEventListener("pointerdown", e => { if (!infoTip.hidden && !infoTip.contains(e.target) && !(infoAt && infoAt.contains(e.target))) hideInfo(true); });
 window.addEventListener("scroll", () => { if (!infoTip.hidden) hideInfo(true); }, true);
+// (and a dropdown of checkboxes closes on a press anywhere else)
+document.addEventListener("pointerdown", e => { document.querySelectorAll("details.multi[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }); });
 document.querySelector(".ph .title").append(infoButton(document.getElementById("about").innerHTML, "About"));
 
 const escHtml = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -3403,6 +3425,25 @@ function makeRow(r) {
       sel.addEventListener("change", () => { const v = r.num ? +sel.value : sel.value; if (r.apply) r.apply(v); else { setP(r.bind, v); commit(); } });
       node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), sel);
       update = () => { fill(); const v = r.get ? r.get() : getP(r.bind); if (v !== undefined) sel.value = String(v); };
+      break;
+    }
+    case "multi": {
+      // A dropdown of checkboxes: closed, it names what's ticked; open, it lists a box for each choice, in groups
+      const sum = el("summary", {}), list = el("div", { class: "multi-list" }), det = el("details", { class: "multi" }, sum, list);
+      let sig = "", boxes = [];
+      const fill = () => {
+        const o = r.options(), k = JSON.stringify(o); if (k === sig) return; sig = k; list.innerHTML = ""; boxes = [];
+        let grp = null;
+        for (const [v, t, g] of o) {
+          if (g && g !== grp) { grp = g; list.append(el("div", { class: "multi-grp" }, g)); }
+          const iid = id + "-" + v, inp = el("input", { type: "checkbox", id: iid });
+          inp.addEventListener("change", () => { r.set(v, inp.checked); commit(); });
+          list.append(el("span", { class: "chk" }, inp, el("label", { for: iid }, t))); boxes.push([inp, v, t]);
+        }
+      };
+      fill();
+      node = el("div", { class: "row multi-row" }, el("span", { class: "lab" }, labelText(r)), det);
+      update = () => { fill(); const on = r.get(); boxes.forEach(([inp, v]) => { inp.checked = on.includes(v); }); sum.textContent = boxes.filter(([, v]) => on.includes(v)).map(([, , t]) => t).join(" + ") || "None"; };
       break;
     }
     case "checks": {
