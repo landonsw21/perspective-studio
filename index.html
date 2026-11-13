@@ -143,6 +143,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .checks .chk { display: inline-flex; align-items: center; gap: 6px; }
 .checks label { cursor: pointer; }
+.checks .checks-lab { flex-basis: 100%; }
 .seg.mini { display: inline-flex; }
 .seg.mini button { flex: none; padding: 6px 10px; font-size: 11.5px; }
 .seg .swatch { margin-right: 6px; }
@@ -377,7 +378,7 @@ const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, 
 // direction: 0 across the width, 1 the length, 2 the height; -1 for a face. Loading a setup needs them, so they're here.)
 const PLANES_MAX = 10;
 const planeAxis = id => (/^[xyz]\d+$/.test(id) ? "xyz".indexOf(id[0]) : -1);
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", rayThrough: "all", stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, mode: "solid", ghost: 0.3, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -466,7 +467,8 @@ function normalize(s) {
     if (![0, 1, 2, 3].includes(b.anchor)) b.anchor = 0;
     if (!(b.h > 0)) b.h = 220;
     if (!["sides", "front", "caps"].includes(b.rayFaces)) b.rayFaces = "sides";
-    if (!["all", "along"].includes(b.rayThrough)) b.rayThrough = "all";
+    delete b.rayThrough; // (the rays went through just the faces they ran along, or every face you saw, before you chose them)
+    b.raySnap = b.raySnap && typeof b.raySnap === "object" ? Object.fromEntries(Object.entries(b.raySnap).filter(([k, v]) => v === true && /^(s01|s12|s23|s30|top|bottom|[xyz][1-9])$/.test(k))) : null;
     if (!b.rot || typeof b.rot !== "object") b.rot = { x: 0, y: 0, z: 0 };
     ["x", "y", "z"].forEach(k => { b.rot[k] = Number.isFinite(b.rot[k]) ? wrapAngle(b.rot[k]) : 0; });
     if (!(b.H > 0)) b.H = 0.3;
@@ -873,51 +875,14 @@ function ortho3(g) {
 // through itself) and catch up when it is let go. The vertical guides (and 1-point's horizontal ones)
 // follow it too.
 const rayBox = () => (drag && drag.rays) || state.boxes.find(b => b.rayFit) || null;
-// Rays spaced along a box: each VP's rays run through evenly spaced points on it, at its division spacing,
-// and carry on past it, R.count of them at each end. They follow the vertical faces boxWings picks. Lines that
-// run up and down (VP3's rays, the up and down VPs' rays, and the vertical guides) stand at those faces'
-// vertical division lines. Rays that run along the sides go through the vertical edge at the faces' hub (the
-// corner nearest you, while the front faces are in use), so they continue the division lines on the two faces
-// that meet there. Pattern letters count from the corner nearest you's side, as the division lines' do.
+// Rays spaced along a box run through the edges and division lines of the faces and planes chosen for them (see
+// surfaceSpots). Pattern letters count from each one's corner nearest you, as its division lines do.
 const nearestOf = B => [1, 2, 3].reduce((m, k) => (l3(B[k]) < l3(B[m]) ? k : m), 0); // of a box's 3D base corners
 const OPPOSITE = { s01: "s23", s23: "s01", s12: "s30", s30: "s12" };
-// The vertical faces whose divisions a box's upright lines follow: its front faces (the two meeting at the
-// corner nearest you, or the one you look straight at), or, once those are all hidden, the faces opposite them
-// (rayFaces "front" stays on the front ones, hidden or not).
-// With no side toward you (looking straight down on it, say) the two at the nearest corner stand in. Returns
-// the hub, the corner where two of them meet (a lone face's end beside the nearest corner), and for n divisions
-// and e lines past each end, each face's run: [c, to, lo, hi] for the points lo … hi of n along its base edge
-// from corner c toward corner `to`. Two faces run out from the hub, past their far ends; a lone face runs past
-// both. Points are counted from the end beside the nearest corner: from the hub on front faces, toward it on
-// back ones.
-function boxWings(bx, g, B) {
-  const i = nearestOf(B), ends = id => [+id[1], +id[2]];
-  let use = homeGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
-  if (!use.length) use = Object.keys(OPPOSITE).filter(id => ends(id).includes(i));
-  const back = bx.rayFaces !== "front" && use.every(id => bx.faces[id] === false);
-  if (back) use = use.map(id => OPPOSITE[id]);
-  if (use.length > 1) {
-    const [a, b] = use.map(ends), hub = a.find(k => b.includes(k));
-    if (hub !== undefined) return { hub, wings: (n, e) => (back ? [[hub ^ 1, hub, -e, n], [hub ^ 3, hub, -e, n - 1]] : [[hub, hub ^ 1, 0, n + e], [hub, hub ^ 3, 1, n + e]]) };
-  }
-  const [a, b] = ends(use[0]), c = a === i || b === i ? i : a === (i ^ 2) ? b : a;
-  return { hub: c, wings: (n, e) => [[c, c === a ? b : a, -e, n + e]] };
-}
 // The points on a box that those lines run through, in 3D as box3 reads it, each with its count j: along the
 // faces' base edges for lines that run up and down (`upright`), or up the hub's vertical edge for lines that run
 // along the sides; `extra` more past each end. Lines up and down stand at the faces' vertical division lines,
 // or, with the rays sent along the top and bottom (`caps`), where the caps' division lines meet those edges.
-function boxSpots({ B, H }, D, extra, { hub, wings }, upright, caps) {
-  const divided = D.on && D.sides, out = [];
-  if (upright) {
-    const n = caps ? (D.on && D.caps ? Math.max(1, Math.round(D.vp)) : 1) : divided ? Math.max(1, Math.round(D.vert)) : 1;
-    for (const [c, to, lo, hi] of wings(n, extra)) { const e = s3(B[to], B[c]); for (let j = lo; j <= hi; j++) out.push({ p: a3(B[c], m3(e, j / n)), j }); }
-  } else {
-    const n = divided ? Math.max(1, Math.round(D.vp)) : 1;
-    for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(B[hub], m3(UP3, j * H / n)), j });
-  }
-  return out;
-}
 // With the rays sent along the box's top and bottom instead (rayFaces "caps"), the rays below the horizon
 // follow the bottom's division lines and the rays above it the top's. A cap's lines all run on one side of the
 // horizon: the bottom's below it while the base is below eye level, the top's above it while the top is above
@@ -928,46 +893,107 @@ const capsInUse = ({ B, H }) => ({ bottom: B[0].y < -1e-9, top: B[0].y + H > 1e-
 // through a cap you can't see too would give a second fan of rays beside the first). A box across eye level shows
 // neither, and gets both as above, one each side of the horizon, where they can't double up.
 const capsFollowed = (bx, g, b3) => { const s = capsSeen(bx, g); return s.bottom || s.top ? s : capsInUse(b3); };
-// Lines running along its first axis (`axis` 0) or its second (1) continue those caps' division lines: they go
-// through the points on each one's edge along the other axis from the corner nearest you, at the caps' division
-// spacing and `extra` more past each end, counted from that corner as the caps' division lines are. Each such
-// line runs right across its cap, so the one edge serves.
-function capSpots(b3, D, extra, axis, use = capsInUse(b3)) {
-  const { B, H } = b3, i = nearestOf(B), n = D.on && D.caps ? Math.max(1, Math.round(D.vp)) : 1, e = s3(B[axis ? i ^ 1 : i ^ 3], B[i]), out = [];
-  for (const [on, h] of [[use.bottom, 0], [use.top, H]]) if (on) for (let j = -extra; j <= n + extra; j++) out.push({ p: a3(a3(B[i], m3(e, j / n)), m3(UP3, h)), j });
-  return out;
-}
 // The caps whose division lines you can see: the top or bottom turned toward you, and not hidden
 const capsSeen = (bx, g) => { const f = homeGeo(bx, g).faces, on = id => f.find(x => x.id === id).front && bx.faces[id] !== false; return { bottom: on("bottom"), top: on("top") }; };
-// Every face you can see that's divided gets lines through its division lines, not just the faces the lines run along
-// (which also carry them on past the box): with the rays along the vertical faces, the lines on the top or bottom you
-// can see; along the top and bottom, the vertical faces' rows (and their columns, for the lines that run up and down).
-// Those extra lines stop at the box's own edges (no more past each end). `axis` is the cap axis the lines run along.
-function moreSpots(bx, g, b3, wings, upright, onCaps, axis) {
-  const D = bx.div, out = []; if (!D.on || bx.rayThrough === "along") return out; // (or just the faces they run along)
-  if (!upright && D.caps) {
-    // the caps you can see (along the top and bottom, the lines already follow those)
-    const seen = capsSeen(bx, g), used = onCaps ? capsFollowed(bx, g, b3) : { bottom: false, top: false };
-    out.push(...capSpots(b3, D, 0, axis, { bottom: seen.bottom && !used.bottom, top: seen.top && !used.top }));
+// ---- The faces and planes the rays snap to ----
+// A box spacing the rays has them snap to the faces (and subdividing planes) chosen under Rays snap to: each one's edges
+// and division lines send a line through them, from the VP its lines run to, or up and down for its upright ones.
+// With one chosen, those lines carry on past it, R.count of them each way; with more, they cross the box and no more.
+const SNAP_FACES = ["s01", "s12", "s23", "s30", "top", "bottom"];
+const planeIdsOf = bx => ["x", "y", "z"].flatMap(k => Array.from({ length: Math.max(0, bx.planes[k] - 1) }, (_, i) => k + (i + 1)));
+// The side faces a box's rays used to run along, from before there was a choice: its front faces, or once they're all
+// hidden the ones opposite (rayFaces "front" keeps the front ones), or with none toward you the two at the corner nearest
+function wingFaces(bx, g, B) {
+  const i = nearestOf(B), ends = id => [+id[1], +id[2]];
+  let use = homeGeo(bx, g).faces.filter(f => f.id[0] === "s" && f.front).map(f => f.id);
+  if (!use.length) use = Object.keys(OPPOSITE).filter(id => ends(id).includes(i));
+  if (bx.rayFaces !== "front" && use.every(id => bx.faces[id] === false)) use = use.map(id => OPPOSITE[id]);
+  return use;
+}
+// The surfaces chosen, as ids: bx.raySnap's, or for a box from before there was a choice, what it used to follow
+function raySnapIds(bx, g) {
+  if (bx.raySnap) return SNAP_FACES.concat(planeIdsOf(bx)).filter(id => bx.raySnap[id]);
+  if (bx.rayFaces === "caps") { const c = capsFollowed(bx, g, box3(bx, g)); return ["bottom", "top"].filter(k => c[k]); }
+  return wingFaces(bx, g, box3(bx, g).B);
+}
+// A surface as a rectangle in 3D (box3's frame): corner O, edges U and V, and how many parts its division lines cut
+// each edge into (nU along U, for the lines parallel to V; nV along V), turned so O is the corner nearest you. A side
+// face's columns follow Vertical lines on sides and its rows Lines to the VPs; the top's and bottom's lines follow
+// Lines to the VPs both ways; a plane's are those of the face it lies parallel to, when the planes are divided.
+function surfaceRect(bx, { B, H }, id) {
+  const D = bx.div, up = m3(UP3, H), e1 = s3(B[1], B[0]), e2 = s3(B[3], B[0]), cut = (on, n) => (on ? Math.max(1, Math.round(n)) : 1);
+  let O, U, V, nU, nV;
+  if (id[0] === "s") { const a = +id[1], b = +id[2]; O = B[a]; U = s3(B[b], B[a]); V = up; nU = cut(D.on && D.sides, D.vert); nV = cut(D.on && D.sides, D.vp); }
+  else if (id === "top" || id === "bottom") { O = id === "top" ? a3(B[0], up) : B[0]; U = e1; V = e2; nU = nV = cut(D.on && D.caps, D.vp); }
+  else {
+    const k = planeAxis(id), n = bx.planes["xyz"[k]], i = +id.slice(1); if (!(k >= 0 && i >= 1 && i < n)) return null;
+    const t = i / n, on = D.on && D.planes && (k === 2 ? D.caps : D.sides);
+    if (k === 0) { O = a3(B[0], m3(e1, t)); U = e2; V = up; nU = cut(on, D.vert); nV = cut(on, D.vp); }
+    else if (k === 1) { O = a3(B[0], m3(e2, t)); U = e1; V = up; nU = cut(on, D.vert); nV = cut(on, D.vp); }
+    else { O = a3(B[0], m3(up, t)); U = e1; V = e2; nU = nV = cut(on, D.vp); }
   }
-  if (onCaps && D.sides) out.push(...boxSpots(b3, D, 0, wings, upright, false));
+  const fu = l3(a3(O, U)) < l3(O), fv = l3(a3(O, V)) < l3(O); // (the corner nearest you, if U or V leads toward it)
+  if (fu) { O = a3(O, U); U = m3(U, -1); } if (fv) { O = a3(O, V); V = m3(V, -1); }
+  return { O, U, V, nU, nV };
+}
+// The points the lines along `dir` run through, on the chosen surfaces, each with its count j from the surface's
+// corner nearest you (as its division lines count)
+function surfaceSpots(bx, g, b3, dir, extra) {
+  const ids = raySnapIds(bx, g), e = ids.length === 1 ? extra : 0, out = [];
+  for (const id of ids) {
+    const r = surfaceRect(bx, b3, id); if (!r) continue;
+    for (const [along, across, n] of [[r.U, r.V, r.nV], [r.V, r.U, r.nU]]) {
+      if (!(l3(along) > 1e-12) || Math.abs(d3(n3(along), n3(dir))) < 0.999) continue;
+      for (let j = -e; j <= n + e; j++) out.push({ p: a3(r.O, m3(across, j / n)), j });
+    }
+  }
   return out;
 }
-// What the panel says the rays follow: "bottom", "top", or both, each on its side of the horizon
-const capsText = (bx, g, b3) => { const u = capsFollowed(bx, g, b3); return u.bottom && u.top ? "bottom below the horizon and its top above it" : u.top ? "top" : "bottom"; };
+// The direction a VP's lines run in, in box3's frame
+// (for the panel: is the selected box spacing the rays, is surface id ticked, how many are)
+const rayFitOn = () => !!(state.boxes[state.sel] && state.boxes[state.sel].rayFit);
+const snapOn = id => { const bx = state.boxes[state.sel]; return !!bx && raySnapIds(bx, geo()).includes(id); };
+const snapCount = () => { const fit = rayBox(); return fit ? raySnapIds(fit, geo()).length : 0; };
+const rayDir = (vi, g, cam) => (g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? cam.axes[1] : vi === 2 ? UP3 : cam.axes[0]);
+// The box VP vi's rays snap to, if the surfaces chosen have lines running to it (with none, its rays keep their own
+// spacing); and the box the vertical guides (or 1-point's horizontal ones, `upright` false) snap to
+function fitFor(vi, g = geo()) { const fit = rayBox(); if (!fit) return null; const b3 = box3(fit, g); return surfaceSpots(fit, g, b3, rayDir(vi, g, b3.cam), 0).length ? fit : null; }
+function guideFit(upright, g = geo()) { const fit = rayBox(); if (!fit) return null; const b3 = box3(fit, g); return surfaceSpots(fit, g, b3, upright ? UP3 : b3.cam.axes[0], 0).length ? fit : null; }
+// What the panel calls a surface: a face by where it sits (in its own unturned place, as the rays take it), a plane by
+// its axis and number
+function snapLabel(id) {
+  const bx = state.boxes[state.sel]; if (!bx) return id;
+  if (id === "top") return "Top"; if (id === "bottom") return "Bottom";
+  if (planeAxis(id) >= 0) return `${"XYZ"[planeAxis(id)]} plane ${id.slice(1)}`;
+  const g = geo(), G = homeGeo(bx, g), f = G.faces.find(x => x.id === id), twin = G.faces.find(x => x.id === OPPOSITE[id]), along = id === "s01" || id === "s23" ? 0 : 1;
+  const mid = q => q.fills[0].reduce((m, p) => m + p.x, 0) / q.fills[0].length;
+  const side = f.front === twin.front ? (mid(f) < mid(twin) ? "Left" : "Right") : f.front ? "Near" : "Far";
+  if (state.mode === "1pt" && along === 0 && f.front !== twin.front) return f.front ? "Front" : "Back";
+  return `${side} side, to ${state.mode === "1pt" ? "the VP" : axisName(along)}`;
+}
+function axisName(a) {
+  if (isIso()) return "axis " + (a + 1);
+  if (isPanoMode()) return a ? "VP2 and VP4" : "VP1 and VP3";
+  if (state.mode === "4pt") return a ? "VP2" : "VP1";
+  if (["5pt", "6pt"].includes(state.mode)) return a ? (state.mode === "6pt" ? "the front and back VPs" : "the center") : "the left and right VPs";
+  return a ? "VP2" : "VP1";
+}
+// Choosing a surface: a box from before there was a choice takes what it used to follow as its choice first
+function setSnap(id, on) {
+  const bx = state.boxes[state.sel]; if (!bx) return;
+  if (!bx.raySnap) bx.raySnap = Object.fromEntries(raySnapIds(bx, geo()).map(k => [k, true]));
+  if (on) bx.raySnap[id] = true; else delete bx.raySnap[id];
+  touch();
+}
 function boxRays(vi, g, bx) {
   const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
-  const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
-  const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
-  const upright = Math.abs(d3(n3(dir), UP3)) > 0.9, extra = Math.max(0, Math.round(R.count)), onCaps = bx.rayFaces === "caps", caps = onCaps && !upright;
-  const axis = Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0, wings = boxWings(bx, g, b3.B);
-  const spots = (caps ? capSpots(b3, bx.div, extra, axis, capsFollowed(bx, g, b3)) : boxSpots(b3, bx.div, extra, wings, upright, onCaps)).concat(moreSpots(bx, g, b3, wings, upright, onCaps, axis));
-  for (let { p, j } of spots) {
+  const b3 = box3(bx, g), cam = b3.cam, dir = rayDir(vi, g, cam);
+  for (let { p, j } of surfaceSpots(bx, g, b3, dir, Math.max(0, Math.round(R.count)))) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) {
-      // behind you through a flat camera. A line across the top or bottom still comes into view further along,
+      // behind you through a flat camera. A line running into the picture still comes into view further along,
       // toward its VP, so it's taken from there, as deep as the corner nearest you.
-      const dz = caps ? cam.depthOf(dir) : 0;
-      if (!(dz > 1e-9)) continue;
+      const dz = cam.depthOf(dir);
+      if (!(Math.abs(dz) > 1e-9)) continue;
       p = a3(p, m3(dir, (cam.depthOf(b3.B[nearestOf(b3.B)]) - cam.depthOf(p)) / dz));
     }
     const s = cam.proj(p), q = P(s.x, s.y), d = sub(q, V);
@@ -976,23 +1002,20 @@ function boxRays(vi, g, bx) {
   return out;
 }
 // Where the straight guides stand, as distances along `dir` from `from`: evenly spaced by guide set G's offset,
-// spacing and count, or, while the rays are spaced along a box, on the faces boxWings picks, G.count of them past
+// spacing and count, or, while the rays are spaced along a box, on the surfaces chosen there, G.count of them past
 // each end. The vertical guides (1-point, 2-point and the panorama) are measured along the horizon from its
 // center (the panorama's center) and stand at those faces' vertical edges and division lines (or where the caps'
 // division lines meet them, with the rays sent along the top and bottom). 1-point's horizontal guides are
 // measured down from the horizon and run level with the division heights up the hub's vertical edge, or, with
 // the rays sent along the top and bottom, across the caps they follow, along the box's first axis.
 function guidesAt(G, g, upright, from, dir, marks = false) {
-  const fit = rayBox(), out = [];
+  const fit = guideFit(upright, g), out = [];
   if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(marks ? { t: G.offset + j * G.spacing, j } : G.offset + j * G.spacing); return out; }
-  const b3 = box3(fit, g), cam = b3.cam, extra = Math.max(0, Math.round(G.count)), onCaps = fit.rayFaces === "caps";
-  const wings = boxWings(fit, g, b3.B);
-  const spots = (!upright && onCaps ? capSpots(b3, fit.div, extra, 0, capsFollowed(fit, g, b3)) : boxSpots(b3, fit.div, extra, wings, upright, onCaps)).concat(moreSpots(fit, g, b3, wings, upright, onCaps, 0));
-  const seen = [];
-  for (const { p, j } of spots) {
+  const b3 = box3(fit, g), cam = b3.cam, seen = [];
+  for (const { p, j } of surfaceSpots(fit, g, b3, upright ? UP3 : cam.axes[0], Math.max(0, Math.round(G.count)))) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
     const s = cam.proj(p), t = dot(sub(P(s.x, s.y), from), dir);
-    if (!Number.isFinite(t) || seen.some(u => Math.abs(u - t) < 1e-6)) continue; // (a line two faces share comes once)
+    if (!Number.isFinite(t) || seen.some(u => Math.abs(u - t) < 1e-6)) continue; // (a line two surfaces share comes once)
     seen.push(t); out.push(marks ? { t, j } : t);
   }
   return out;
@@ -1001,7 +1024,7 @@ const verticalsAt = g => guidesAt(state.verticals, g, true, g.mc || g.O, g.u);
 // The vertical guides with their pattern letters, counted as a VP's rays are: out from the middle one, or in from
 // the outermost at one end; spaced along a box, from the corner nearest you, as its division lines are
 function verticalMarks(g) {
-  const V = state.verticals, pat = V.pattern || "A", n = pat.length, fit = rayBox(), c = Math.round(V.count);
+  const V = state.verticals, pat = V.pattern || "A", n = pat.length, fit = guideFit(true, g), c = Math.round(V.count);
   return guidesAt(V, g, true, g.mc || g.O, g.u, true).map(({ t, j }) => ({ t, ch: pat[fit ? ((j % n) + n) % n : (V.from === "edge" ? j + c : Math.abs(j)) % n] }));
 }
 const horizontalsAt = g => guidesAt(state.horizontals, g, false, g.O, g.n);
@@ -1016,7 +1039,7 @@ function onceEach(rays, g, vi) {
 }
 function rayList(vi, g) {
   const R = state.vps[vi].rays, V = g.vp[vi], out = [], anchor = g.mc || g.O;
-  const pat = R.pattern || "A", fit = rayBox();
+  const pat = R.pattern || "A", fit = fitFor(vi, g);
   if (g.iso) {
     // Parallel lines. All three axes share one spacing and count, measured square to the lines, so the lines
     // through the middle of the grid and every other crossing meet in threes.
@@ -1546,7 +1569,7 @@ let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
   const rb = rayBox(); // rays spaced along a box move with it, and with which of its faces are hidden
-  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div, rb.faces, rb.rayFaces, rb.rayThrough] : 0, state.drawingScale]);
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div, rb.faces, rb.rayFaces, rb.raySnap, rb.planes.x, rb.planes.y, rb.planes.z] : 0, state.drawingScale]);
   if (key === snapCache.key) return snapCache;
   const g = geo();
   snapCache = g.cam ? camGuides(g) : linearGuides(g);
@@ -1557,8 +1580,7 @@ function linearGuides(g) {
   const lines = [];
   // Rays spaced along a box are the box's own lines, so they stop at the VP: past it they'd be those lines
   // mirrored through the eye, across the horizon from the real ones.
-  const onBox = !!rayBox();
-  fams().forEach(vi => { const v = state.vps[vi]; if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push(g.iso ? { p: r.q, d: r.d, fwd: false, fam: "r" + vi } : { p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
+  fams().forEach(vi => { const v = state.vps[vi], onBox = !!fitFor(vi, g); if (v.rays.show) rayList(vi, g).forEach(r => { if (r.ch !== ".") lines.push(g.iso ? { p: r.q, d: r.d, fwd: false, fam: "r" + vi } : { p: g.vp[vi], d: r.d, fwd: onBox || !v.rays.behind, fam: "r" + vi }); }); });
   if (state.horizon.show && !g.iso) lines.push({ p: g.O, d: g.u, fwd: false, fam: "h" });
   if (state.verticals.show && state.mode !== "3pt" && !g.iso) for (const { t, ch } of verticalMarks(g)) if (ch !== ".") lines.push({ p: add(g.O, mul(g.u, t)), d: g.n, fwd: false, fam: "v" });
   // (a horizontal guide along the horizon itself would only repeat it)
@@ -1591,9 +1613,8 @@ function camGuides(g) {
   const around = cam.kind === "pano" || cam.kind === "sphere"; // views that see all the way around need whole circles
   // Rays spaced along a box are the box's own lines, each just half its circle, from its VP through the line to
   // the opposite VP. (The other half is that line mirrored through the eye, behind you and across eye level.)
-  const onBox = !!rayBox();
   fams().forEach(vi => {
-    const R = state.vps[vi].rays; if (!R.show) return;
+    const R = state.vps[vi].rays, onBox = !!fitFor(vi, g); if (!R.show) return;
     rayList(vi, g).forEach(r => { if (r.ch !== ".") push(makeArc(cam, cam.fam[vi], cam.unproj(r.q), !onBox && (R.behind || around), { fam: "r" + vi, ch: r.ch })); });
   });
   if (state.horizon.show) push(makeArc(cam, V3(0, 0, 1), V3(1, 0, 0), true, { fam: "h" }));
@@ -1750,7 +1771,7 @@ function drawGuides(c, k, b, inc, g) {
     for (const t of ts) { const q = add(g.O, mul(along, t)), a = add(q, mul(d, -L)), e = add(q, mul(d, L)); p.moveTo(a.x, a.y); p.lineTo(e.x, e.y); }
     return p;
   };
-  const onBox = !!rayBox();
+  const onBox = !!guideFit(true, g);
   if (inc.verticals && V.show && state.mode !== "3pt" && !g.iso) {
     // one path per letter, each in its letter's style, A on top, all reaching as far so their dashes line up
     let marks = verticalMarks(g).filter(m => m.ch !== "."), L = farDist(g.O, b) + Math.abs(V.offset) + V.count * V.spacing;
@@ -2947,7 +2968,9 @@ function setP(path, val) {
   if (path === "boxes.$b.rayFit") {
     // only one box at a time spaces the rays
     if (val) state.boxes.forEach(b => { b.rayFit = false; });
-    rawSet(parts, val); touch(); return;
+    rawSet(parts, val);
+    const bx = state.boxes[state.sel]; if (val && bx && !bx.raySnap) bx.raySnap = Object.fromEntries(raySnapIds(bx, geo()).map(k => [k, true]));
+    touch(); return;
   }
   if (path === "boxes.$b.centerH") {
     // turning it on centers the box straight away, unless the view can't show it that way
@@ -3104,47 +3127,45 @@ const schema = [
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas or place it here, and set its rays below. Even out VPs, on the toolbar, spaces all three evenly, keeping VP3 on its side of the horizon, and centers them on the page.", when: onVP3 },
     { t: "range", bind: "curvi.f6.back", label: "Back rim (× the 90° ring)", min: 1.1, max: 4, step: 0.05, lo: BACK_MIN, hi: BACK_MAX, when: () => is6() && ui.vp === 3 },
     { t: "sub", label: "Rays", when: placedInTab },
-    { t: "readout", label: () => `Rays spaced along ${rayBox().name}`, text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(b, geo(), box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
+    { t: "readout", label: () => `Rays spaced along ${rayBox().name}`, text: () => `The rays are spaced along ${rayBox().name}: they run through the edges and division lines of the faces and planes chosen under Rays snap to; with one face or plane chosen they carry on past it, with more they stay within the box. Turn that off under Boxes to space them here again.`, when: () => !!fitFor(ui.vp) },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show rays" },
-      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || isIso() || rayBox()) },
+      { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || isIso() || fitFor(ui.vp)) },
       { bind: "linkRays", label: () => (isIso() ? "Edit axes 1 and 2 together" : "Edit VP1 and VP2 together"), when: () => ui.vp < 2 && fams().includes(1) }
     ] },
-    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !rayBox() && !isIso() },
-    { t: "range", bind: "vps.$v.rays.count", label: () => rayBox() ? "Rays past the box at each end" : isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
-    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isSpacing() && !rayBox() && !isIso() },
-    { t: "range", bind: "vps.0.rays.count", uid: "iso", label: "Lines each side of the middle (all three axes)", min: 0, max: 80, step: 1, hi: 400, when: () => isIso() && !rayBox() },
-    { t: "range", bind: "vps.0.rays.spacing", uid: "iso", label: "Grid spacing (all three axes)", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isIso() && !rayBox() },
-    { t: "range", bind: "vps.$v.rays.measure", label: () => (isIso() ? "Offset" : ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: () => isSpacing() && !rayBox() },
-    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() && !rayBox() },
-    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() && !rayBox() },
+    { t: "toggle", bind: "vps.$v.rays.mode", label: "Distribution", options: [["spacing", "Even spacing"], ["angle", "Even angles"]], when: () => !fitFor(ui.vp) && !isIso() },
+    { t: "range", bind: "vps.$v.rays.count", label: () => fitFor(ui.vp) ? "Rays past the box at each end" : isSpacing() ? (ui.vp >= 2 ? "Rays left and right of center" : "Rays above and below horizon") : "Ray count", min: 1, max: 120, step: 1, lo: 0, hi: 400 },
+    { t: "range", bind: "vps.$v.rays.spacing", label: "Spacing on measuring line", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isSpacing() && !fitFor(ui.vp) && !isIso() },
+    { t: "range", bind: "vps.0.rays.count", uid: "iso", label: "Lines each side of the middle (all three axes)", min: 0, max: 80, step: 1, hi: 400, when: () => isIso() && [0, 1, 2].some(v => !fitFor(v)) },
+    { t: "range", bind: "vps.0.rays.spacing", uid: "iso", label: "Grid spacing (all three axes)", min: 4, max: 400, step: 1, lo: 0.5, hi: 100000, when: () => isIso() && [0, 1, 2].some(v => !fitFor(v)) },
+    { t: "range", bind: "vps.$v.rays.measure", label: () => (isIso() ? "Offset" : ui.vp >= 2 ? "Measuring line distance from horizon" : "Measuring line position"), min: -6000, max: 6000, step: 1, when: () => isSpacing() && !fitFor(ui.vp) },
+    { t: "range", bind: "vps.$v.rays.spread", label: "Fan spread (°)", min: 1, max: 360, step: 1, hi: 360, when: () => !isSpacing() && !fitFor(ui.vp) },
+    { t: "range", bind: "vps.$v.rays.rotate", label: "Fan rotation (°)", min: -180, max: 180, step: 0.5, lo: -360, hi: 360, when: () => !isSpacing() && !fitFor(ui.vp) },
     { t: "sub", label: "Pattern and styles" },
     { t: "pattern", of: RAY_PATTERN },
-    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !rayBox() && !isIso() },
-    { t: "toggle", bind: "vps.$v.rays.from", uid: "iso", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !rayBox() && isIso() },
+    { t: "toggle", bind: "vps.$v.rays.from", label: "Pattern starts at", options: [["center", "Horizon"], ["edge", "Outermost ray"]], when: () => !fitFor(ui.vp) && !isIso() },
+    { t: "toggle", bind: "vps.$v.rays.from", uid: "iso", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !fitFor(ui.vp) && isIso() },
     { t: "styles", of: RAY_PATTERN },
     { t: "note", html: "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a ray style, set in the table, <code>.</code> skips a ray, and the pattern repeats. A's color also colors the VP's marker. Edited together, VP1 and VP2 still keep their own colors." },
     // the Verticals tab: 1-, 2-point and the panorama's vertical guides (3-point and the other curved views draw their
     // verticals as rays, under VP3 or Up & down)
-    { guide: true, t: "readout", label: () => `Verticals spaced along ${rayBox().name}`, text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the corners and ${rayBox().rayFaces === "caps" ? "where the division lines on its top and bottom meet the edges" : "vertical division lines"} of its front faces${rayBox().rayFaces === "front" ? ", hidden or not," : ", or of its back faces once the front ones are all hidden,"} and carry on past it. Turn that off under Boxes to space them here again.`, when: () => usesVerticals() && !!rayBox() },
+    { guide: true, t: "readout", label: () => `Verticals spaced along ${rayBox().name}`, text: () => `The verticals are spaced along ${rayBox().name}, like the rays: they stand at the upright edges and division lines of the faces and planes chosen under Rays snap to; with one face or plane chosen they carry on past it, with more they stay within the box. Turn that off under Boxes to space them here again.`, when: () => !!guideFit(true) },
     { guide: true, t: "checks", items: [{ bind: "verticals.show", label: "Show" }] },
-    { guide: true, t: "range", bind: "verticals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines each side of the middle"), min: 0, max: 80, step: 1, hi: 400 },
-    { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !rayBox() },
-    { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !rayBox() },
+    { guide: true, t: "range", bind: "verticals.count", label: () => (guideFit(true) ? "Lines past the box at each end" : "Lines each side of the middle"), when: () => !guideFit(true) || snapCount() === 1, min: 0, max: 80, step: 1, hi: 400 },
+    { guide: true, t: "range", bind: "verticals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !guideFit(true) },
+    { guide: true, t: "range", bind: "verticals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !guideFit(true) },
     { guide: true, t: "sub", label: "Pattern and styles" },
     { guide: true, t: "pattern", of: VERT_PATTERN },
-    { guide: true, t: "toggle", bind: "verticals.from", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !rayBox() },
+    { guide: true, t: "toggle", bind: "verticals.from", label: "Pattern starts at", options: [["center", "Middle"], ["edge", "Outermost line"]], when: () => !guideFit(true) },
     { guide: true, t: "styles", of: VERT_PATTERN },
     { guide: true, t: "note", html: () => "Type any letters <code>A</code> to <code>Z</code> and dots: each letter is a line style, set in the table, <code>.</code> skips a guide, and the pattern repeats. A's color also colors the Verticals tab." + (isPano() ? " In a panorama the vertical guides stay straight." : "") }
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
-    { t: "readout", label: () => `Horizontals spaced along ${rayBox().name}`, text: () => (rayBox().rayFaces === "caps"
-      ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its ${capsText(rayBox(), geo(), box3(rayBox(), geo()))}, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
-      : `The horizontals are spaced along ${rayBox().name}, like the rays: they run level with its top, bottom and division heights and carry on above and below it. Turn that off under Boxes to space them here again.`), when: () => !!rayBox() },
+    { t: "readout", label: () => `Horizontals spaced along ${rayBox().name}`, text: () => `The horizontals are spaced along ${rayBox().name}, like the rays: they run along the level lines, across the picture, of the faces and planes chosen under Rays snap to; with one face or plane chosen they carry on past it, with more they stay within the box. Turn that off under Boxes to space them here again.`, when: () => !!guideFit(false) },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
-    { t: "range", bind: "horizontals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines above and below"), min: 0, max: 80, step: 1, hi: 400 },
-    { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !rayBox() },
-    { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !rayBox() },
+    { t: "range", bind: "horizontals.count", label: () => (guideFit(false) ? "Lines past the box at each end" : "Lines above and below"), when: () => !guideFit(false) || snapCount() === 1, min: 0, max: 80, step: 1, hi: 400 },
+    { t: "range", bind: "horizontals.spacing", label: "Spacing", min: 4, max: 600, step: 1, lo: 0.5, hi: 100000, when: () => !guideFit(false) },
+    { t: "range", bind: "horizontals.offset", label: "Offset", min: -600, max: 600, step: 1, when: () => !guideFit(false) },
     { t: "color", bind: "horizontals.color", label: "Color" },
     { t: "range", bind: "horizontals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500 },
     { t: "select", bind: "horizontals.dash", label: "Line style", options: DASH },
@@ -3167,9 +3188,10 @@ const schema = [
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
     { t: "check", bind: "boxes.$b.rayFit", label: "Space the rays along this box", when: hasBox },
-    { t: "select", bind: "boxes.$b.rayFaces", label: "Rays run along", options: [["sides", "Vertical faces"], ["front", "Front faces, even hidden"], ["caps", "Top and bottom"]], when: () => hasBox() && !!getP("boxes.$b.rayFit") },
-    // through just those faces' division lines, fixed, or every divided face you can see, which varies with the view
-    { t: "toggle", bind: "boxes.$b.rayThrough", label: "Rays go through", options: [["along", () => (getP("boxes.$b.rayFaces") === "caps" ? "Top and bottom only" : "Front faces only")], ["all", "Every face you see"]], when: () => hasBox() && !!getP("boxes.$b.rayFit") },
+    // which faces (and planes) the rays snap to
+    { t: "checks", label: "Rays snap to", items: SNAP_FACES.map(id => ({ bind: "boxes.$b.raySnap." + id, label: () => snapLabel(id), get: () => snapOn(id), set: v => setSnap(id, v) })), when: rayFitOn },
+    { t: "checks", label: "Planes", items: ["x", "y", "z"].flatMap(k => Array.from({ length: PLANES_MAX - 1 }, (_, i) => k + (i + 1))).map(id => ({ bind: "boxes.$b.raySnap." + id, label: () => snapLabel(id), get: () => snapOn(id), set: v => setSnap(id, v), when: () => planeIdsOf(state.boxes[state.sel]).includes(id) })), when: () => rayFitOn() && planeIdsOf(state.boxes[state.sel]).length > 0 },
+    { t: "note", html: "The rays run through the edges and division lines of each face or plane ticked here: each VP's through the lines running to it, the vertical guides (or VP3's, or the up and down VPs' rays) through the upright ones. With one ticked, the rays carry on past it to the sides, as many as each VP's count says; with more, they cross just those faces and planes and stop at the box. A VP with no lines on what's ticked keeps its own spacing.", when: rayFitOn },
     { t: "note", html: "Sizes are in pixels, as the box looks where the middle of its base sits. Width and length grow out from the middle of the base and height grows upward, so the box stays in place. While Center on horizon is on, the horizon line runs through the middle of the box: dragging it slides it along the horizon, and height grows evenly above and below. Space the rays along this box runs every VP's rays through the box's corners and division lines, at the same spacing, and on past it; one box at a time. With rays running along Vertical faces they continue the division lines across its sides, and lines that run up and down (the vertical guides among them) stand at its vertical division lines. Along Top and bottom, the rays below the horizon continue the division lines across its bottom instead, and the rays above it the ones across its top (a box below eye level has only the first, one above it only the second), and lines up and down stand where those meet the box's edges; in 1-point the horizontal guides follow suit. Lines up and down use the front faces' edges, or the back faces' once the front ones are all hidden. Front faces, even hidden, works like Vertical faces but stays on the front faces when they're hidden.", when: hasBox },
     { t: "select", bind: "boxes.$b.mode", label: "Display", options: [["solid", "Solid"], ["ghost", "Ghosted"], ["wire", "Wireframe"]], when: hasBox },
     { t: "range", bind: "boxes.$b.ghost", label: "Ghost opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => hasBox() && getP("boxes.$b.mode") === "ghost" },
@@ -3286,7 +3308,7 @@ function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); f
 // The rays section shows the chosen tab's rows: a VP's own and its rays, or with Verticals the vertical guides (the
 // rows above the tabs show with all of them)
 { const sec = schema.find(s => s.id === "vps"); sec.rows.forEach(r => { if (r.t === "seg" || r.top) return; const w = r.when, g = !!r.guide; r.when = () => guidesTab() === g && (!w || w()); }); }
-{ const r = schema.find(s => s.id === "vps").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!rayBox()) && (!w || w()); }
+{ const r = schema.find(s => s.id === "vps").rows.find(x => x.bind === "vps.$v.rays.count"), w = r.when; r.when = () => (!isIso() || !!fitFor(ui.vp)) && !(fitFor(ui.vp) && snapCount() > 1) && (!w || w()); }
 
 const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
@@ -3377,12 +3399,13 @@ function makeRow(r) {
       // several on/off settings in one row; each one hides where it doesn't apply
       const items = r.items.map(it => {
         const iid = idFor(it.bind), inp = el("input", { type: "checkbox", id: iid });
-        inp.addEventListener("change", () => { setP(it.bind, inp.checked); commit(); });
+        inp.addEventListener("change", () => { if (it.set) it.set(inp.checked); else setP(it.bind, inp.checked); commit(); });
         const lab = el("label", { for: iid }, labelText(it));
         return { it, inp, lab, cell: el("span", { class: "chk" }, inp, lab) };
       });
-      node = el("div", { class: "checks" }, ...items.map(x => x.cell));
-      update = () => items.forEach(({ it, inp, lab, cell }) => { cell.hidden = !!it.when && !it.when(); inp.checked = !!getP(it.bind); lab.textContent = labelText(it); });
+      const head = r.label ? el("span", { class: "lab checks-lab" }, labelText(r)) : null;
+      node = el("div", { class: "checks" }, ...(head ? [head] : []), ...items.map(x => x.cell));
+      update = () => items.forEach(({ it, inp, lab, cell }) => { cell.hidden = !!it.when && !it.when(); inp.checked = it.get ? !!it.get() : !!getP(it.bind); lab.textContent = labelText(it); });
       break;
     }
     case "toggle": {
