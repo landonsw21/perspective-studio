@@ -3807,7 +3807,7 @@ function syncToolbar() {
   document.getElementById("tbMode").value = modeKey();
   const reset = document.getElementById("tbReset"), name = "Reset " + modeName().toLowerCase();
   reset.setAttribute("aria-label", name);
-  reset.title = name + ": everything back to its defaults (the horizon, vanishing points and lenses, rays, guides, colors, snapping, the page and the export settings), staying in this view, with one box in the middle of the page. Undo (Ctrl/⌘ Z) brings back what was there.";
+  reset.title = name + ": everything back to its defaults (the horizon, vanishing points and lenses, rays, guides, colors, snapping and the export settings), staying in this view, on an 11 × 8.5 in page with one box in the middle, the rays snapping to it, all in one style. Undo (Ctrl/⌘ Z) brings back what was there.";
   document.getElementById("tbExport").textContent = "Export " + EXPORT_FORMATS[state.export.format];
 }
 
@@ -4022,12 +4022,17 @@ function resetAll() {
   if (!ui.resetArm) { ui.resetArm = true; touch(); setTimeout(() => { ui.resetArm = false; touch(); }, 3000); return; }
   ui.resetArm = false; state = defaultState(); state.boxes.push(makeBox(geo())); state.sel = 0; commit(); touch(); fitView(); toast("Reset to defaults. Undo brings it back.");
 }
-// Puts everything back as a new drawing has it, staying in the perspective in use: the horizon, the VPs and every view's
-// lens, the rays, guides, colors, snapping, the page and the export settings all at their defaults, with the VPs pushed out
-// past the page if they'd land on it, and in place of the boxes the box a new drawing starts with, in the middle of the
-// page and taking up about a quarter of it. One undo brings it all back.
+// Puts everything back at its defaults, staying in the perspective in use: the horizon, the VPs and every view's lens, the
+// rays, guides, colors, snapping and the export settings, with the VPs pushed out past the page if they'd land on it, and
+// in place of the boxes the box a new drawing starts with, in the middle of the page and taking up about a quarter of it.
+// Reset's own starting point differs from a new drawing's in three ways: the page is Letter on its side (11 × 8.5 in),
+// every VP's rays are in one style (pattern A), and the rays are spaced along the box, snapping to the face you look at most
+// squarely, as ticking it in the panel would.
+// One undo brings it all back.
 function resetPerspective() {
   const d = defaultState(); d.mode = state.mode; d.curvi.style4 = state.curvi.style4;
+  Object.assign(d.viewport, { x: -1100, y: -850, w: 2200, h: 1700 });
+  d.vps.forEach(v => { v.rays.pattern = "A"; });
   state = d; ui.scales = {}; // (the sliders' reach too)
   const s = state, V = s.viewport, mid = P(V.x + V.w / 2, V.y + V.h / 2);
   // The VPs off the page: the system grows (the VP distances, or the lens) until every VP is clear of the page by a tenth
@@ -4043,6 +4048,9 @@ function resetPerspective() {
   for (let i = 0; i < 4; i++) { fitBox(bx, dims, mid, size, g); const c = cover(); if (!(c > 0) || Math.abs(c - 0.25) < 0.005) break; size *= Math.sqrt(0.25 / c); }
   captureFit(bx, g);
   s.boxes = [bx]; s.sel = 0; ui.ring = null; hover = null; latch = null; closeFaces();
+  // (to the face a tick in the panel starts with, the one you look at most squarely: its rays carry on past it above and below
+  // the horizon, where a top or bottom seen nearly edge-on would crowd them into a band beside it)
+  bx.rayFit = true; bx.raySnap = { [squarestFace(bx, g)]: true };
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   commit(); touch(); fitView();
   toast(`Reset ${modeName().toLowerCase()}: everything is back to its defaults. Undo brings back what was there.`);
