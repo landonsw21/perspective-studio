@@ -924,6 +924,10 @@ function boxSpots({ B, H }, D, extra, { hub, wings }, upright, caps) {
 // eye level. So a box below eye level gets the bottom's, one above it the top's, and one across it both, one
 // above the horizon and one below. (The base's corners all sit at one height, eye level being height 0.)
 const capsInUse = ({ B, H }) => ({ bottom: B[0].y < -1e-9, top: B[0].y + H > 1e-9 });
+// The caps the lines follow: the one you can see, the top looking down on the box or the bottom looking up at it (lines
+// through a cap you can't see too would give a second fan of rays beside the first). A box across eye level shows
+// neither, and gets both as above, one each side of the horizon, where they can't double up.
+const capsFollowed = (bx, g, b3) => { const s = capsSeen(bx, g); return s.bottom || s.top ? s : capsInUse(b3); };
 // Lines running along its first axis (`axis` 0) or its second (1) continue those caps' division lines: they go
 // through the points on each one's edge along the other axis from the corner nearest you, at the caps' division
 // spacing and `extra` more past each end, counted from that corner as the caps' division lines are. Each such
@@ -937,28 +941,27 @@ function capSpots(b3, D, extra, axis, use = capsInUse(b3)) {
 const capsSeen = (bx, g) => { const f = homeGeo(bx, g).faces, on = id => f.find(x => x.id === id).front && bx.faces[id] !== false; return { bottom: on("bottom"), top: on("top") }; };
 // Every face you can see that's divided gets lines through its division lines, not just the faces the lines run along
 // (which also carry them on past the box): with the rays along the vertical faces, the lines on the top or bottom you
-// can see; along the top and bottom, the vertical faces' rows (and their columns, for the lines that run up and down) and
-// the top or bottom you can see where the lines follow the other one.
+// can see; along the top and bottom, the vertical faces' rows (and their columns, for the lines that run up and down).
 // Those extra lines stop at the box's own edges (no more past each end). `axis` is the cap axis the lines run along.
 function moreSpots(bx, g, b3, wings, upright, onCaps, axis) {
   const D = bx.div, out = []; if (!D.on || bx.rayThrough === "along") return out; // (or just the faces they run along)
   if (!upright && D.caps) {
-    // the caps you can see (along the top and bottom, the ones the lines don't already follow)
-    const seen = capsSeen(bx, g), used = onCaps ? capsInUse(b3) : { bottom: false, top: false };
+    // the caps you can see (along the top and bottom, the lines already follow those)
+    const seen = capsSeen(bx, g), used = onCaps ? capsFollowed(bx, g, b3) : { bottom: false, top: false };
     out.push(...capSpots(b3, D, 0, axis, { bottom: seen.bottom && !used.bottom, top: seen.top && !used.top }));
   }
   if (onCaps && D.sides) out.push(...boxSpots(b3, D, 0, wings, upright, false));
   return out;
 }
 // What the panel says the rays follow: "bottom", "top", or both, each on its side of the horizon
-const capsText = b3 => { const u = capsInUse(b3); return u.bottom && u.top ? "bottom below the horizon and its top above it" : u.top ? "top" : "bottom"; };
+const capsText = (bx, g, b3) => { const u = capsFollowed(bx, g, b3); return u.bottom && u.top ? "bottom below the horizon and its top above it" : u.top ? "top" : "bottom"; };
 function boxRays(vi, g, bx) {
   const R = state.vps[vi].rays, V = g.vp[vi], pat = R.pattern || "A", out = [];
   const b3 = box3(bx, g), cam = b3.cam, [A1, A2] = cam.axes;
   const dir = g.cam ? g.cam.fam[vi] : state.mode === "1pt" || vi === 1 ? A2 : vi === 2 ? UP3 : A1;
   const upright = Math.abs(d3(n3(dir), UP3)) > 0.9, extra = Math.max(0, Math.round(R.count)), onCaps = bx.rayFaces === "caps", caps = onCaps && !upright;
   const axis = Math.abs(d3(dir, A2)) > Math.abs(d3(dir, A1)) ? 1 : 0, wings = boxWings(bx, g, b3.B);
-  const spots = (caps ? capSpots(b3, bx.div, extra, axis) : boxSpots(b3, bx.div, extra, wings, upright, onCaps)).concat(moreSpots(bx, g, b3, wings, upright, onCaps, axis));
+  const spots = (caps ? capSpots(b3, bx.div, extra, axis, capsFollowed(bx, g, b3)) : boxSpots(b3, bx.div, extra, wings, upright, onCaps)).concat(moreSpots(bx, g, b3, wings, upright, onCaps, axis));
   for (let { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) {
       // behind you through a flat camera. A line across the top or bottom still comes into view further along,
@@ -984,7 +987,7 @@ function guidesAt(G, g, upright, from, dir, marks = false) {
   if (!fit) { for (let j = -G.count; j <= G.count; j++) out.push(marks ? { t: G.offset + j * G.spacing, j } : G.offset + j * G.spacing); return out; }
   const b3 = box3(fit, g), cam = b3.cam, extra = Math.max(0, Math.round(G.count)), onCaps = fit.rayFaces === "caps";
   const wings = boxWings(fit, g, b3.B);
-  const spots = (!upright && onCaps ? capSpots(b3, fit.div, extra, 0) : boxSpots(b3, fit.div, extra, wings, upright, onCaps)).concat(moreSpots(fit, g, b3, wings, upright, onCaps, 0));
+  const spots = (!upright && onCaps ? capSpots(b3, fit.div, extra, 0, capsFollowed(fit, g, b3)) : boxSpots(b3, fit.div, extra, wings, upright, onCaps)).concat(moreSpots(fit, g, b3, wings, upright, onCaps, 0));
   const seen = [];
   for (const { p, j } of spots) {
     if (cam.depthOf && cam.depthOf(p) <= 1e-6) continue; // behind you through a flat camera
@@ -3101,7 +3104,7 @@ const schema = [
     { t: "note", html: "Edges that were vertical now run to VP3: below the horizon for a bird's-eye view, above it for a worm's-eye view. Drag VP3 on the canvas or place it here, and set its rays below. Even out VPs, on the toolbar, spaces all three evenly, keeping VP3 on its side of the horizon, and centers them on the page.", when: onVP3 },
     { t: "range", bind: "curvi.f6.back", label: "Back rim (× the 90° ring)", min: 1.1, max: 4, step: 0.05, lo: BACK_MIN, hi: BACK_MAX, when: () => is6() && ui.vp === 3 },
     { t: "sub", label: "Rays", when: placedInTab },
-    { t: "readout", label: () => `Rays spaced along ${rayBox().name}`, text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
+    { t: "readout", label: () => `Rays spaced along ${rayBox().name}`, text: () => { const b = rayBox(), across = b.rayFaces === "caps" ? `, following the division lines on its ${capsText(b, geo(), box3(b, geo()))}` : ""; return `The rays are spaced along ${b.name}${across}: they run through its corners and division lines and carry on past it. Turn that off under Boxes to space them here again.`; }, when: () => !!rayBox() },
     { t: "checks", items: [
       { bind: "vps.$v.rays.show", label: "Show rays" },
       { bind: "vps.$v.rays.behind", label: "Extend behind the VP", when: () => !(isPano() || is6() || isFish4() || isIso() || rayBox()) },
@@ -3136,7 +3139,7 @@ const schema = [
   ]},
   { id: "horizontals", title: "Horizontal guides", open: false, when: is1, rows: [
     { t: "readout", label: () => `Horizontals spaced along ${rayBox().name}`, text: () => (rayBox().rayFaces === "caps"
-      ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its ${capsText(box3(rayBox(), geo()))}, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
+      ? `The horizontals are spaced along ${rayBox().name}, like the rays: they run across its ${capsText(rayBox(), geo(), box3(rayBox(), geo()))}, continuing the division lines there, and carry on in front of and behind it. Turn that off under Boxes to space them here again.`
       : `The horizontals are spaced along ${rayBox().name}, like the rays: they run level with its top, bottom and division heights and carry on above and below it. Turn that off under Boxes to space them here again.`), when: () => !!rayBox() },
     { t: "check", bind: "horizontals.show", label: "Show horizontals (parallel to the horizon)" },
     { t: "range", bind: "horizontals.count", label: () => (rayBox() ? "Lines past the box at each end" : "Lines above and below"), min: 0, max: 80, step: 1, hi: 400 },
