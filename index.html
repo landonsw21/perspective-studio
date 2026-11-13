@@ -3319,7 +3319,7 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -4526,7 +4526,7 @@ window.addEventListener("keydown", e => {
 
 /* ---------- editing faces ---------- */
 // Clicking a face or plane (a click, not a drag, which only moves the box) picks it to edit on its own, in a pop-up beside the click: whether it shows, the box's turn
-// around the axis through it, and the settings it can have of its own, each in place of its box's (its opacity and
+// around the axis through it, whether the rays snap to it, and the settings it can have of its own, each in place of its box's (its opacity and
 // color, its edges', and how it's divided, with its division lines' and diagonals' look). With one picked, Shift-click
 // more, on any box, to edit them together (Shift-click one again to drop it); with none, Shift-click still hides a face.
 // Escape, the close button or a click on empty space puts it away. Its rows are the panel's own, kept up to date with it.
@@ -4560,11 +4560,25 @@ function turnPicked(k, v) {
   touch();
 }
 const sameAll = get => { const ps = picks(); return ps.length > 1 && new Set(ps.map(get)).size > 1; };
+// Rays snapped to the faces picked, all on one box (the rays are spaced along one box at a time): ticked, the box spaces
+// the rays, along just these if it didn't already, or along these as well as the faces it had; unticked, these drop out,
+// and with none left the box stops spacing them. The same choice as the box's Rays snap to.
+const pickBox = () => { const ps = picks(); return ps.length && ps.every(p => p.bi === ps[0].bi) ? ps[0].bx : null; };
+const snapsTo = p => !!p.bx.rayFit && raySnapIds(p.bx, geo()).includes(p.id);
+function snapPicked(on) {
+  const bx = pickBox(); if (!bx) return;
+  const ids = picks().map(p => p.id), had = bx.rayFit ? raySnapIds(bx, geo()) : [];
+  const now = on ? [...new Set([...had, ...ids])] : had.filter(id => !ids.includes(id));
+  if (on) state.boxes.forEach(b => { b.rayFit = b === bx; });
+  if (now.length) { bx.raySnap = Object.fromEntries(now.map(k => [k, true])); bx.rayFit = true; } else bx.rayFit = false;
+  touch();
+}
 const FACE_ROWS = [
   { t: "check", bind: "face.shown", label: () => (ui.faces.length > 1 ? "Show them" : "Show"), get: () => picks().every(p => surfaceShown(p.bx, p.id)), mixed: () => sameAll(p => surfaceShown(p.bx, p.id)), set: v => { picks().forEach(p => setSurfaceShown(p.bx, p.id, v)); touch(); } },
   ...["x", "y", "z"].map((key, k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${AXIS_NAMES[k]}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && picks().some(q => faceAxis(q.id) === k) })),
   { t: "range", bind: "face.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("opacity"), set: ownSet("opacity") },
   { t: "color", bind: "face.fill", label: "Color", get: lookGet("fill"), set: ownSet("fill") },
+  { t: "check", bind: "face.snap", label: () => (ui.faces.length > 1 ? "Snap rays to them" : "Snap rays to it"), get: () => picks().every(snapsTo), mixed: () => sameAll(snapsTo), set: snapPicked, when: () => editing() && !!pickBox() },
   { t: "sub", label: "Edges" },
   { t: "color", bind: "face.stroke", label: "Edge color", get: lookGet("stroke"), set: ownSet("stroke") },
   { t: "range", bind: "face.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, hi: 500, get: lookGet("width"), set: ownSet("width") },

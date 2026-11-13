@@ -35,6 +35,7 @@ Choose the mode from the perspective dropdown on the toolbar, which lists 4-poin
 - Rectangular prisms that snap to ray intersections, guide lines and the corners of other boxes, every one drawn ghosted at its **Opacity**, from 0% (see-through, as a wireframe was) to 100% (solid, as a solid box was), the faces behind included (they show where a face is hidden); new boxes start ghosted at 30%, and boxes saved solid or as wireframes open at 100% or 0%. **Click a face or a subdividing plane** of any box (Alt, or hiding the faces in front, reaches one behind) to edit it on its own in a pop-up beside the click. A click opens it; a drag only moves the box, and a drag straight after the click (a tap and then a drag on a trackpad) puts it away again. The pop-up holds:
   - **Show**, to hide the face or bring it back, and the box's turn around the axis through it (the same angle as its slider and its rotation circle)
   - its **Opacity** and **Color**
+  - **Snap rays to it** (to them, with several picked, all on one box): the same choice as the box's Rays snap to. Ticked, the box spaces the rays along it, along just the faces picked if it didn't space them already, or along them as well as the ones it had (and any other box stops); unticked, they drop out, and with none left the box stops spacing the rays. With faces on more than one box picked it isn't offered, as the rays follow one box at a time
   - its **Edges'** color, weight and opacity. An edge it shares with a face that has no edges of its own takes its look; between two that both have, the one in front wins
   - its **Divisions**: on or off, and how many lines run each way, named for where they run (to VP1, to VP2, vertical, and so on in each view), which the rays spaced along the box follow too
   - its division lines' color, weight and opacity, standing in for every letter of the pattern
@@ -106,6 +107,7 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
   - **Edges:** a face's own edge color and weight drew on the edges it shares with plain faces, and on its own. The box's other edges drew exactly as before, and of two faces with their own edges, the first in front won.
   - **Saving and loading:** a face's own line count moved the rays spaced along the box. The settings lasted through saving and loading, with bad values dropped. An older save's O-key opacities opened as the faces' own, and a plane's settings went when its direction's count changed.
   - **Export:** the PDF exported with faces' own settings. No errors in the console.
+  - **Snap rays to it:** ticking it on a box that wasn't spacing the rays spaced them along just that face. Adding a second face showed the box half-ticked (Snap rays to them) and ticking it added the face. Unticking dropped them, and with none left the box stopped. A face on the other box moved the rays there, and a plane was added the same way. Undo put it back, the panel's Rays snap to agreed, and with faces on two boxes picked the row was hidden.
 
 Stress tested from 27 October to 13 November 2026 with scripted runs in the browser, covering all six modes and both 4-point styles:
 
