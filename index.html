@@ -115,13 +115,19 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 .info:hover .i, .info[aria-expanded="true"] .i { border-color: var(--accent); background: var(--accent-soft); }
 #infoTip { position: fixed; z-index: 60; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; padding: 9px 11px; box-shadow: 0 6px 20px rgb(0 0 0 / .2); font: 400 12px/1.45 var(--f-ui); }
 #infoTip p { margin: 0; } #infoTip p + p { margin-top: 6px; }
-#opPop { position: fixed; z-index: 61; box-sizing: border-box; width: 232px; display: grid; gap: 8px; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; padding: 9px 11px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); font: 400 12px/1.3 var(--f-ui); }
-#opPop .op-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-#opPop .op-head { font-weight: 600; }
-#opPop .btn { padding: 4px 8px; font-size: 11px; }
-#opPop .op-row { display: flex; align-items: center; gap: 6px; }
-#opPop input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
-#opPop .num { width: 52px; }
+#facePop { position: fixed; z-index: 61; box-sizing: border-box; width: 290px; max-height: calc(100vh - 16px); overflow-y: auto; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 7px; box-shadow: 0 6px 20px rgba(0, 0, 0, .2); font: 400 12px/1.3 var(--f-ui); }
+#facePop .fp-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px 7px 11px; background: var(--panel); border-bottom: 1px solid var(--rule); cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; }
+#facePop .fp-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#facePop .fp-x { flex: none; width: 24px; height: 24px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font: 400 17px/1 var(--f-ui); cursor: pointer; }
+#facePop .fp-x:hover { color: var(--ink); border-color: var(--rule); }
+#facePop .fp-body { display: grid; gap: 7px; padding: 8px 11px 11px; }
+/* (sliders sit on one line with their label and number, to keep it short) */
+#facePop .row.range { grid-template-columns: 92px minmax(0, 1fr) 58px; }
+#facePop .row.range input[type=range] { grid-column: auto; order: 1; }
+#facePop .row.range .num { order: 2; width: 100%; }
+#facePop .pick .num { width: 52px; }
+#facePop select { max-width: 120px; }
+#facePop .btn { padding: 5px 9px; font-size: 11.5px; }
 #infoTip code { font-family: var(--f-data); font-size: 11px; }
 .ph .title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .note code { font-family: var(--f-data); font-size: 11px; color: var(--ink); }
@@ -399,7 +405,23 @@ const divDefaults = () => ({ on: true, vp: 4, vert: 4, sides: true, caps: true, 
 // direction: 0 across the width, 1 the length, 2 the height; -1 for a face. Loading a setup needs them, so they're here.)
 const PLANES_MAX = 10;
 const planeAxis = id => (/^[xyz]\d+$/.test(id) ? "xyz".indexOf(id[0]) : -1);
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, ghost: 0.3, opacity: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
+// A face's or plane's own settings, by its id, each in place of its box's (bx.own; see surfLook and surfDiv): how see-through
+// it is and its color; its edges' color, weight and opacity; whether it's divided, and into how many parts its lines run
+// each way (nu across its u, for the lines along v; nv across v); its division lines' color, weight and opacity; and its
+// diagonals and theirs. Each is kept only once set.
+const SURFACE_ID = /^(s01|s12|s23|s30|top|bottom|[xyz][1-9])$/;
+const DIAG_KINDS = ["none", "face", "columns", "rows", "cells", "cellsOne", "cellsFlip"];
+const OWN_KEYS = { opacity: "unit", fill: "color", stroke: "color", width: "weight", edgeOp: "unit", div: "bool", nu: "count", nv: "count", lineColor: "color", lineWidth: "weight", lineOp: "unit", diag: "diag", diagColor: "color", diagWidth: "weight", diagOp: "unit" };
+function cleanOwn(raw) {
+  const o = {};
+  for (const [k, kind] of Object.entries(OWN_KEYS)) {
+    const v = raw[k];
+    if (kind === "unit" ? Number.isFinite(v) : kind === "weight" ? Number.isFinite(v) && v > 0 : kind === "count" ? Number.isFinite(v) : kind === "bool" ? typeof v === "boolean" : kind === "diag" ? DIAG_KINDS.includes(v) : typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v))
+      o[k] = kind === "unit" ? Math.max(0, Math.min(1, v)) : kind === "weight" ? Math.min(500, v) : kind === "count" ? Math.max(1, Math.min(128, Math.round(v))) : v;
+  }
+  return o;
+}
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, ghost: 0.3, own: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -484,9 +506,12 @@ function normalize(s) {
     loadPattern(o.div, raw.styles && typeof raw.styles === "object" ? raw.styles : { A: { color: raw.color, width: raw.width, opacity: raw.opacity } }, divDefaults().styles);
     // From the box as saved, what merging with the defaults would leave out: boxes were solid, ghosted or wireframes, and
     // solid ones open fully opaque and wireframes see-through, at either end of the one opacity there is now; and the
-    // faces' and planes' own opacities, by id
+    // faces' and planes' own settings, by id
     if (b.mode === "solid") o.ghost = 1; else if (b.mode === "wire") o.ghost = 0;
-    o.opacity = b.opacity && typeof b.opacity === "object" ? Object.fromEntries(Object.entries(b.opacity).filter(([k, v]) => /^(s01|s12|s23|s30|top|bottom|[xyz][1-9])$/.test(k) && Number.isFinite(v)).map(([k, v]) => [k, Math.max(0, Math.min(1, v))])) : {};
+    o.own = {};
+    if (b.own && typeof b.own === "object") for (const [id, v] of Object.entries(b.own)) { if (SURFACE_ID.test(id) && v && typeof v === "object") { const c = cleanOwn(v); if (Object.keys(c).length) o.own[id] = c; } }
+    // (the faces' own opacities were kept on their own before they had other settings)
+    if (b.opacity && typeof b.opacity === "object") for (const [id, v] of Object.entries(b.opacity)) { if (SURFACE_ID.test(id) && Number.isFinite(v) && !(o.own[id] && "opacity" in o.own[id])) (o.own[id] = o.own[id] || {}).opacity = Math.max(0, Math.min(1, v)); }
     return o;
   });
   out.boxes.forEach(b => {
@@ -515,7 +540,7 @@ try { const raw = localStorage.getItem(STORE_KEY); state = raw ? normalize(JSON.
 const freshStart = !state;
 if (!state) state = defaultState();
 
-const ui = { vp: 0, guides: false, resetArm: false, scales: {} };
+const ui = { vp: 0, guides: false, resetArm: false, scales: {}, faces: [] }; // (faces: those picked to edit, each { bi, id })
 const view = { x: 0, y: 0, z: 1 };
 
 /* ---------- geometry ---------- */
@@ -947,20 +972,19 @@ function raySnapIds(bx, g) {
   return [squarestFace(bx, g)];
 }
 // A surface as a rectangle in 3D (box3's frame): corner O, edges U and V, and how many parts its division lines cut
-// each edge into (nU along U, for the lines parallel to V; nV along V), turned so O is the corner nearest you. A side
-// face's columns follow Vertical lines on sides and its rows Lines to the VPs; the top's and bottom's lines follow
-// Lines to the VPs both ways; a plane's are those of the face it lies parallel to, when the planes are divided.
+// each edge into (nU along U, for the lines parallel to V; nV along V), turned so O is the corner nearest you: as surfDiv
+// has them, its own counts or its box's.
 function surfaceRect(bx, { B, H }, id) {
-  const D = bx.div, up = m3(UP3, H), e1 = s3(B[1], B[0]), e2 = s3(B[3], B[0]), cut = (on, n) => (on ? Math.max(1, Math.round(n)) : 1);
-  let O, U, V, nU, nV;
-  if (id[0] === "s") { const a = +id[1], b = +id[2]; O = B[a]; U = s3(B[b], B[a]); V = up; nU = cut(D.on && D.sides, D.vert); nV = cut(D.on && D.sides, D.vp); }
-  else if (id === "top" || id === "bottom") { O = id === "top" ? a3(B[0], up) : B[0]; U = e1; V = e2; nU = nV = cut(D.on && D.caps, D.vp); }
+  const up = m3(UP3, H), e1 = s3(B[1], B[0]), e2 = s3(B[3], B[0]), sd = surfDiv(bx, id), nu = sd.on ? sd.nu : 1, nv = sd.on ? sd.nv : 1;
+  let O, U, V, nU = nu, nV = nv;
+  if (id[0] === "s") { const a = +id[1], b = +id[2]; O = B[a]; U = s3(B[b], B[a]); V = up; }
+  else if (id === "top" || id === "bottom") { O = id === "top" ? a3(B[0], up) : B[0]; U = e1; V = e2; if (id === "bottom") { nU = nv; nV = nu; } } // (the bottom's own u runs along the length)
   else {
     const k = planeAxis(id), n = bx.planes["xyz"[k]], i = +id.slice(1); if (!(k >= 0 && i >= 1 && i < n)) return null;
-    const t = i / n, on = D.on && D.planes && (k === 2 ? D.caps : D.sides);
-    if (k === 0) { O = a3(B[0], m3(e1, t)); U = e2; V = up; nU = cut(on, D.vert); nV = cut(on, D.vp); }
-    else if (k === 1) { O = a3(B[0], m3(e2, t)); U = e1; V = up; nU = cut(on, D.vert); nV = cut(on, D.vp); }
-    else { O = a3(B[0], m3(up, t)); U = e1; V = e2; nU = nV = cut(on, D.vp); }
+    const t = i / n;
+    if (k === 0) { O = a3(B[0], m3(e1, t)); U = e2; V = up; }
+    else if (k === 1) { O = a3(B[0], m3(e2, t)); U = e1; V = up; }
+    else { O = a3(B[0], m3(up, t)); U = e1; V = e2; }
   }
   const fu = l3(a3(O, U)) < l3(O), fv = l3(a3(O, V)) < l3(O); // (the corner nearest you, if U or V leads toward it)
   if (fu) { O = a3(O, U); U = m3(U, -1); } if (fv) { O = a3(O, V); V = m3(V, -1); }
@@ -998,8 +1022,8 @@ function fitFor(vi, g = geo()) { const fit = rayBox(); if (!fit) return null; co
 function guideFit(upright, g = geo()) { const fit = rayBox(); if (!fit) return null; const b3 = box3(fit, g); return surfaceSpots(fit, g, b3, upright ? UP3 : b3.cam.axes[0], 0).length ? fit : null; }
 // What the panel calls a surface: a face by where it sits (in its own unturned place, as the rays take it), a plane by
 // its axis and number
-function snapLabel(id) {
-  const bx = state.boxes[state.sel]; if (!bx) return id;
+function snapLabel(id, bx = state.boxes[state.sel]) {
+  if (!bx) return id;
   if (id === "top") return "Top"; if (id === "bottom") return "Bottom";
   if (planeAxis(id) >= 0) return `${"XYZ"[planeAxis(id)]} plane ${id.slice(1)}`;
   const g = geo(), G = homeGeo(bx, g), f = G.faces.find(x => x.id === id), twin = G.faces.find(x => x.id === OPPOSITE[id]), along = id === "s01" || id === "s23" ? 0 : 1;
@@ -1175,8 +1199,11 @@ const FACES = [
   { id: "s23", v: ["b2", "b3", "t3", "t2"], shade: 0.88 },
   { id: "s30", v: ["b3", "b0", "t0", "t3"], shade: 0.75 }
 ];
-// Every box geometry returns screen corners B/T and, per face, fill polygons, edge polylines, a front
-// flag, and line(u0,v0,u1,v1) for drawing on the face in its own perspective (as a list of polylines).
+// The face on the other side of each edge of each face (edge e runs from corner e to the next)
+const EDGE_MATE = Object.fromEntries(FACES.map(f => [f.id, f.v.map((a, e) => { const b = f.v[(e + 1) % 4]; return FACES.find(o => o !== f && o.v.includes(a) && o.v.includes(b)).id; })]));
+// Every box geometry returns screen corners B/T and, per face, fill polygons, edge polylines (all round, and `sides`,
+// each edge on its own), a front flag, and line(u0,v0,u1,v1) for drawing on the face in its own perspective (as a list
+// of polylines).
 function boxGeo(bx, g) {
   if (!turned(bx)) return homeGeo(bx, g);
   const F = turnFrame(bx, g);
@@ -1195,7 +1222,7 @@ function boxGeoLinear(bx, g) {
   const H = sg1 * sg3 * sg0;
   const faces = FACES.map(f => {
     const pts = f.v.map(pt), m = quadMap(pts);
-    return { id: f.id, shade: f.shade, front: polyArea(pts) * H > 0, fills: [pts], edges: [[...pts, pts[0]]], line: (u0, v0, u1, v1) => [[m(u0, v0), m(u1, v1)]] };
+    return { id: f.id, shade: f.shade, front: polyArea(pts) * H > 0, fills: [pts], edges: [[...pts, pts[0]]], sides: pts.map((p, e) => [[p, pts[(e + 1) % 4]]]), line: (u0, v0, u1, v1) => [[m(u0, v0), m(u1, v1)]] };
   });
   return { B, T, faces, verts: B.map((b, i) => [[b, T[i]]]) };
 }
@@ -1234,6 +1261,8 @@ function geoFrom3(B, T, cam, n) {
     const at = (uu, vv) => a3(q[0], a3(m3(s3(q[1], q[0]), uu), m3(s3(q[3], q[0]), vv)));
     return {
       id: f.id, shade: f.shade, front: d3(s3(fc, bc), fc) < 0, fills, edges: projPath(cam, [...ring, ring[0]], false),
+      // (each edge on its own, from corner e to the next, worked out only when a face has edges of its own to draw)
+      get sides() { return this._sides || (this._sides = q.map((p, e) => projPath(cam, samples(p, q[(e + 1) % 4], n), false))); },
       line: (u0, v0, u1, v1) => projPath(cam, samples(at(u0, v0), at(u1, v1), Math.max(2, Math.ceil(n * Math.max(Math.abs(u1 - u0), Math.abs(v1 - v0))))), false)
     };
   });
@@ -1246,6 +1275,28 @@ function geoFrom3(B, T, cam, n) {
 // drawn, picked and hidden the way faces are; bx.planes.hidden lists the hidden ones.
 const PLANE_SHADE = [0.75, 0.88];
 const surfaceShown = (bx, id) => (planeAxis(id) < 0 ? bx.faces[id] !== false : !bx.planes.hidden.includes(id));
+// A face's or plane's look, its own settings where it has them and its box's otherwise: its fill color and opacity, and
+// its edges' color, weight and opacity
+const ownOf = (bx, id) => (bx.own && bx.own[id]) || {};
+const either = (v, d) => (v !== undefined ? v : d);
+function surfLook(bx, id) {
+  const o = ownOf(bx, id);
+  return { fill: either(o.fill, bx.fill), opacity: either(o.opacity, Math.min(1, Math.max(0, bx.ghost))), stroke: either(o.stroke, bx.stroke), width: either(o.width, bx.width), edgeOp: either(o.edgeOp, 1) };
+}
+// How a face or plane is divided: whether it is (the box's Divide faces in perspective, with its choice for the sides, the
+// top and bottom and the planes, unless the face says otherwise), into how many parts across u and v (a side's columns
+// follow Vertical lines on sides and its rows Lines to the VPs, the top's and bottom's both follow Lines to the VPs, and a
+// plane's those of the face it lies parallel to), its diagonals, and its division lines' and diagonals' look.
+function surfDiv(bx, id) {
+  const D = bx.div, o = ownOf(bx, id), k = planeAxis(id), cap = k === 2 || id === "top" || id === "bottom";
+  const on = either(o.div, !!(D.on && (k < 0 || D.planes) && (cap ? D.caps : D.sides)));
+  const nu = Math.max(1, Math.round(either(o.nu, cap ? D.vp : D.vert))), nv = Math.max(1, Math.round(either(o.nv, D.vp)));
+  // (its own line color, weight or opacity stands in for every letter's; its diagonals take A's after that, unless set too)
+  const lines = o.lineColor !== undefined || o.lineWidth !== undefined || o.lineOp !== undefined, seen = new Map();
+  const line = st => { if (!lines) return st; if (!seen.has(st)) seen.set(st, Object.assign({}, st, { color: either(o.lineColor, st.color), width: either(o.lineWidth, st.width), opacity: either(o.lineOp, st.opacity) })); return seen.get(st); };
+  const A = line(D.styles.A), diagStyle = Object.assign({}, A, { color: either(o.diagColor, A.color), width: either(o.diagWidth, A.width), opacity: either(o.diagOp, A.opacity) });
+  return { on, nu, nv, diag: either(o.diag, D.diag), line, diagStyle, pattern: D.pattern || "A", hier: D.hier };
+}
 function setSurfaceShown(bx, id, on) {
   if (planeAxis(id) < 0) { bx.faces[id] = on; return; }
   bx.planes.hidden = bx.planes.hidden.filter(x => x !== id);
@@ -1484,10 +1535,10 @@ function boxVPs(bx, g) {
 }
 // The division lines a face draws, as fractions across it: those at u run along v, and those at v along u. Lines its
 // pattern skips are left out (the same count from the corner nearest you as drawDivisions).
-function faceDivisions(id, D, near) {
-  const cap = id === "top" || id === "bottom", us = [], vs = [];
-  if (!D || !D.on || (cap ? !D.caps : !D.sides)) return { us, vs };
-  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp), pat = D.pattern || "A", flip = { x: near === 1 || near === 2, y: near === 2 || near === 3, z: false }, [au, av] = FACE_AXES[id];
+function faceDivisions(bx, id, near) {
+  const us = [], vs = [], sd = surfDiv(bx, id);
+  if (!sd.on) return { us, vs };
+  const { nu, nv } = sd, pat = sd.pattern, flip = { x: near === 1 || near === 2, y: near === 2 || near === 3, z: false }, [au, av] = FACE_AXES[id];
   const drawn = (ax, i, n) => pat[((ax[0] === "-") !== flip[ax.slice(-1)] ? n - i : i) % pat.length] !== ".";
   for (let i = 1; i < nu; i++) if (drawn(au, i, nu)) us.push(i / nu);
   for (let j = 1; j < nv; j++) if (drawn(av, j, nv)) vs.push(j / nv);
@@ -1506,7 +1557,7 @@ function ownRays(bx, g, b) {
   for (const f of FACES) {
     const q = f.v.map(s => (s[0] === "b" ? B : T)[+s[1]]), fc = m3(q.reduce(a3, V3(0, 0, 0)), 1 / 4);
     if (bx.faces[f.id] === false || d3(s3(fc, mid), fc) >= 0) continue;
-    const at = (u, v) => a3(q[0], a3(m3(s3(q[1], q[0]), u), m3(s3(q[3], q[0]), v))), { us, vs } = faceDivisions(f.id, bx.div, near);
+    const at = (u, v) => a3(q[0], a3(m3(s3(q[1], q[0]), u), m3(s3(q[3], q[0]), v))), { us, vs } = faceDivisions(bx, f.id, near);
     for (const [p, r] of [...[0, ...us, 1].map(u => [at(u, 0), at(u, 1)]), ...[0, ...vs, 1].map(v => [at(0, v), at(1, v)])]) {
       const id = [key(p), key(r)].sort().join("|"); if (seen.has(id)) continue; seen.add(id);
       const d = n3(s3(r, p)), k = [1, 2].reduce((m, i) => (Math.abs(d3(d, axes[i])) > Math.abs(d3(d, axes[m])) ? i : m), 0);
@@ -1533,10 +1584,15 @@ function ownRays(bx, g, b) {
 // The circle a clicked face shows: around the box's middle, square to the axis through that face, wide enough to
 // clear the box. Dragging it turns the box around that axis, which leaves the circle where it is.
 const ringFace = () => (state.rotateFaces && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
-// Before that, a selected box's face under the pointer shows its circle ghosted, to look at but not to grab
-const ghostFace = () => (state.rotateFaces && !drag && hover && hover.type === "body" && hover.bi === state.sel ? hover.face : null);
+// Before that, the face under the pointer, on any box, is highlighted for a click to pick it, with its circle ghosted,
+// which the pointer can go on to and grab (see keepLatch)
+const hoverFace = () => (!drag && latch && state.boxes[latch.bi] && surfaceGeo(state.boxes[latch.bi], geo(), latch.face) ? latch : null);
+const latchRing = () => (state.rotateFaces ? hoverFace() : null);
+// The axis through a face or plane: X through the sides across the width, Y through those along it, Z through the top
+// and bottom
+const faceAxis = id => (planeAxis(id) >= 0 ? planeAxis(id) : id === "top" || id === "bottom" ? 2 : id === "s01" || id === "s23" ? 1 : 0);
 function ringOf(bx, face, g) {
-  const F = turnFrame(bx, g), k = planeAxis(face) >= 0 ? planeAxis(face) : face === "top" || face === "bottom" ? 2 : face === "s01" || face === "s23" ? 1 : 0, i = (k + 1) % 3, j = (k + 2) % 3;
+  const F = turnFrame(bx, g), k = faceAxis(face), i = (k + 1) % 3, j = (k + 2) % 3;
   const side = [Math.abs(F.a), Math.abs(F.c), F.H], r = 0.58 * Math.hypot(side[i], side[j]);
   return { F, k, r, at: t => a3(F.C, a3(m3(F.ax[i], r * Math.cos(t)), m3(F.ax[j], r * Math.sin(t)))) };
 }
@@ -1618,7 +1674,7 @@ let snapCache = { key: "", lines: [], arcs: [], pts: [] };
 const MAX_CROSSING_GUIDES = 2000;
 function snapData() {
   const rb = rayBox(); // rays spaced along a box move with it, and with which of its faces are hidden
-  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div, rb.faces, rb.rayFaces, rb.raySnap, rb.planes.x, rb.planes.y, rb.planes.z] : 0, state.drawingScale]);
+  const key = JSON.stringify([state.mode, state.horizon, state.vps, state.verticals, state.mode === "1pt" ? state.horizontals : 0, CAM_MODES.includes(state.mode) ? [state.curvi, state.cone.cv] : 0, rb ? [rb.b0, rb.b2, rb.h, rb.H, rb.anchor, rb.div, rb.own, rb.faces, rb.rayFaces, rb.raySnap, rb.planes.x, rb.planes.y, rb.planes.z] : 0, state.drawingScale]);
   if (key === snapCache.key) return snapCache;
   const g = geo();
   snapCache = g.cam ? camGuides(g) : linearGuides(g);
@@ -1874,14 +1930,12 @@ const FACE_AXES = { bottom: ["y", "x"], top: ["x", "y"], s01: ["x", "z"], s12: [
 // Division lines take their styles from the box's pattern. Letters count from the base corner nearest you
 // (`near`), as they do for rays spaced along a box: along each edge from that corner, and up from the base,
 // so a pattern lines up all the way around the box. A's style draws the diagonals.
-function drawDivisions(c, f, bx, k, alphaMul, near) {
-  const D = bx.div; if (!D || !D.on) return;
-  const cap = f.id === "top" || f.id === "bottom";
-  if (cap ? !D.caps : !D.sides) return;
-  const nu = Math.max(1, cap ? D.vp : D.vert), nv = Math.max(1, D.vp), pat = D.pattern || "A";
+function drawDivisions(c, f, bx, k, alphaMul, near, sid = f.id) {
+  const D = surfDiv(bx, sid); if (!D.on) return; // (`sid`: the surface whose settings these are, for a plane the plane)
+  const { nu, nv } = D, pat = D.pattern;
   const flip = { x: near === 1 || near === 2, y: near === 2 || near === 3, z: false }, [au, av] = FACE_AXES[f.id];
   const from = (ax, i, n) => ((ax[0] === "-") !== flip[ax.slice(-1)] ? n - i : i); // line i of n, counted from that corner
-  const styleAt = j => { const ch = pat[j % pat.length]; return ch === "." ? null : styleOf(D, ch); };
+  const styleAt = j => { const ch = pat[j % pat.length]; return ch === "." ? null : D.line(styleOf(bx.div, ch)); };
   c.save(); c.lineJoin = "round";
   // f.line maps face coordinates (0..1 along each edge, measured in depth) to screen polylines
   let cur = null, curW = 0;
@@ -1896,7 +1950,7 @@ function drawDivisions(c, f, bx, k, alphaMul, near) {
   const R = f.range || { u: [0, 1], v: [0, 1] }, first = (r, n) => Math.max(1, Math.ceil(r[0] * n - 1e-6)), last = (r, n) => Math.min(n - 1, Math.floor(r[1] * n + 1e-6));
   for (let i = first(R.u, nu); i <= last(R.u, nu); i++) { const s = styleAt(from(au, i, nu)); if (s) line(i / nu, 0, i / nu, 1, s, weight(s, i, nu)); }
   for (let j = first(R.v, nv); j <= last(R.v, nv); j++) { const s = styleAt(from(av, j, nv)); if (s) line(0, j / nv, 1, j / nv, s, weight(s, j, nv)); }
-  const A = D.styles.A, base = Math.max(A.width, 0.5 / k), dg = D.diag;
+  const A = D.diagStyle, base = Math.max(A.width, 0.5 / k), dg = D.diag;
   // an X across each of n strips side by side along u, or stacked along v
   const strips = (n, alongU) => {
     for (let i = 0; i < n; i++) {
@@ -2016,36 +2070,55 @@ function drawOrder(g) {
   return order;
 }
 function drawBox(c, bx, g, k, skip = null) {
-  const G = boxGeo(bx, g), rgb = hex2rgb(bx.fill), PL = boxPlanes(bx, g, G);
-  const near = bx.div && bx.div.on ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
+  const G = boxGeo(bx, g), PL = boxPlanes(bx, g, G), own = bx.own || {};
+  const near = bx.div && (bx.div.on || Object.values(own).some(o => o.div)) ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
   const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
+  // each face's and plane's look: its own settings, or its box's
+  const looks = {}, look = id => looks[id] || (looks[id] = surfLook(bx, id));
   // Faces fill as polygons (split where they cross a seam) and stroke only their real edges
   const fill = (f, alpha, k2) => {
-    c.globalAlpha = alpha; c.fillStyle = shade(rgb, k2);
+    c.globalAlpha = alpha; c.fillStyle = shade(hex2rgb(look(f.id).fill), k2);
     for (const pts of f.fills) { c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.closePath(); c.fill(); }
   };
-  const edges = f => { c.beginPath(); for (const pl of f.edges) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y))); c.stroke(); };
+  // A face's or plane's edges in their color, weight and opacity (`alpha` times theirs). An edge two faces share is drawn by
+  // both, unless a face has edges of its own: then by just one, the one with edges of its own, or failing that the one in
+  // front, so the edge shows in that face's look.
+  const dash = [6 / k, 4 / k];
+  const pen = (id, alpha) => { const L = look(id); c.strokeStyle = L.stroke; c.lineWidth = Math.max(L.width, 0.6 / k); c.lineCap = "round"; c.globalAlpha = alpha * L.edgeOp; };
+  const penKey = id => { const L = look(id); return L.stroke + " " + L.width + " " + L.edgeOp; };
+  const ownEdges = id => !!own[id] && (own[id].stroke !== undefined || own[id].width !== undefined || own[id].edgeOp !== undefined);
+  const plain = !FACES.some(f => ownEdges(f.id)), order = id => FACES.findIndex(x => x.id === id);
+  const draws = (f, e) => {
+    if (plain) return true;
+    const m = EDGE_MATE[f.id][e], mate = G.faces.find(x => x.id === m);
+    if (!vis(mate)) return true;
+    if (ownEdges(f.id) !== ownEdges(m)) return ownEdges(f.id);
+    return f.front !== mate.front ? f.front : order(f.id) < order(m);
+  };
+  const trace = list => { for (const pl of list) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); };
+  const edges = f => { c.beginPath(); if (plain) trace(f.edges); else f.sides.forEach((pl, e) => { if (draws(f, e)) trace(pl); }); c.stroke(); };
   // A plane's pieces, inside the box, with the lines where they meet its faces and the other planes you can see
   const showsPlane = id => surfaceShown(bx, id) && id !== skip, planes = PL ? PL.pieces.filter(p => showsPlane(p.id)) : [];
   const drawn = p => p.sides.filter(sd => sd.mine && (!sd.on || showsPlane(sd.on))); // (a piece's lines: along the faces, and along planes you can see from your side)
-  const planeEdges = p => { c.beginPath(); for (const sd of drawn(p)) for (const pl of sd.pl) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
-  const strokeLines = list => { c.beginPath(); for (const pl of list) pl.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.stroke(); };
+  const planeEdges = p => { c.beginPath(); for (const sd of drawn(p)) trace(sd.pl); c.stroke(); };
+  const strokeLines = list => { c.beginPath(); trace(list); c.stroke(); };
   // With hidden edges dashed, a back face's or a plane's edge is dashed only where a face or plane of the box you can see
-  // is in front of it. What you see of it is drawn solid, last, as the front edges are.
+  // is in front of it. What you see of it is drawn solid, last, as the front edges are, each in its own look (gathered by
+  // look, so edges that share one are drawn together).
   const split = bx.dashHidden && hiddenLines(boxFrame(bx, g, G), id => vis({ id }), PL ? PL.planes.filter(p => showsPlane(p.id)).map(p => [p.k, p.t]) : []);
-  const seenLines = [], dashLater = [];
-  const sortOut = runs => { const o = { seen: [], hidden: [] }; runs.forEach(([q0, q1, span]) => { const r = split(q0, q1, span); o.seen.push(...r.seen); o.hidden.push(...r.hidden); }); seenLines.push(...o.seen); return o.hidden; };
-  const faceRuns = f => { const v = FACES.find(x => x.id === f.id).v; return v.map((cn, e) => [cornerSpot(cn), cornerSpot(v[(e + 1) % 4]), 1]); };
+  const seenLines = new Map(), dashLater = new Map();
+  const gather = (to, id, lines) => { const key = penKey(id); if (!to.has(key)) to.set(key, { id, lines: [] }); to.get(key).lines.push(...lines); };
+  const sortOut = (runs, id) => { const o = { seen: [], hidden: [] }; runs.forEach(([q0, q1, span]) => { const r = split(q0, q1, span); o.seen.push(...r.seen); o.hidden.push(...r.hidden); }); gather(seenLines, id, o.seen); return o.hidden; };
+  const faceRuns = f => { const v = FACES.find(x => x.id === f.id).v; return v.map((cn, e) => [cornerSpot(cn), cornerSpot(v[(e + 1) % 4]), 1]).filter((r, e) => draws(f, e)); };
   const pieceRuns = p => drawn(p).map(sd => [sd.q[0], sd.q[1], sd.span]);
   // each run's hidden part: dashed now, seen through the faces in front, and kept to dash again over them at the end
-  const hiddenEdges = runs => { const h = sortOut(runs); c.setLineDash(dash); strokeLines(h); dashLater.push(...h); };
-  const lw = Math.max(bx.width, 0.6 / k), dash = [6 / k, 4 / k];
+  const hiddenEdges = (runs, id) => { const h = sortOut(runs, id); c.setLineDash(dash); strokeLines(h); gather(dashLater, id, h); };
   c.lineJoin = "round"; c.lineCap = "round";
   // A box is drawn ghosted at its opacity, from see-through (0, a wireframe) to opaque (1, solid); a face or plane given
-  // its own opacity (hold O and click it) takes that instead. It firms up toward solid as its opacity rises: at full
+  // its own opacity (click it to edit it) takes that instead. It firms up toward solid as its opacity rises: at full
   // opacity the faces behind (seen through a hidden face) are as opaque as the front.
-  const op = id => { const o = bx.opacity && bx.opacity[id]; return Number.isFinite(o) ? o : Math.min(1, Math.max(0, bx.ghost)); };
+  const op = id => look(id).opacity;
   const firm = op("") ** 4, ghostly = (v, full) => v + (full - v) * firm, behind = id => { const o = op(id); return o * 0.6 + (1 - o * 0.6) * o ** 4; };
   // (hidden edges seen through the faces are dashed as they're drawn; once a face in front is near opaque, they're dashed
   // over it too, faintly, as a solid box's were)
@@ -2053,29 +2126,27 @@ function drawBox(c, bx, g, k, skip = null) {
   for (const f of backs) {
     if (behind(f.id) > 0) fill(f, behind(f.id), f.shade * 0.72);
     drawDivisions(c, f, bx, k, ghostly(0.45, 1), near);
-    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
-    c.globalAlpha = ghostly(0.75, 1);
-    if (split) hiddenEdges(faceRuns(f));
+    pen(f.id, ghostly(0.75, 1));
+    if (split) hiddenEdges(faceRuns(f), f.id);
     else { c.setLineDash([]); edges(f); }
   }
   // the planes, inside, as the faces behind them are: seen through the faces in front, or where those are hidden
   for (const p of planes) {
     if (behind(p.id) > 0) fill(p, behind(p.id), p.shade * 0.85);
-    if (bx.div.planes) drawDivisions(c, p.div, bx, k, ghostly(0.45, 1), near);
-    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
-    c.globalAlpha = ghostly(0.75, 1);
-    if (split) hiddenEdges(pieceRuns(p));
+    drawDivisions(c, p.div, bx, k, ghostly(0.45, 1), near, p.id);
+    pen(p.id, ghostly(0.75, 1));
+    if (split) hiddenEdges(pieceRuns(p), p.id);
     else { c.setLineDash([]); planeEdges(p); }
   }
   for (const f of fronts) {
     if (op(f.id) > 0) fill(f, op(f.id), f.shade);
     drawDivisions(c, f, bx, k, 1, near);
-    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.lineCap = "round";
-    c.globalAlpha = 1; c.setLineDash([]); edges(f);
+    pen(f.id, 1); c.setLineDash([]); edges(f);
   }
   if (split) {
-    c.strokeStyle = bx.stroke; c.lineWidth = lw; c.globalAlpha = 1; c.setLineDash([]); strokeLines(seenLines);
-    if (over > 0.01) { c.globalAlpha = 0.45 * over; c.setLineDash(dash); c.lineWidth = lw * 0.75; strokeLines(dashLater); }
+    c.setLineDash([]);
+    for (const { id, lines } of seenLines.values()) { pen(id, 1); strokeLines(lines); }
+    if (over > 0.01) { c.setLineDash(dash); for (const { id, lines } of dashLater.values()) { pen(id, 0.45 * over); c.lineWidth *= 0.75; strokeLines(lines); } }
   }
   c.globalAlpha = 1; c.setLineDash([]);
 }
@@ -2186,22 +2257,26 @@ function frame() {
   // held, the face under the pointer is drawn the same way, as it would be once a Shift-click hides it.
   const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && surfaceGeo(hb, g, hover.face);
   if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
-  // the faces and planes picked for their opacity, outlined while the slider's up
-  if (!opPop.hidden) for (const { bi, id } of opPick) {
+  // the faces and planes picked to edit, outlined while the pop-up's up (and with Shift held, the one a click adds or drops)
+  for (const { bi, id } of editing() ? ui.faces : []) {
     const pb = state.boxes[bi], f = pb && surfaceGeo(pb, g, id); if (!f) continue;
     const trace = pl => pl.forEach((p, i) => { const q = toS(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
     ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.globalAlpha = 0.95;
     for (const poly of f.fills) { ctx.beginPath(); trace(poly); ctx.closePath(); ctx.stroke(); }
     ctx.restore();
   }
+  const pk = !drag && hover && hover.type === "pick" && state.boxes[hover.bi], pf = pk && surfaceGeo(pk, g, hover.face);
+  if (pf) drawFaceGhost(pf, accent, accent, 0.2);
+  // the face under the pointer, highlighted in the color of its axis, with its circle ghosted (in the accent color
+  // without circles); the solid circle of the face last clicked on the selected box
+  const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost = lt && state.rotateFaces && ringOf(lb, lt.face, g);
+  const rf = bx && ringFace(), solid = rf && ringOf(bx, rf, g), gs = lt && surfaceGeo(lb, g, lt.face);
+  if (gs) drawFaceGhost(gs, ghost ? AXIS_COLORS[ghost.k] : accent, ghost ? AXIS_COLORS[ghost.k] : accent, 0.25);
+  if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, hover && hover.type === "ring" && hover.ghost); // (a face on the same axis has the same circle)
+  if (solid) drawRing(solid, paper);
   // selected box handles
-  const bx = state.boxes[state.sel];
   if (bx) {
-    const G = boxGeo(bx, g), rf = ringFace(), gf = ghostFace(), solid = rf && ringOf(bx, rf, g), ghost = gf && ringOf(bx, gf, g);
-    const gs = ghost && surfaceGeo(bx, g, gf, G);
-    if (gs) drawFaceGhost(gs, AXIS_COLORS[ghost.k], AXIS_COLORS[ghost.k], 0.25);
-    if (ghost && !(solid && solid.k === ghost.k)) drawRing(ghost, paper, true); // (a face on the same axis has the same circle)
-    if (solid) drawRing(solid, paper);
+    const G = boxGeo(bx, g);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); G.verts.forEach(paths => paths.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }))); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
@@ -2230,11 +2305,11 @@ function ringLabel(k, a) {
   return `${AXIS_NAMES[k]} ${t === "360.0" ? "0.0" : t}°`;
 }
 // The rotation circle, with a dashed line along its axis, and while it's being dragged the box's angle around it
-function drawRing(R, panel, ghosted = false) {
+function drawRing(R, panel, ghosted = false, over = false) {
   const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
   ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
-  if (ghosted) ctx.globalAlpha = 0.4;
-  ctx.lineWidth = live || (!ghosted && hover && hover.type === "ring") ? 3.5 : 2.25;
+  if (ghosted) ctx.globalAlpha = over ? 0.75 : 0.4; // (`over`: a ghosted circle under the pointer, ready to grab)
+  ctx.lineWidth = live || over || (!ghosted && hover && hover.type === "ring" && !hover.ghost) ? 3.5 : 2.25;
   ctx.beginPath(); ringPaths(R).forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); })); ctx.stroke();
   ctx.fillStyle = color;
   for (const { p, u } of ringArrows(R)) {
@@ -2885,13 +2960,20 @@ function pasteBox() {
 }
 // Stacks the boxes as given, front first, and makes that the custom order: the list of boxes itself, back box first
 function stackBoxes(frontFirst) {
-  const sel = state.boxes[state.sel], ring = ui.ring && state.boxes[ui.ring.bi];
+  const sel = state.boxes[state.sel], ring = ui.ring && state.boxes[ui.ring.bi], picked = ui.faces.map(p => state.boxes[p.bi]);
   state.boxes = [...frontFirst].reverse().map(i => state.boxes[i]);
   state.sel = state.boxes.indexOf(sel);
   if (ring) ui.ring.bi = state.boxes.indexOf(ring);
+  ui.faces.forEach((p, i) => { p.bi = state.boxes.indexOf(picked[i]); }); latch = null;
   state.boxOrder = "custom"; hover = null; commit(); touch();
 }
-function delBox() { if (state.sel < 0) return; state.boxes.splice(state.sel, 1); state.sel = Math.min(state.sel, state.boxes.length - 1); commit(); touch(); }
+function delBox() {
+  if (state.sel < 0) return;
+  const i = state.sel; state.boxes.splice(i, 1); state.sel = Math.min(i, state.boxes.length - 1);
+  // (the faces picked to edit on the boxes after it move up the list with them; its own go, as do its circles)
+  ui.faces = ui.faces.filter(p => p.bi !== i).map(p => ({ bi: p.bi > i ? p.bi - 1 : p.bi, id: p.id })); ui.ring = null; latch = null;
+  commit(); touch();
+}
 // The selected box's width (k = 0), length (1) or height (2), in px where the middle of its base sits
 function boxSide(k) {
   const bx = state.boxes[state.sel]; if (!bx) return 0;
@@ -3021,9 +3103,9 @@ function setP(path, val) {
     touch(); return;
   }
   if (/^boxes\.\$b\.planes\.[xyz]$/.test(path)) {
-    // a new count moves every plane across that way, so none of them stays hidden
+    // a new count moves every plane across that way, so none of them stays hidden or keeps settings of its own
     const bx = state.boxes[state.sel]; rawSet(parts, val);
-    if (bx) bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1));
+    if (bx) { bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1)); Object.keys(bx.own).forEach(id => { if (id[0] === path.slice(-1)) delete bx.own[id]; }); }
     touch(); return;
   }
   if (path === "boxes.$b.rayFit") {
@@ -3237,14 +3319,14 @@ const schema = [
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it; hold O and click faces or planes, on any box, to pick them and set their own opacity on the slider that comes up (O-click one again to drop it); hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
     { t: "sub", label: "Rotation" },
-    { t: "check", bind: "rotateFaces", label: "Rotation circles on a selected box's faces" },
+    { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "check", bind: "boxes.$b.showRays", label: () => (isIso() ? "Show rays from its front faces" : "Show rays from its front faces to them"), when: () => hasBox() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Select a box, then hover over a face, hidden or not, to ghost it and its rotation circle, square to the axis through that face: red for X, green for Y, blue for Z. Hold Alt (⌥) for the face behind it. Click the face and the circle turns solid: drag it to turn the box around that axis, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Hover over a face or plane of any box to highlight it and ghost its rotation circle, square to the axis through it: red for X, green for Y, blue for Z (on the selected box, hidden faces too). Hold Alt (⌥) for the face behind it. Go on to the circle, which stays while you head for it, and drag it to turn the box around that axis. Click the face and the circle turns solid, as the face's pop-up opens: drag the circle, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -3264,7 +3346,7 @@ const schema = [
     { t: "sub", label: "Planes", when: hasBox },
     ...[["x", "Planes across X (width)"], ["y", "Planes across Y (length)"], ["z", "Planes up Z (height)"]].map(([k, label]) => ({ t: "parts", bind: "boxes.$b.planes." + k, label, hi: PLANES_MAX, planes: true, when: hasBox })),
     { t: "btns", items: [["Show all planes", () => { state.boxes[state.sel].planes.hidden = []; commit(); touch(); }, "", () => hasBox() && state.boxes[state.sel].planes.hidden.length > 0]], when: hasBox },
-    { t: "note", html: "Planes cut the box into equal slices each way, measured in depth like the face divisions; the number beside each choice counts the planes, 0 for none. They're drawn like its faces: in its face color, see-through when it's ghosted, as outlines in a wireframe, and out of sight inside a solid box until the faces in front of them are hidden. Shift-click a plane to hide it and ⌘-click (Ctrl-click) to bring it back, as with faces. The pointer reaches the nearest face or plane you can see, so a plane only once whatever is in front of it is hidden.", when: hasBox },
+    { t: "note", html: "Planes cut the box into equal slices each way, measured in depth like the face divisions; the number beside each choice counts the planes, 0 for none. They're drawn like its faces: in its face color, see-through when it's ghosted, as outlines in a wireframe, and out of sight inside a solid box until the faces in front of them are hidden. Click a plane to edit it on its own, Shift-click to hide it and ⌘-click (Ctrl-click) to bring it back, as with faces. The pointer reaches the nearest face or plane you can see, so a plane only once whatever is in front of it is hidden.", when: hasBox },
     { t: "sub", label: "Face divisions", when: hasBox },
     { t: "check", bind: "boxes.$b.div.on", label: "Divide faces in perspective", when: hasBox },
     { t: "parts", bind: "boxes.$b.div.vp", label: () => (is1() ? "Lines across and to the VP" : "Lines to the VPs"), hi: 128, when: hasDiv },
@@ -3426,27 +3508,30 @@ function makeRow(r) {
     case "parts": {
       // Preset fractions plus a number box for any count up to r.hi. With r.planes the number box counts the planes
       // that cut the parts, one fewer, so none reads 0.
+      // (r.get and r.set, as for a slider, stand in for the bound value: a face's own count, or its box's)
       const off = r.planes ? 1 : 0, sel = el("select", { id }); PARTS.filter(([v]) => v <= r.hi).forEach(([v, t]) => sel.append(el("option", { value: String(v) }, t))); sel.append(el("option", { value: "custom" }, "Custom…"));
       const num = el("input", { class: "num", type: "number", id: id + "-n", min: String(1 - off), max: String(r.hi - off), step: "1", "aria-label": labelText(r) + (off ? ", number of planes" : ", number of parts") });
-      sel.addEventListener("change", () => { if (sel.value === "custom") { num.focus(); num.select(); return; } setP(r.bind, +sel.value); commit(); });
-      num.addEventListener("input", () => { const v = Math.round(+num.value) + off; if (num.value !== "" && Number.isFinite(v)) setP(r.bind, Math.min(r.hi, Math.max(1, v))); });
-      num.addEventListener("change", () => { const v = getP(r.bind); if (v !== undefined) num.value = v - off; commit(); });
-      node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), el("div", { class: "pick" }, sel, num));
-      update = () => { const v = getP(r.bind); if (v === undefined) return; sel.value = PARTS.some(p => p[0] === v) ? String(v) : "custom"; if (document.activeElement !== num) num.value = v - off; };
+      const read = () => (r.get ? r.get() : getP(r.bind)), put = v => (r.set ? r.set(v) : setP(r.bind, v)), lab = el("label", { for: id });
+      sel.addEventListener("change", () => { if (sel.value === "custom") { num.focus(); num.select(); return; } put(+sel.value); commit(); });
+      num.addEventListener("input", () => { const v = Math.round(+num.value) + off; if (num.value !== "" && Number.isFinite(v)) put(Math.min(r.hi, Math.max(1, v))); });
+      num.addEventListener("change", () => { const v = read(); if (v !== undefined) num.value = v - off; commit(); });
+      node = el("div", { class: "row" }, lab, el("div", { class: "pick" }, sel, num));
+      update = () => { lab.textContent = labelText(r); const v = read(); if (v === undefined) return; sel.value = PARTS.some(p => p[0] === v) ? String(v) : "custom"; if (document.activeElement !== num) num.value = v - off; };
       break;
     }
     case "color": {
       const inp = el("input", { type: "color", id });
-      inp.addEventListener("input", () => setP(r.bind, inp.value)); inp.addEventListener("change", onCommit);
+      inp.addEventListener("input", () => (r.set ? r.set(inp.value) : setP(r.bind, inp.value))); inp.addEventListener("change", onCommit);
       node = el("div", { class: "row" }, el("label", { for: id }, labelText(r)), inp);
-      update = () => { const v = getP(r.bind); if (v) inp.value = v; };
+      update = () => { const v = r.get ? r.get() : getP(r.bind); if (v) inp.value = v; };
       break;
     }
     case "check": {
+      // (r.get and r.set stand in for the bound value, as for a slider, and r.mixed shows a mix of on and off)
       const inp = el("input", { type: "checkbox", id }); const lab = el("label", { for: id });
-      inp.addEventListener("change", () => { setP(r.bind, inp.checked); commit(); });
+      inp.addEventListener("change", () => { if (r.set) r.set(inp.checked); else setP(r.bind, inp.checked); commit(); });
       node = el("div", { class: "row check" }, inp, lab);
-      update = () => { lab.textContent = labelText(r); inp.checked = !!getP(r.bind); };
+      update = () => { lab.textContent = labelText(r); inp.checked = !!(r.get ? r.get() : getP(r.bind)); inp.indeterminate = !!(r.mixed && r.mixed()); };
       break;
     }
     case "select": {
@@ -3706,13 +3791,14 @@ function rayTabs() {
 function refreshPanel() {
   if (!fams().includes(ui.vp)) ui.vp = fams()[0];
   for (const [sec, det] of sections) det.hidden = !sec.when();
-  syncOpacity();
+  syncFaces();
   for (const [sec, sum] of titled) { const t = titleOf(sec); if (sum.textContent !== t) sum.textContent = t; }
   for (const { r, node, update } of rows) {
     const show = r.when ? r.when() : true;
     node.hidden = !show;
     if (show) update();
   }
+  clampFaces();
   syncToolbar();
 }
 function syncToolbar() {
@@ -3988,10 +4074,11 @@ let pinch = null;
 const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX - r.left, e.clientY - r.top); };
 // With `reach` "restore" (⌘ or Ctrl held), the box's hidden faces under the pointer come first, furthest back
 // first (a box's back face before the front face over it), even behind faces you can see, so they can be
-// brought back one by one. On the selected box, every face can be picked for rotation, hidden or not: the
-// nearest under the pointer, or with `reach` "behind" (Alt held) the one behind it. With "hide" (Shift held),
-// only the faces you can see count, so a hidden face doesn't stand in the way of the one behind it, and the
-// face found is one to hide (on any box, selected or not).
+// brought back one by one. A face (or plane) under the pointer can be clicked to edit it and grab its rotation circle:
+// the nearest you can see, or with `reach` "behind" (Alt held) the one behind it; on the selected box, hidden ones
+// too, where nothing you can see is in the way. With "hide" (Shift held), only the faces you can see count, so a hidden
+// face doesn't stand in the way of the one behind it, and the face found is one to hide (on any box, selected or not),
+// or while faces are picked to edit, one to add to them or drop ("pick").
 function hitTest(s, reach = "") {
   const g = geo(), w = toW(s);
   const bx = state.boxes[state.sel];
@@ -4001,9 +4088,12 @@ function hitTest(s, reach = "") {
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
     const rf = ringFace();
-    if (rf && ringPaths(ringOf(bx, rf, g)).some(pl => pl.some((p, i) => i && segDist(s, toS(pl[i - 1]), toS(p)) < 7))) return { type: "ring" };
-    const own = vpOf(state.sel); if (own) return own; // (its own before the page's, which move far more)
+    if (rf && onRing(ringOf(bx, rf, g), s)) return { type: "ring", bi: state.sel, face: rf };
   }
+  // the circle the face under the pointer showed, ghosted, which the pointer has gone on to (on any box)
+  const lr = latchRing();
+  if (lr && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) return { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
+  if (bx) { const own = vpOf(state.sel); if (own) return own; } // (its own before the page's, which move far more)
   if (!state.lockFrame) {
     // (where a VP sits on the diamond, as 1-point's and the panorama's do to begin with, Alt reaches the diamond under it)
     const onAnchor = state.horizon.show && len(sub(toS(g.O), s)) < 9;
@@ -4032,12 +4122,14 @@ function hitTest(s, reach = "") {
       const hid = [...at].reverse().find(f => !shown(f) && (planeAxis(f.id) < 0 || at.slice(0, at.indexOf(f)).every(o => !shown(o))));
       if (hid) return { type: "hidden", bi, face: hid.id };
     }
-    if (state.rotateFaces && bi === state.sel && (!reach || reach === "behind")) {
-      // the nearest face or plane you can see (over empty space, the nearest hidden face), or with Alt the one behind it
+    if (!reach || reach === "behind") {
+      // the nearest face or plane you can see (over empty space on the selected box, the nearest hidden face), or with
+      // Alt the one behind it
+      if (seen < 0 && bi !== state.sel) continue;
       const near = Math.max(0, seen);
       return { type: "body", bi, face: at[reach ? Math.min(near + 1, at.length - 1) : near].id };
     }
-    if (seen >= 0) return { type: reach === "hide" ? "hide" : "body", bi, face: at[seen].id };
+    if (seen >= 0) return { type: reach === "hide" ? (ui.faces.length ? "pick" : "hide") : "body", bi, face: at[seen].id };
   }
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
@@ -4050,6 +4142,7 @@ function hitTest(s, reach = "") {
   }
   return { type: "pan" };
 }
+const onRing = (R, s) => ringPaths(R).some(pl => pl.some((p, i) => i && segDist(s, toS(pl[i - 1]), toS(p)) < 7));
 const HINTS = {
   pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
   top: "Drag to set the box height · snaps where rays cross this edge",
@@ -4064,24 +4157,50 @@ const HINTS = {
   boxvp: "Drag to turn the box, its edges following this point · it catches on the horizon, hold Alt to stop that",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back",
-  hide: "Shift-click to hide this face"
+  hide: "Shift-click to hide this face",
+  pick: "Shift-click to edit this face with the others picked, or to drop it from them"
 };
-const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer" };
+const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer", pick: "copy" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held, or a face you can see with Shift held, is drawn as a ghost).
 // lastPos lets pressing or letting go of the key update it without the mouse moving.
-let lastPos = null, ringClick = null; // (where the circle was just clicked, for the click event that follows)
+let lastPos = null, lastReach = "", ringClick = null; // (where the circle was just clicked, for the click event that follows)
 const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) ? "restore" : e.shiftKey ? "hide" : e.altKey ? "behind" : "");
+// The face under the pointer stays highlighted, its circle ghosted, while the pointer goes on toward the circle and
+// over empty space near it, so the circle can be grabbed. The way there can cross other faces, so once a circle shows,
+// the highlight moves to another face only once the pointer stops on it (for LATCH_MS), not while it passes over.
+let latch = null, latchTry = null, latchTimer = 0;
+const LATCH_MS = 150;
+function keepLatch(h) {
+  clearTimeout(latchTimer);
+  if (h.type === "ring") { latchTry = null; return; }
+  if (h.type === "body" && h.face) {
+    if (!latchRing() || (latch && latch.bi === h.bi && latch.face === h.face)) { latch = { bi: h.bi, face: h.face }; latchTry = null; return; }
+    latchTry = { bi: h.bi, face: h.face };
+    latchTimer = setTimeout(() => { if (latchTry && !drag) { latch = latchTry; latchTry = null; redraw(); } }, LATCH_MS);
+    return;
+  }
+  latchTry = null;
+  // (elsewhere, it stays while the pointer is within the circle's reach: around it, or over the box inside it)
+  const lr = latchRing();
+  if (!lr || !lastPos || !nearRing(ringOf(state.boxes[lr.bi], lr.face, geo()), lastPos, 28)) latch = null;
+}
+function nearRing(R, s, m) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const pl of ringPaths(R)) for (const p of pl) { const q = toS(p); x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+  return s.x > x0 - m && s.x < x1 + m && s.y > y0 - m && s.y < y1 + m;
+}
 function showHover(h) {
-  const key = x => x && [x.type, x.i, x.bi, x.face].join();
-  if (key(h) !== key(hover)) { hover = h; redraw(); }
+  const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost].join(), was = latch && [latch.bi, latch.face].join();
+  keepLatch(h);
+  if (key(h) !== key(hover) || (latch && [latch.bi, latch.face].join()) !== was) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
-  if (oHeld) { const on = (h.type === "body" || h.type === "hide") && h.face; canvas.style.cursor = on ? "pointer" : "default"; document.getElementById("stHint").textContent = on ? `Click to pick this ${what} for its opacity · click more with O held to add them` : "Hold O and click faces or planes to set their opacity"; return; }
-  document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" && state.rotateFaces ? (h.bi === state.sel ? `Click this ${what} to grab its rotation circle · hold Alt for the one behind it · drag to move the box` : "Click to select this box · drag to move it") : (HINTS[h.type] || "").replace("this face", "this " + what);
+  const body = () => `Click to edit this ${what} · drag to move the box${state.rotateFaces ? " · drag its circle to turn it" : ""} · Shift-click ${ui.faces.length ? "to edit it too" : "to hide it"}`;
+  document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
-const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) showHover(hitTest(lastPos, faceReach(e))); };
+const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) { lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } };
 // VP markers drag in different ways depending on the mode
 const VP_DRAGS = {
   dist: ["Drag the vanishing point along the horizon", "ew-resize"],
@@ -4117,10 +4236,9 @@ canvas.addEventListener("pointerdown", e => {
   }
   if (pointers.size > 2) return;
   const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
-  if (oHeld) {
-    // an O-click picks the face or plane under the pointer for its opacity (one you can see), or drops it
-    if ((hit.type === "body" || hit.type === "hide") && hit.face && surfaceShown(state.boxes[hit.bi], hit.face)) togglePick(hit.bi, hit.face, s);
-    return;
+  if (hit.type === "pick") {
+    // with faces picked to edit, Shift-click adds one (on any box) or drops it
+    togglePick(hit.bi, hit.face); showHover(hitTest(s, faceReach(e))); return;
   }
   if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && (hit.type === "hide" || hit.type === "body"))) {
     // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
@@ -4132,8 +4250,11 @@ canvas.addEventListener("pointerdown", e => {
   if (rb && held === rb) drag.rays = clone(rb);
   if ((hit.type === "bottom" || hit.type === "top") && turned(state.boxes[state.sel])) drag.turn = turnFrame(state.boxes[state.sel], g);
   else if (hit.type === "ring") {
-    const R = ringOf(state.boxes[state.sel], ringFace(), g);
+    // (grabbing a ghosted circle selects its box, and makes it the solid one)
+    state.sel = hit.bi; ui.ring = { bi: hit.bi, face: hit.face };
+    const R = ringOf(state.boxes[hit.bi], hit.face, g);
     Object.assign(drag, { ring: R, theta: ringTheta(R, w), total: 0, at: s });
+    touch();
   } else if (hit.type === "boxvp") {
     state.sel = hit.bi;
     const bx = state.boxes[hit.bi], F = turnFrame(bx, g);
@@ -4161,7 +4282,7 @@ canvas.addEventListener("pointerdown", e => {
     const Bc = turned(bx) ? T.B : B, Tc = turned(bx) ? T.T : B.map(p => a3(p, m3(UP3, H)));
     const corner3 = n => (n[0] === "b" ? Bc : Tc)[+n[1]], mid3 = m3([...Bc, ...Tc].reduce(a3, V3(0, 0, 0)), 1 / 8);
     const toward = FACES.filter(f => { const fc = m3(f.v.map(corner3).reduce(a3, V3(0, 0, 0)), 1 / 4); return d3(s3(fc, mid3), fc) < 0; });
-    const faceOp = id => { const o = bx.opacity && bx.opacity[id]; return Number.isFinite(o) ? o : bx.ghost; };
+    const faceOp = id => surfLook(bx, id).opacity;
     const seeThrough = toward.some(f => bx.faces[f.id] === false || faceOp(f.id) < 0.999);
     const names = seeThrough ? ["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"] : [...new Set(toward.flatMap(f => f.v))];
     const onScreen = q => { const p = cam.proj(q); return len(sub(P(p.x, p.y), w)); };
@@ -4187,7 +4308,7 @@ canvas.addEventListener("pointermove", e => {
     const wm = P((pinch.mid.x - pinch.vx) / pinch.z, (pinch.mid.y - pinch.vy) / pinch.z);
     view.z = z; view.x = mid.x - wm.x * z; view.y = mid.y - wm.y * z; redraw(); return;
   }
-  if (!drag) { lastPos = s; showHover(hitTest(s, faceReach(e))); return; }
+  if (!drag) { lastPos = s; lastReach = faceReach(e); showHover(hitTest(s, lastReach)); return; }
   if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
   drag.moved = true;
   const g = geo(), useSnap = state.snap.on && !e.altKey;
@@ -4320,14 +4441,17 @@ function endPointer(e) {
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
   if (drag.type === "ring" && !drag.moved) ringClick = drag.s0;
-  // the first click on a box selects it; clicking a face of the selected box, not dragging it, makes that face's
-  // rotation circle solid; a click anywhere else puts the circle away
-  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) ui.ring = drag.type === "body" && state.rotateFaces && drag.wasSel ? { bi: drag.bi, face: drag.face } : null;
+  // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
+  // solid; a click anywhere else puts them away
+  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) {
+    if (drag.type === "body") { ui.ring = state.rotateFaces ? { bi: drag.bi, face: drag.face } : null; openFaces([{ bi: drag.bi, id: drag.face }], drag.s0); }
+    else { ui.ring = null; closeFaces(); }
+  }
   // a box you just reshaped or moved keeps this look when you switch perspective
   if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) captureFit(state.boxes[state.sel], geo());
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
-  if (e.pointerType !== "touch") { lastPos = spos(e); showHover(hitTest(lastPos, faceReach(e))); } // (a click may just have selected a box, with hidden faces to pick)
+  if (e.pointerType !== "touch") { lastPos = spos(e); lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } // (a click may just have selected a box, with hidden faces to pick)
 }
 // Clicking the solid circle, rather than dragging it, opens a box for the angle around that axis, measured from the
 // box's default and the same one that axis's slider sets. It starts filled in and selected, so typing replaces it.
@@ -4374,7 +4498,7 @@ canvas.addEventListener("wheel", e => {
 }, { passive: false });
 
 window.addEventListener("keyup", reachChanged);
-canvas.addEventListener("pointerleave", () => { lastPos = null; if (hover && ["hidden", "hide", "body"].includes(hover.type)) { hover = null; redraw(); } });
+canvas.addEventListener("pointerleave", () => { lastPos = null; latch = null; latchTry = null; if (hover && ["hidden", "hide", "pick", "body", "ring"].includes(hover.type)) hover = null; redraw(); });
 // on a Mac, Ctrl-click would also open the context menu
 canvas.addEventListener("contextmenu", e => { if (e.ctrlKey && hover && hover.type === "hidden") e.preventDefault(); });
 window.addEventListener("keydown", e => {
@@ -4395,58 +4519,116 @@ window.addEventListener("keydown", e => {
   else if (e.key === "f" || e.key === "F") fitView();
   else if (e.key === "b" || e.key === "B") addBox();
   else if (e.key === "s" || e.key === "S") { state.snap.on = !state.snap.on; commit(); touch(); }
-  else if ((e.key === "o" || e.key === "O") && !e.metaKey && !e.ctrlKey && !e.altKey) { if (!oHeld) { oHeld = true; if (lastPos && !drag) showHover(hitTest(lastPos, faceReach(e))); } }
 });
 
-/* ---------- the opacity of faces picked with O ---------- */
-// Hold O and click a face or plane (one you can see) to pick it, and more to add them, on any box; an O-click on one
-// already picked drops it. A slider comes up beside the click and sets the picked ones' own opacity, which takes the
-// place of their box's. Escape, or a click anywhere else, puts it away.
-let oHeld = false, opPick = []; // (each { bi, id })
-const opPop = el("div", { id: "opPop", role: "dialog", "aria-label": "Opacity of the faces picked" });
-const opHead = el("span", { class: "op-head" }), opRange = el("input", { type: "range", min: "0", max: "100", step: "1", "aria-label": "Opacity" });
-const opNum = el("input", { type: "number", class: "num", min: "0", max: "100", step: "1", "aria-label": "Opacity, percent" });
-const opReset = el("button", { type: "button", class: "btn" }, "Use the box's");
-opPop.append(el("div", { class: "op-top" }, opHead, opReset), el("div", { class: "op-row" }, opRange, opNum, el("span", { class: "unit" }, "%")));
-opPop.hidden = true; document.body.append(opPop);
-const pickValid = () => { opPick = opPick.filter(({ bi, id }) => state.boxes[bi] && (planeAxis(id) < 0 || planeIdsOf(state.boxes[bi]).includes(id))); };
-const pickOpacity = () => { const { bi, id } = opPick[0], bx = state.boxes[bi], o = bx.opacity[id]; return Number.isFinite(o) ? o : bx.ghost; };
-function syncOpacity() {
-  if (opPop.hidden) return;
-  pickValid(); if (!opPick.length) { closeOpacity(); return; }
-  const v = Math.round(pickOpacity() * 100), n = opPick.length, planes = opPick.filter(p => planeAxis(p.id) >= 0).length;
-  opHead.textContent = `Opacity · ${n === 1 ? (planes ? "1 plane" : "1 face") : `${n} ${planes === n ? "planes" : planes ? "faces and planes" : "faces"}`}`;
-  if (document.activeElement !== opRange) opRange.value = String(v);
-  if (document.activeElement !== opNum) opNum.value = String(v);
+/* ---------- editing faces ---------- */
+// Clicking a face or plane picks it to edit on its own, in a pop-up beside the click: whether it shows, the box's turn
+// around the axis through it, and the settings it can have of its own, each in place of its box's (its opacity and
+// color, its edges', and how it's divided, with its division lines' and diagonals' look). With one picked, Shift-click
+// more, on any box, to edit them together (Shift-click one again to drop it); with none, Shift-click still hides a face.
+// Escape, the close button or a click on empty space puts it away. Its rows are the panel's own, kept up to date with it.
+const facePop = el("div", { id: "facePop", role: "dialog", "aria-label": "Edit the faces picked" });
+const fpTitle = el("span", { class: "fp-title" }), fpClose = el("button", { type: "button", class: "fp-x", "aria-label": "Close" }, "×");
+const fpHead = el("div", { class: "fp-head", title: "Drag to move" }, fpTitle, fpClose), fpBody = el("div", { class: "fp-body" });
+facePop.append(fpHead, fpBody); facePop.hidden = true; document.body.append(facePop);
+const editing = () => !facePop.hidden && ui.faces.length > 0;
+const pickValid = () => { ui.faces = ui.faces.filter(({ bi, id }) => state.boxes[bi] && (planeAxis(id) < 0 || planeIdsOf(state.boxes[bi]).includes(id))); };
+const picks = () => ui.faces.filter(p => state.boxes[p.bi]).map(p => ({ bi: p.bi, id: p.id, bx: state.boxes[p.bi] }));
+const first = () => picks()[0];
+// the first one's setting as it stands (its own, or its box's), and a setting given to them all as their own
+const lookGet = key => () => { const p = first(); return p && surfLook(p.bx, p.id)[key]; };
+const divGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id)[key]; };
+const lineGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id).line(p.bx.div.styles.A)[key]; };
+const diagGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id).diagStyle[key]; };
+const ownSet = key => v => { for (const p of picks()) (p.bx.own[p.id] = p.bx.own[p.id] || {})[key] = v; touch(); };
+const divided = () => editing() && picks().some(p => surfDiv(p.bx, p.id).on);
+// The directions a surface's division lines run in (those of the face it lies parallel to, for a plane): its lines across
+// u run along v, so their count is nu, and the other way nv
+const linesOf = id => { const k = planeAxis(id), [au, av] = FACE_AXES[k >= 0 ? ["s12", "s01", "top"][k] : id].map(a => a.slice(-1)); return { [av]: "nu", [au]: "nv" }; };
+const linesName = d => (d === "z" ? (is3() ? "Lines to VP3" : radiusMode() ? "Lines to the up and down VPs" : "Vertical lines") : isIso() ? `Lines along axis ${d === "x" ? 1 : 2}` : is1() ? (d === "x" ? "Lines across" : "Lines to the VP") : `Lines to ${axisName(d === "x" ? 0 : 1)}`);
+// The box's turn around the axis through a picked face, for each box with one picked on that axis
+function turnPicked(k, v) {
+  const key = AXIS_KEYS[k], g = geo(); let refused = false;
+  for (const bx of new Set(picks().filter(p => faceAxis(p.id) === k).map(p => p.bx))) {
+    const rot = Object.assign({}, bx.rot, { [key]: v });
+    if (turnFits(bx, g, rot)) bx.rot = rot; else refused = true;
+  }
+  if (refused) toast("The view can't show this box at that angle");
+  touch();
 }
-function setPicked(v) {
-  const o = Math.max(0, Math.min(1, v / 100));
-  for (const { bi, id } of opPick) state.boxes[bi].opacity[id] = o;
-  touch(); redraw();
+const sameAll = get => { const ps = picks(); return ps.length > 1 && new Set(ps.map(get)).size > 1; };
+const FACE_ROWS = [
+  { t: "check", bind: "face.shown", label: () => (ui.faces.length > 1 ? "Show them" : "Show"), get: () => picks().every(p => surfaceShown(p.bx, p.id)), mixed: () => sameAll(p => surfaceShown(p.bx, p.id)), set: v => { picks().forEach(p => setSurfaceShown(p.bx, p.id, v)); touch(); } },
+  ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name], k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && picks().some(q => faceAxis(q.id) === k) })),
+  { t: "range", bind: "face.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("opacity"), set: ownSet("opacity") },
+  { t: "color", bind: "face.fill", label: "Color", get: lookGet("fill"), set: ownSet("fill") },
+  { t: "sub", label: "Edges" },
+  { t: "color", bind: "face.stroke", label: "Edge color", get: lookGet("stroke"), set: ownSet("stroke") },
+  { t: "range", bind: "face.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, hi: 500, get: lookGet("width"), set: ownSet("width") },
+  { t: "range", bind: "face.edgeOp", label: "Edge opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("edgeOp"), set: ownSet("edgeOp") },
+  { t: "sub", label: "Divisions" },
+  { t: "check", bind: "face.div", label: () => (ui.faces.length > 1 ? "Divide them in perspective" : "Divide in perspective"), get: divGet("on"), mixed: () => sameAll(p => surfDiv(p.bx, p.id).on), set: ownSet("div") },
+  ...["x", "y", "z"].map(d => ({ t: "parts", bind: "face.lines." + d, label: () => linesName(d), hi: 128,
+    get: () => { const p = picks().find(q => linesOf(q.id)[d]); return p && surfDiv(p.bx, p.id)[linesOf(p.id)[d]]; },
+    set: v => { for (const p of picks()) { const key = linesOf(p.id)[d]; if (key) (p.bx.own[p.id] = p.bx.own[p.id] || {})[key] = v; } touch(); },
+    when: () => divided() && picks().some(q => linesOf(q.id)[d]) })),
+  { t: "color", bind: "face.lineColor", label: "Line color", get: lineGet("color"), set: ownSet("lineColor"), when: divided },
+  { t: "range", bind: "face.lineWidth", label: "Line weight", min: 0.05, max: 8, step: 0.05, lo: 0.05, hi: 500, get: lineGet("width"), set: ownSet("lineWidth"), when: divided },
+  { t: "range", bind: "face.lineOp", label: "Line opacity", min: 0, max: 1, step: 0.01, hi: 1, get: lineGet("opacity"), set: ownSet("lineOp"), when: divided },
+  { t: "select", bind: "face.diag", label: "Diagonals", options: DIAGONALS, get: divGet("diag"), apply: v => { ownSet("diag")(v); commit(); }, when: divided },
+  ...[["color", "Diagonal color", "diagColor"], ["width", "Diagonal weight", "diagWidth"], ["opacity", "Diagonal opacity", "diagOp"]].map(([key, label, own]) => Object.assign(
+    key === "color" ? { t: "color" } : key === "width" ? { t: "range", min: 0.05, max: 8, step: 0.05, lo: 0.05, hi: 500 } : { t: "range", min: 0, max: 1, step: 0.01, hi: 1 },
+    { bind: "face." + own, label, get: diagGet(key), set: ownSet(own), when: () => divided() && picks().some(p => surfDiv(p.bx, p.id).diag !== "none") })),
+  { t: "btns", items: [["Use the box's settings", () => { picks().forEach(p => { delete p.bx.own[p.id]; }); commit(); touch(); }, "", () => picks().some(p => p.bx.own[p.id])]] }
+];
+FACE_ROWS.forEach(r => { if (!r.when) r.when = editing; fpBody.append(makeRow(r)); });
+// what's picked, by name: a face by where it sits and a plane by its axis and number, with its box
+function syncFaces() {
+  if (facePop.hidden) return;
+  pickValid(); if (!ui.faces.length) { closeFaces(); return; }
+  const ps = picks(), n = ps.length, planes = ps.filter(p => planeAxis(p.id) >= 0).length, boxes = new Set(ps.map(p => p.bi)).size;
+  fpTitle.textContent = n === 1 ? `${snapLabel(ps[0].id, ps[0].bx)} · ${ps[0].bx.name}` : `${n} ${planes === n ? "planes" : planes ? "faces and planes" : "faces"}${boxes > 1 ? ` on ${boxes} boxes` : ""}`;
 }
-opRange.addEventListener("input", () => { setPicked(+opRange.value); opNum.value = opRange.value; });
-opRange.addEventListener("change", () => commit());
-opNum.addEventListener("change", () => { const v = Math.max(0, Math.min(100, Math.round(+opNum.value || 0))); setPicked(v); opRange.value = String(v); commit(); });
-opReset.addEventListener("click", () => { for (const { bi, id } of opPick) delete state.boxes[bi].opacity[id]; commit(); touch(); redraw(); syncOpacity(); });
-function closeOpacity() { opPop.hidden = true; opPick = []; redraw(); }
-// beside screen point s on the canvas, kept on screen
-function openOpacity(s) {
-  const r = canvas.getBoundingClientRect(); opPop.hidden = false; syncOpacity();
-  const w = opPop.offsetWidth, h = opPop.offsetHeight, x = r.left + s.x + 16, y = r.top + s.y + 16;
-  opPop.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px"; opPop.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
+// kept on screen as its rows come and go
+function clampFaces() {
+  if (facePop.hidden) return;
+  const w = facePop.offsetWidth, h = facePop.offsetHeight, x = parseFloat(facePop.style.left) || 8, y = parseFloat(facePop.style.top) || 8;
+  facePop.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px"; facePop.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + "px";
 }
-function togglePick(bi, id, s) {
+// Picks these to edit, the pop-up beside screen point s on the canvas (where it already is, if it's up)
+function openFaces(list, s) {
+  ui.faces = list.map(p => ({ bi: p.bi, id: p.id }));
+  if (facePop.hidden) {
+    const r = canvas.getBoundingClientRect(); facePop.hidden = false;
+    facePop.style.left = r.left + s.x + 18 + "px"; facePop.style.top = r.top + s.y - 20 + "px";
+  }
+  refreshPanel(); clampFaces(); redraw();
+}
+function closeFaces() { if (facePop.hidden && !ui.faces.length) return; facePop.hidden = true; ui.faces = []; touch(); }
+function togglePick(bi, id) {
   pickValid();
-  const k = opPick.findIndex(p => p.bi === bi && p.id === id);
-  if (k >= 0) opPick.splice(k, 1); else opPick.push({ bi, id });
-  if (opPick.length) openOpacity(s); else closeOpacity();
-  redraw();
+  const k = ui.faces.findIndex(p => p.bi === bi && p.id === id);
+  if (k >= 0) ui.faces.splice(k, 1); else ui.faces.push({ bi, id });
+  if (!ui.faces.length) { closeFaces(); return; }
+  // (the one last clicked is the selected box's, with its circle solid)
+  const last = ui.faces[ui.faces.length - 1]; state.sel = last.bi; ui.ring = state.rotateFaces ? { bi: last.bi, face: last.id } : null;
+  touch();
 }
-window.addEventListener("keyup", e => { if (e.key === "o" || e.key === "O") { oHeld = false; if (lastPos && !drag) showHover(hitTest(lastPos, faceReach(e))); } });
-window.addEventListener("blur", () => { oHeld = false; });
-// Escape puts it away (and goes no further); so does a press anywhere but on it or an O-click on the canvas
-window.addEventListener("keydown", e => { if (e.key === "Escape" && !opPop.hidden) { closeOpacity(); e.stopImmediatePropagation(); } }, true);
-document.addEventListener("pointerdown", e => { if (!opPop.hidden && !opPop.contains(e.target) && !(oHeld && e.target === canvas)) closeOpacity(); }, true);
+fpClose.addEventListener("click", closeFaces);
+// dragged by its title
+fpHead.addEventListener("pointerdown", e => {
+  if (e.target === fpClose) return;
+  const x0 = e.clientX - facePop.offsetLeft, y0 = e.clientY - facePop.offsetTop;
+  try { fpHead.setPointerCapture(e.pointerId); } catch (err) { /* moving it works without */ }
+  const move = ev => { facePop.style.left = ev.clientX - x0 + "px"; facePop.style.top = ev.clientY - y0 + "px"; clampFaces(); };
+  const up = () => { fpHead.removeEventListener("pointermove", move); fpHead.removeEventListener("pointerup", up); fpHead.removeEventListener("pointercancel", up); };
+  fpHead.addEventListener("pointermove", move); fpHead.addEventListener("pointerup", up); fpHead.addEventListener("pointercancel", up);
+});
+window.addEventListener("resize", clampFaces);
+// Escape puts it away (and goes no further); so does a press anywhere but on it, the canvas (whose clicks decide for
+// themselves) or the box for a circle's angle
+window.addEventListener("keydown", e => { if (e.key === "Escape" && !facePop.hidden) { closeFaces(); e.stopImmediatePropagation(); } }, true);
+document.addEventListener("pointerdown", e => { if (!facePop.hidden && !facePop.contains(e.target) && e.target !== canvas && !ringEntry.contains(e.target)) closeFaces(); }, true);
 
 /* ---------- toolbar ---------- */
 document.getElementById("tbAdd").addEventListener("click", addBox);

@@ -88,6 +88,8 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
 
 ## Testing
 
+- 12 November 2026: clicking a face or plane opens a pop-up to edit it on its own (show, rotation, opacity, color, edges, divisions, diagonals), with Shift-click to pick more, and hovering any box's face shows its rotation circle, which you can reach and drag. Tested in 2-point in the browser: hover, travel to the circle across another face, click to open, Shift-click to add, and a setting applied to both faces. No console errors. Other views and the PDF export were not retested.
+
 Stress tested from 27 October to 13 November 2026 with scripted runs in the browser, covering all six modes and both 4-point styles:
 
 - **Verticals with every choice:** in all eight views, with the top, the bottom, a plane across the height, or the top and a side ticked, the vertical guides (VP3's rays in 3-point, the up and down VPs' in the curved views, the vertical axis in isometric) snapped to the box every time, all 576 upright lines through the top's, bottom's or plane's edges and division points found exactly (0.000001 px, 0.001 px in isometric, against the great circles in the curved views). No errors in the console
