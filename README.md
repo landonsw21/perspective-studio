@@ -1,6 +1,6 @@
 # Perspective Studio
 
-A browser-based perspective drafting tool, from 1-point perspective up to a full 360° 6-point view. Build boxes that snap to the grid, divide their faces in perspective, bring in 3D models (OBJ, STL, PLY, OFF, glTF, 3MF, AMF) to draw from, and export the drawing as a PNG, JPG or PDF.
+A browser-based perspective drafting tool, from 1-point perspective up to a full 360° 6-point view. Build boxes that snap to the grid, divide their faces in perspective, add spheres, cylinders, cones, polyhedra and other shapes, bring in 3D models (OBJ, STL, PLY, OFF, glTF, 3MF, AMF) to draw from, and export the drawing as a PNG, JPG or PDF.
 
 Live at https://landonsw21.github.io/perspective-studio/
 
@@ -76,6 +76,27 @@ Choose the mode from the perspective dropdown on the toolbar, which lists 4-poin
 - Perspective-correct face divisions (1/2, 1/4, 1/8 …) and diagonals: an X corner to corner, in every column, in every row or in every cell, or a single diagonal across every cell, either way round. On the upright faces, columns stand side by side and rows are stacked up them. On the top and bottom, columns sit side by side along the edges running to VP1, and rows along those running to VP2
 - Division lines have a pattern and style table like the rays. Each letter from A to Z is a line style with its own color, weight, line and opacity, a dot skips a line, and the pattern repeats. Letters count from the box's corner nearest you, along each edge and up from the base, the same way as for rays spaced along a box, so a pattern lines up all the way around. A's style also draws the diagonals, and "Thinner lines at each finer split" still thins each finer level. Setups saved before keep their one color, weight and opacity as A's, so they look the same
 
+## Shapes
+
+**Add shape**, the dropdown at the start of the toolbar (where Add box was), adds a box or one of twelve other shapes, each where a new box would land. B still adds a box.
+
+- **Sphere** and **Hemisphere**
+- **Cylinder** and **Tube** (a hollow one)
+- **Cone** and **Truncated cone**
+- **Pyramid**, on a base of as many sides as you like (four to start with)
+- **Prism**, with as many sides as you like (six to start with)
+- **Wedge** (a ramp)
+- **Torus** and **Capsule**
+- **Polyhedron**, chosen by its number of **Faces**: 4 (tetrahedron), 6 (cube), 8 (octahedron), 12 (dodecahedron), 14 (cuboctahedron), 20 (icosahedron) or 32 (truncated icosahedron, a football)
+
+A shape sits in a box of its own and fills it, exactly as an imported model does (below), so everything a box does carries it along, in every view: move it, turn it, resize it, and stretch it, which makes an egg of a sphere or a disc of a cylinder (**Match its proportions** puts it back). With one selected, the Boxes section has a **Shape** group:
+
+- **Sides** (cylinder, tube, cone, truncated cone, prism), **Sides of its base** (pyramid), from 3 up: with few sides the faces are flat with an edge between each, so a cone with four is a pyramid and a cylinder with three a triangular prism, and with many it's a smooth round. **Segments around** (sphere, hemisphere, torus, capsule), from 6, sets how finely they're made. **Faces** picks the polyhedron
+- the same choices as a model: Up axis and Turn 90° (to lay a cone on its side), color, opacity, shading, lines (the outline and its edges), and whether the box around it shows, which it doesn't to start with
+- **Make it a plain box** takes the shape away and leaves its box
+
+A shape is made from its kind and that one number, so a drawing only keeps those, and it needs nothing stored: it's there after a reload, in a saved setup, and on another device. Through the lenses its triangles are cut finer by how much of the view its box takes up, so straight sides bend smoothly.
+
 ## Importing 3D models
 
 **Import 3D model…**, under Boxes, brings in a model from a file, as does dropping the file on the page. It reads:
@@ -137,7 +158,13 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
   - **Edges:** a face's own edge color and weight drew on the edges it shares with plain faces, and on its own. The box's other edges drew exactly as before, and of two faces with their own edges, the first in front won.
   - **Saving and loading:** a face's own line count moved the rays spaced along the box. The settings lasted through saving and loading, with bad values dropped. An older save's O-key opacities opened as the faces' own, and a plane's settings went when its direction's count changed.
   - **Export:** the PDF exported with faces' own settings. No errors in the console.
-  - **Importing 3D models:**
+  - **Shapes:**
+  - **Made right:** each of the twelve, and the seven polyhedra, came out a closed solid (no open edges, every triangle wound the same way, facing outward). The polyhedra had the right corners and edges for 4, 6, 8, 12, 14, 20 and 32 faces. A cylinder's lines were its two rims, a cone's its base, and a sphere's just its outline.
+  - **The dropdown:** it lists Box and the twelve shapes under Add shape, and goes back to reading Add shape after each pick. Picking seven in a row added seven, the box plain and the rest shapes with their boxes hidden.
+  - **The panel:** a pyramid's Sides of its base went from 4 to 6 and its box took the new proportions; below 3 it stopped at 3, a sphere's segments at 6, and undo put it back. The wedge showed no number, and the polyhedron showed Faces with its seven choices. Make it a plain box left a ghosted box.
+  - **Every view:** all twelve drew in all eight views and exported with no errors, in about 30 ms a redraw (30 to 45 ms through the lenses, cut finer there). A big cylinder close up through the 5-point lens bent smoothly along its sides.
+  - **Keeping them:** the saved drawing held just each shape's name, with no mesh stored or packed into a setup.
+- **Importing 3D models:**
   - **Formats:** a torus of 288 points and 576 triangles was written out as 15 files and read back the same every time: OBJ (four-sided faces, half numbered back from the end, CRLF lines), text and binary STL (the binary one starting "solid"), text PLY and binary PLY in both byte orders (with extra properties to skip), OFF and COFF with the counts on the first line, GLB and a .gltf with its buffer inside (under nodes scaled, turned and moved: 10 × 2 × 10 at 10, 0, 0, as it should be), 3MF stored and deflated (a component scaled ×3 and a build item moved: 15 × 5 × 1 at 5, 6, 7), and AMF plain and zipped. Each came out with 864 edges and none open. A .gltf with a separate .bin, a STEP file, an unknown type and an empty OBJ each gave its own message.
   - **Drawing:** in all eight views the model drew in its box, cut finer through the lenses (576 triangles as 792 to 1,152). A lopsided wedge was never mirrored: checked in every view with its box as made, built the other way round, and turned about Z and about all three axes.
   - **A big one:** 160,000 triangles (7.6 MB of binary STL) imported in 0.17 s, thinned to 49,696, and redrew in 30 to 70 ms in every view. The stray scraps of line that thinning leaves were gone, and the outline stayed whole.

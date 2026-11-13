@@ -206,7 +206,7 @@ details.multi .multi-grp { font-size: 10px; letter-spacing: .08em; text-transfor
   <main class="stage" id="stage">
     <canvas id="cv" tabindex="0" aria-label="Perspective drawing canvas"></canvas>
     <div class="toolbar" role="toolbar" aria-label="Canvas tools">
-      <button class="tb primary" id="tbAdd" type="button">Add box</button>
+      <select class="tb primary" id="tbAdd" aria-label="Add a shape" title="Add a box or another shape (B adds a box)"></select>
       <button class="tb" id="tbSnap" type="button" aria-pressed="true">Snap</button>
       <button class="tb" id="tbFit" type="button">Fit view</button>
       <button class="tb" id="tbEven" type="button" title="Put the vanishing points back in an even layout, centered on the page (3-, 4-, 5- and 6-point)">Even out VPs</button>
@@ -2699,10 +2699,11 @@ function meshEdges(m) {
 }
 // A mesh turned to sit in a box: which file axis is up, and quarter turns about it, then each point as a share of the way
 // along the box's width, length and height (q, 0 to 1 each), with the model's own size each way (dims). Through a lens,
-// where a straight edge bends, triangles big for the box are cut into smaller ones (`fine`); `par` is the triangle each
-// came from and `er` its sides' edges in the mesh (-1 for a cut across a triangle, which isn't an edge).
+// where a straight edge bends, triangles big for the box are cut into smaller ones: `fine` is how many pieces an edge as
+// long as the box is cut into (0 for no cutting), which goes by how big the box looks (see modelView). `par` is the
+// triangle each came from and `er` its sides' edges in the mesh (-1 for a cut across a triangle, which isn't an edge).
 function modelShape(m, up, turn, fine) {
-  const key = up + turn + (fine ? "f" : ""), had = m.shapes && m.shapes[key]; if (had) return had;
+  const key = up + turn + (fine ? "f" + fine : ""), had = m.shapes && m.shapes[key]; if (had) return had;
   const { pos, idx } = m, nv = pos.length / 3, nt = idx.length / 3, p = new Float64Array(nv * 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < nv; i++) {
     const fx = pos[i * 3], fy = pos[i * 3 + 1], fz = pos[i * 3 + 2];
@@ -2716,38 +2717,143 @@ function modelShape(m, up, turn, fine) {
   const te = meshEdges(m).te, cut = new Uint8Array(meshEdges(m).ne); let tri, par, er; // (cut: the edges that were cut into pieces)
   if (!fine) { tri = idx; par = Uint32Array.from({ length: nt }, (_, t) => t); er = Int32Array.from(te); }
   else {
-    const T = [], Pa = [], E = [], w = dims.map(d => d / big), budget = 2.5 * MAX_TRIS; let made = 0;
-    const len = (a, b) => Math.hypot((q[a * 3] - q[b * 3]) * w[0], (q[a * 3 + 1] - q[b * 3 + 1]) * w[1], (q[a * 3 + 2] - q[b * 3 + 2]) * w[2]);
+    // Each triangle is halved across its longest side, and its halves again, until no side is longer than the box's
+    // longest side over `fine` (so a long thin one is only cut along its length). A side two triangles share is cut at
+    // the same point for both.
+    const T = [], Pa = [], E = [], w = dims.map(d => d / big), budget = 2.5 * MAX_TRIS, most = 1 / fine, mids = new Map(), nq = () => q.length / 3;
+    const len = (i, j) => Math.hypot((q[i * 3] - q[j * 3]) * w[0], (q[i * 3 + 1] - q[j * 3 + 1]) * w[1], (q[i * 3 + 2] - q[j * 3 + 2]) * w[2]);
+    const mid = (i, j) => {
+      const key = i < j ? i * 4294967296 + j : j * 4294967296 + i; let v = mids.get(key);
+      if (v === undefined) { v = nq(); mids.set(key, v); for (let k = 0; k < 3; k++) q.push((q[i * 3 + k] + q[j * 3 + k]) / 2); }
+      return v;
+    };
     for (let t = 0; t < nt; t++) {
-      const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
-      let n = Math.min(12, Math.ceil(Math.max(len(a, b), len(b, c), len(c, a)) * 8)) || 1;
-      while (n > 1 && made + n * n > budget - (nt - t)) n--; // (never past what there's room for)
-      made += n * n;
-      if (n === 1) { T.push(a, b, c); Pa.push(t); E.push(te[t * 3], te[t * 3 + 1], te[t * 3 + 2]); continue; }
-      cut[te[t * 3]] = cut[te[t * 3 + 1]] = cut[te[t * 3 + 2]] = 1;
-      // a grid of points across it: i steps from a toward b, j toward c
-      const at = [];
-      for (let i = 0; i <= n; i++) for (let j = 0; i + j <= n; j++) {
-        if (!j && !i) at.push(a); else if (i === n) at.push(b); else if (j === n) at.push(c);
-        else { at.push(q.length / 3); for (let k = 0; k < 3; k++) q.push(q[a * 3 + k] + (q[b * 3 + k] - q[a * 3 + k]) * i / n + (q[c * 3 + k] - q[a * 3 + k]) * j / n); }
-      }
-      const g = (i, j) => at[i * (n + 1) - i * (i - 1) / 2 + j];
-      for (let i = 0; i < n; i++) for (let j = 0; i + j < n; j++) {
-        // (its sides: along a-b where j is 0, along b-c where i + j is n, along c-a where i is 0)
-        T.push(g(i, j), g(i + 1, j), g(i, j + 1)); Pa.push(t); E.push(j === 0 ? te[t * 3] : -1, i + j + 1 === n ? te[t * 3 + 1] : -1, i === 0 ? te[t * 3 + 2] : -1);
-        if (i + j + 1 < n) { T.push(g(i + 1, j), g(i + 1, j + 1), g(i, j + 1)); Pa.push(t); E.push(-1, -1, -1); }
+      // (each piece: its three corners and its three sides' edges, the side from the first corner to the second first)
+      const todo = [[idx[t * 3], idx[t * 3 + 1], idx[t * 3 + 2], te[t * 3], te[t * 3 + 1], te[t * 3 + 2]]];
+      while (todo.length) {
+        const [a, b, c, eab, ebc, eca] = todo.pop(), lab = len(a, b), lbc = len(b, c), lca = len(c, a), long = Math.max(lab, lbc, lca);
+        if (long <= most || T.length / 3 + todo.length + (nt - t) >= budget) { T.push(a, b, c); Pa.push(t); E.push(eab, ebc, eca); continue; }
+        if (long === lab) { const m = mid(a, b); if (eab >= 0) cut[eab] = 1; todo.push([a, m, c, eab, -1, eca], [m, b, c, eab, ebc, -1]); }
+        else if (long === lbc) { const m = mid(b, c); if (ebc >= 0) cut[ebc] = 1; todo.push([a, b, m, eab, ebc, -1], [a, m, c, -1, ebc, eca]); }
+        else { const m = mid(c, a); if (eca >= 0) cut[eca] = 1; todo.push([a, b, m, eab, -1, eca], [m, b, c, -1, ebc, eca]); }
       }
     }
     tri = Uint32Array.from(T); par = Uint32Array.from(Pa); er = Int32Array.from(E);
   }
   return ((m.shapes = m.shapes || {})[key] = { q: Float32Array.from(q), tri, par, er, cut, dims });
 }
-const modelOf = bx => (bx && bx.model && meshes.get(bx.model.id)) || null;
+// ---- Shapes ----
+// The shapes Add shape makes are models too, made here from their kind and one number (how many sides, segments or
+// faces) rather than read from a file. A shape's mesh is named by both ("shape-cone-48"), so a drawing only keeps the
+// name, and the mesh is made again whenever it's wanted.
+const SHAPES = {
+  sphere: { name: "Sphere", n: 48, of: "Segments around", min: 6 }, dome: { name: "Hemisphere", n: 48, of: "Segments around", min: 6 },
+  cylinder: { name: "Cylinder", n: 48, of: "Sides", min: 3 }, tube: { name: "Tube", n: 48, of: "Sides", min: 3 },
+  cone: { name: "Cone", n: 48, of: "Sides", min: 3 }, frustum: { name: "Truncated cone", n: 48, of: "Sides", min: 3 },
+  pyramid: { name: "Pyramid", n: 4, of: "Sides of its base", min: 3 }, prism: { name: "Prism", n: 6, of: "Sides", min: 3 },
+  wedge: { name: "Wedge" }, torus: { name: "Torus", n: 48, of: "Segments around", min: 6 }, capsule: { name: "Capsule", n: 48, of: "Segments around", min: 6 },
+  poly: { name: "Polyhedron", n: 12, of: "Faces" }
+};
+// (the polyhedra, by how many faces: the five regular solids and two of the best-known others)
+const POLYHEDRA = [[4, "tetrahedron"], [6, "cube"], [8, "octahedron"], [12, "dodecahedron"], [14, "cuboctahedron"], [20, "icosahedron"], [32, "truncated icosahedron"]];
+// A profile turned about the upright axis in n steps: points [r, z] running up the outside (r 0 is on the axis, a single
+// point), or with `loop` round a closed outline (a tube's wall, a torus's ring). A flat side faces the front.
+function lathe(profile, n, loop) {
+  const pos = [], idx = [], rings = [], m = profile.length;
+  for (const [r, z] of profile) {
+    if (r < 1e-9) { rings.push([pos.length / 3]); pos.push(0, 0, z); continue; }
+    const ring = [];
+    for (let k = 0; k < n; k++) { const a = (k + 0.5) * 2 * Math.PI / n - Math.PI / 2; ring.push(pos.length / 3); pos.push(r * Math.cos(a), r * Math.sin(a), z); }
+    rings.push(ring);
+  }
+  for (let s = 0; s < (loop ? m : m - 1); s++) {
+    const A = rings[s], B = rings[(s + 1) % m];
+    for (let k = 0; k < n; k++) {
+      const k2 = (k + 1) % n, a = A[k % A.length], b = A[k2 % A.length], c = B[k2 % B.length], d = B[k % B.length];
+      if (A.length > 1 && B.length > 1) idx.push(a, b, c, a, c, d); else if (A.length > 1) idx.push(a, b, c); else if (B.length > 1) idx.push(a, c, d);
+    }
+  }
+  return { pos, idx };
+}
+// The flat faces of a solid from just its corners: every plane through three of them with the rest all to one side, each
+// with the corners on it in order round it, seen from outside
+function hullFaces(P) {
+  const faces = [], seen = new Set(), size = Math.max(...P.map(p => l3(p)));
+  for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) for (let k = j + 1; k < P.length; k++) {
+    let N = c3(s3(P[j], P[i]), s3(P[k], P[i])); const l = l3(N); if (l < 1e-9 * size * size) continue;
+    N = m3(N, 1 / l);
+    const side = P.map(p => d3(N, s3(p, P[i]))), eps = 1e-6 * size;
+    if (side.some(v => v > eps) && side.some(v => v < -eps)) continue;
+    if (side.some(v => v > eps)) N = m3(N, -1);
+    const on = P.map((p, q) => q).filter(q => Math.abs(side[q]) <= eps), key = on.join();
+    if (seen.has(key)) continue; seen.add(key);
+    const mid = m3(on.reduce((a, q) => a3(a, P[q]), V3(0, 0, 0)), 1 / on.length), u = n3(s3(P[on[0]], mid)), v = c3(N, u);
+    faces.push(on.map(q => [q, Math.atan2(d3(s3(P[q], mid), v), d3(s3(P[q], mid), u))]).sort((a, b) => a[1] - b[1]).map(a => a[0]));
+  }
+  return faces;
+}
+function polyhedron(nFaces) {
+  const phi = (1 + Math.sqrt(5)) / 2, signs = v => v.reduce((out, x) => out.flatMap(o => (x ? [[...o, x], [...o, -x]] : [[...o, 0]])), [[]]);
+  const turns = v => [[v[0], v[1], v[2]], [v[1], v[2], v[0]], [v[2], v[0], v[1]]], all = (...vs) => vs.flatMap(v => turns(v).flatMap(signs));
+  const sets = {
+    4: [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]], 6: signs([1, 1, 1]), 8: all([1, 0, 0]), 12: [...signs([1, 1, 1]), ...all([0, 1 / phi, phi])], 14: all([1, 1, 0]),
+    20: all([0, 1, phi]), 32: all([0, 1, 3 * phi], [1, 2 + phi, 2 * phi], [phi, 2, 2 * phi + 1])
+  };
+  let P = (sets[nFaces] || sets[12]).map(v => V3(v[0], v[1], v[2])); const faces = hullFaces(P);
+  // (set down on a face: the tetrahedron, the dodecahedron and the truncated icosahedron, on one of its five-sided ones;
+  // the icosahedron stands on a corner, as the octahedron does already)
+  const down = nFaces === 20 ? n3(P[0]) : [4, 12, 32].includes(nFaces) ? (() => { const f = faces.find(q => nFaces !== 32 || q.length === 5); return n3(q3(f.map(q => P[q]))); })() : null;
+  if (down) {
+    const to = V3(0, 0, -1), cos = d3(down, to), axis = l3(c3(down, to)) > 1e-9 ? n3(c3(down, to)) : V3(1, 0, 0), sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+    P = P.map(p => a3(a3(m3(p, cos), m3(c3(axis, p), sin)), m3(axis, d3(axis, p) * (1 - cos))));
+  }
+  const pos = P.flatMap(p => [p.x, p.y, p.z]), idx = []; faces.forEach(f => fan(idx, f));
+  return { pos, idx };
+}
+const q3 = pts => m3(pts.reduce(a3, V3(0, 0, 0)), 1 / pts.length); // (the middle of some points)
+function shapeMesh(id) {
+  const m = /^shape-([a-z]+)-(\d+)$/.exec(id || ""), S = m && SHAPES[m[1]]; if (!S) return null;
+  const kind = m[1], n = Math.max(S.min || 3, Math.min(256, +m[2] || S.n || 3)), half = Math.max(3, Math.round(n / 2)), quarter = Math.max(2, Math.round(n / 4));
+  const arc = (from, to, steps, r, zc) => Array.from({ length: steps + 1 }, (_, i) => { const t = from + (to - from) * i / steps, x = r * Math.cos(t); return [Math.abs(x) < 1e-9 ? 0 : x, zc + r * Math.sin(t)]; });
+  const Q = Math.PI / 2;
+  const made = kind === "sphere" ? lathe(arc(-Q, Q, half, 0.5, 0), n)
+    : kind === "dome" ? lathe([[0, 0], ...arc(0, Q, quarter, 0.5, 0)], n)
+    : kind === "cylinder" || kind === "prism" ? lathe([[0, 0], [0.5, 0], [0.5, 1.2], [0, 1.2]], n)
+    : kind === "tube" ? lathe([[0.5, 0], [0.5, 1.2], [0.32, 1.2], [0.32, 0]], n, true)
+    : kind === "cone" ? lathe([[0, 0], [0.5, 0], [0, 1.2]], n)
+    : kind === "pyramid" ? lathe([[0, 0], [0.5, 0], [0, 0.8]], n)
+    : kind === "frustum" ? lathe([[0, 0], [0.5, 0], [0.27, 1], [0, 1]], n)
+    : kind === "torus" ? lathe(Array.from({ length: half }, (_, j) => [1 + 0.38 * Math.cos(2 * Math.PI * j / half), 0.38 * Math.sin(2 * Math.PI * j / half)]), n, true)
+    : kind === "capsule" ? lathe([...arc(-Q, 0, quarter, 0.5, -0.6), ...arc(0, Q, quarter, 0.5, 0.6)], n)
+    : kind === "wedge" ? { pos: [0, 0, 0, 1.4, 0, 0, 1.4, 1, 0, 0, 1, 0, 0, 0, 0.8, 0, 1, 0.8], idx: [0, 3, 2, 0, 2, 1, 0, 4, 5, 0, 5, 3, 4, 1, 2, 4, 2, 5, 0, 1, 4, 3, 5, 2] }
+    : polyhedron(+m[2]);
+  const mesh = { name: S.name, pos: Float32Array.from(made.pos), idx: Uint32Array.from(made.idx), shape: true };
+  meshes.set(id, mesh);
+  return mesh;
+}
+// The selected box's shape, if it holds one: its kind, its number and what the panel calls it
+const shapeOf = bx => { const m = bx && bx.model && /^shape-([a-z]+)-(\d+)$/.exec(bx.model.id); return m && SHAPES[m[1]] ? { kind: m[1], n: +m[2], S: SHAPES[m[1]] } : null; };
+const shapeHere = () => (hasBox() ? shapeOf(state.boxes[state.sel]) : null);
+function setShapeN(v) {
+  const bx = state.boxes[state.sel], sh = shapeOf(bx); if (!sh) return;
+  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; fitModelBox(bx); touch();
+}
+// A new shape, where and as big as a new box would be, with just the shape showing
+function addShape(kind) {
+  if (kind === "box") { addBox(); return; }
+  const S = SHAPES[kind]; if (!S) return;
+  const g = geo(), bx = makeBox(g, state.boxes.length), G0 = homeGeo(bx, g), sb = screenBox([...G0.B, ...G0.T]);
+  bx.name = `${S.name} ${state.boxes.length + 1}`; bx.model = cleanModel({ id: `shape-${kind}-${S.n || 0}`, name: S.name, up: "z", frame: false }); bx.ghost = 0; bx.div.on = false;
+  fitBox(bx, modelDims(bx, g), sb.c, sb.s, g, boxPlace(bx, g)); captureFit(bx, g);
+  state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch();
+}
+
+const modelOf = bx => (bx && bx.model && (meshes.get(bx.model.id) || shapeMesh(bx.model.id))) || null;
 // The proportions a box needs to hold its model unstretched, in fitBox's terms (largest side 1), keeping which way the
 // box already runs along each axis
 function modelDims(bx, g) {
   const m = modelOf(bx); if (!m) return null;
-  const d = modelShape(m, bx.model.up, bx.model.turn, false).dims, big = Math.max(...d) || 1, now = boxDims(bx, g), keep = v => Math.max(0.03, v / big);
+  const d = modelShape(m, bx.model.up, bx.model.turn, 0).dims, big = Math.max(...d) || 1, now = boxDims(bx, g), keep = v => Math.max(0.03, v / big);
   return { a: Math.sign(now.a || 1) * keep(d[0]), c: Math.sign(now.c || 1) * keep(d[1]), h: keep(d[2]) };
 }
 const modelStretched = (bx, g) => { const d = modelDims(bx, g), now = boxDims(bx, g); return !!d && ["a", "c", "h"].some(k => Math.abs(Math.abs(d[k]) - Math.abs(now[k])) > 0.01); };
@@ -2765,7 +2871,16 @@ function fitModelBox(bx, g = geo()) {
 const LIGHT = n3(V3(-0.35, 0.8, -0.5)), modelViews = new WeakMap();
 function modelView(bx, g, G) {
   const m = modelOf(bx); if (!m) return null;
-  const F = boxFrame(bx, g, G), fine = !!g.cam, S = modelShape(m, bx.model.up, bx.model.turn, fine);
+  const F = boxFrame(bx, g, G);
+  // Through a lens an edge bends by how much of the view it spans, so the cutting goes by the angle the box takes up from
+  // the eye: a piece for about every 5°, in steps of double (so a box being moved doesn't recut the model all the time)
+  let fine = 0;
+  if (g.cam) {
+    const mid = n3(a3(F.O, m3(a3(a3(F.ax[0], F.ax[1]), F.ax[2]), 0.5))); let wide = 0;
+    for (let c = 0; c < 8; c++) { const p = n3(a3(F.O, a3(a3(m3(F.ax[0], c & 1), m3(F.ax[1], c >> 1 & 1)), m3(F.ax[2], c >> 2 & 1)))); wide = Math.max(wide, 2 * Math.acos(Math.max(-1, Math.min(1, d3(p, mid))))); }
+    fine = 2 ** Math.max(0, Math.min(4, Math.ceil(Math.log2(Math.max(1e-6, wide / (5 * deg))))));
+  }
+  const S = modelShape(m, bx.model.up, bx.model.turn, fine);
   const key = [state.mode, state.curvi.style4, fine ? JSON.stringify([state.curvi, state.cone.cv, state.horizon]) : "", bx.model.id, bx.model.up, bx.model.turn, F.in3, F.O.x, F.O.y, F.O.z, ...F.ax.flatMap(v => [v.x, v.y, v.z]), ...[...G.B, ...G.T].flatMap(p => [p.x, p.y])].join();
   const had = modelViews.get(bx); if (had && had.key === key) return had;
   const { q, tri, par } = S, nv = q.length / 3, nt = tri.length / 3, { O, ax, cam } = F;
@@ -2924,7 +3039,7 @@ function keepMesh(id, m) { meshes.set(id, m); meshMissing.delete(id); return mes
 async function loadMeshes() {
   const want = [...new Set(state.boxes.filter(b => b.model).map(b => b.model.id))];
   for (const id of want) {
-    if (meshes.has(id) || meshMissing.has(id)) continue;
+    if (meshes.has(id) || meshMissing.has(id) || /^shape-/.test(id)) continue;
     const rec = await meshDB("readonly", st => st.get(id));
     if (rec && rec.pos && rec.idx) meshes.set(id, { name: rec.name, pos: new Float32Array(rec.pos), idx: new Uint32Array(rec.idx), thin: !!rec.thin }); else meshMissing.add(id);
     touch();
@@ -2935,7 +3050,7 @@ async function pruneMeshes() { const keys = await meshDB("readonly", st => st.ge
 const bytesB64 = bytes => { let sOut = ""; for (let i = 0; i < bytes.length; i += 0x8000) sOut += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(sOut); };
 function packMeshes() {
   const out = {};
-  for (const b of state.boxes) { const m = modelOf(b); if (m && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
+  for (const b of state.boxes) { const m = modelOf(b); if (m && !m.shape && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
   return out;
 }
 function unpackMeshes(raw) {
@@ -2982,9 +3097,11 @@ const hasModel = () => hasBox() && !!state.boxes[state.sel].model;
 const modelHere = () => hasModel() && !!modelOf(state.boxes[state.sel]);
 function turnModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; bx.model.turn = (bx.model.turn + 1) % 4; fitModelBox(bx); commit(); touch(); }
 function matchModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; fitModelBox(bx); commit(); touch(); }
-function removeModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; bx.model = null; commit(); touch(); toast("Model removed. Its box stays, and undo brings the model back."); }
+function removeModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; const what = shapeOf(bx) ? "Shape" : "Model"; bx.model = null; bx.ghost = 0.3; commit(); touch(); toast(`${what} removed. Its box stays, and undo brings the ${what.toLowerCase()} back.`); }
 function modelNote() {
   const bx = state.boxes[state.sel], m = modelOf(bx); if (!bx || !bx.model) return "";
+  const sh = shapeOf(bx);
+  if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side.`;
   if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
   return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge.`;
 }
@@ -3950,11 +4067,14 @@ const schema = [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
     { t: "btns", items: [["Import 3D model…", pickModel, ""]] },
-    { t: "note", html: "Brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF or AMF file, or drop the file on the page. It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. Models are kept on this device and written into a saved setup file." },
-    { t: "sub", label: "3D model", when: hasModel },
-    { t: "readout", label: () => (modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
+    { t: "note", html: "Add shape, on the toolbar, adds a box or another shape: a sphere, hemisphere, cylinder, tube, cone, truncated cone, pyramid, prism, wedge, torus, capsule or polyhedron. Each sits in a box of its own, which it fills, like a model. Import 3D model brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF or AMF file, or drop the file on the page. It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. Models are kept on this device and written into a saved setup file." },
+    { t: "sub", label: "3D model", when: () => hasModel() && !shapeHere() },
+    { t: "sub", label: "Shape", when: () => !!shapeHere() },
+    { t: "readout", label: () => (shapeHere() ? "About this shape" : modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
+    { t: "range", bind: "boxes.$b.model.sides", label: () => (shapeHere() ? shapeHere().S.of : "Sides"), min: 3, max: 64, step: 1, lo: 3, hi: 256, get: () => (shapeHere() ? Math.max(shapeHere().S.min || 3, shapeHere().n) : undefined), set: v => setShapeN(Math.max((shapeHere() && shapeHere().S.min) || 3, v)), when: () => !!shapeHere() && !!shapeHere().S.of && shapeHere().kind !== "poly" },
+    { t: "select", bind: "boxes.$b.model.faces", label: "Faces", num: true, options: POLYHEDRA.map(([n, name]) => [n, `${n} · ${name}`]), get: () => (shapeHere() ? shapeHere().n : undefined), apply: v => { setShapeN(v); commit(); }, when: () => !!shapeHere() && shapeHere().kind === "poly" },
     { t: "toggle", bind: "boxes.$b.model.up", label: "Up axis", options: [["y", "Y"], ["z", "Z"], ["x", "X"]], when: modelHere },
-    { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], ["Remove model", removeModel, "warn"]], when: hasModel },
+    { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], [() => (shapeHere() ? "Make it a plain box" : "Remove model"), removeModel, "warn"]], when: hasModel },
     { t: "color", bind: "boxes.$b.model.color", label: "Model color", when: modelHere },
     { t: "range", bind: "boxes.$b.model.opacity", label: "Model opacity", min: 0, max: 1, step: 0.05, hi: 1, when: modelHere },
     { t: "check", bind: "boxes.$b.model.shade", label: "Shade it by which way it faces", when: modelHere },
@@ -4341,7 +4461,7 @@ function makeRow(r) {
       update = () => {
         const order = drawOrder(geo()).reverse(), many = order.length > 1;
         const s = JSON.stringify([order, state.boxes.map(b => [b.name, b.fill]), state.sel]); if (s === sig) return; sig = s; node.innerHTML = "";
-        if (!state.boxes.length) { node.append(el("div", { class: "row note" }, infoButton("Add one with Add box and it lands below the horizon, ready to drag.", "No boxes yet"))); return; }
+        if (!state.boxes.length) { node.append(el("div", { class: "row note" }, infoButton("Add one with Add box, or pick a shape from Add shape on the toolbar, and it lands below the horizon, ready to drag.", "No boxes yet"))); return; }
         const put = (at, slot) => { const list = [...order], [i] = list.splice(at, 1); list.splice(slot > at ? slot - 1 : slot, 0, i); if (list.join() !== order.join()) stackBoxes(list); };
         if (many) node.append(el("span", { class: "stack-end" }, "Front"));
         order.forEach((i, at) => {
@@ -5300,7 +5420,10 @@ window.addEventListener("keydown", e => { if (e.key === "Escape" && !facePop.hid
 document.addEventListener("pointerdown", e => { if (!facePop.hidden && !facePop.contains(e.target) && e.target !== canvas && !ringEntry.contains(e.target)) closeFaces(); }, true);
 
 /* ---------- toolbar ---------- */
-document.getElementById("tbAdd").addEventListener("click", addBox);
+// Add shape: a box, or one of the other shapes, each in a box of its own
+const tbAdd = document.getElementById("tbAdd");
+tbAdd.append(el("option", { value: "", disabled: "disabled", selected: "selected" }, "Add shape"), el("option", { value: "box" }, "Box"), ...Object.entries(SHAPES).map(([k, S]) => el("option", { value: k }, S.name)));
+tbAdd.addEventListener("change", () => { const kind = tbAdd.value; tbAdd.value = ""; if (kind) addShape(kind); });
 document.getElementById("tbFit").addEventListener("click", fitView);
 document.getElementById("tbEven").addEventListener("click", evenVPs);
 document.getElementById("tbReset").addEventListener("click", resetPerspective);
