@@ -430,7 +430,10 @@ function cleanModel(raw) {
   return {
     id: raw.id, name: typeof raw.name === "string" ? raw.name.slice(0, 80) : "Model", up: ["x", "y", "z"].includes(raw.up) ? raw.up : "z", turn: [0, 1, 2, 3].includes(raw.turn) ? raw.turn : 0,
     color: col(raw.color, "#d5dde3"), stroke: col(raw.stroke, "#1f2a33"), width: num(raw.width, 0.05, 50, 1), opacity: num(raw.opacity, 0, 1, 1),
-    lines: MODEL_LINES.includes(raw.lines) ? raw.lines : "outline", crease: num(raw.crease, 1, 180, 30), shade: raw.shade !== false, frame: raw.frame !== false
+    lines: MODEL_LINES.includes(raw.lines) ? raw.lines : "outline", crease: num(raw.crease, 1, 180, 30), shade: raw.shade !== false, frame: raw.frame !== false,
+    // (its surfaces' own settings, by number, and the hidden ones: see meshSurfaces)
+    own: Object.fromEntries(Object.entries(raw.own && typeof raw.own === "object" ? raw.own : {}).filter(([k, v]) => /^\d{1,6}$/.test(k) && v && typeof v === "object").map(([k, v]) => [k, cleanOwn(v)]).filter(([, v]) => Object.keys(v).length)),
+    hide: Array.isArray(raw.hide) ? [...new Set(raw.hide.filter(n => Number.isInteger(n) && n >= 0 && n < 1e6))] : []
   };
 }
 const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, model: null, ghost: 0.3, own: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
@@ -1057,6 +1060,7 @@ function guideFit(upright, g = geo()) { const fit = rayBox(); if (!fit) return n
 // its axis and number
 function snapLabel(id, bx = state.boxes[state.sel]) {
   if (!bx) return id;
+  if (isModelSurface(id)) return modelSurfaceName(bx, id);
   if (id === "top") return "Top"; if (id === "bottom") return "Bottom";
   if (planeAxis(id) >= 0) return `${"XYZ"[planeAxis(id)]} plane ${id.slice(1)}`;
   const g = geo(), G = homeGeo(bx, g), f = G.faces.find(x => x.id === id), twin = G.faces.find(x => x.id === OPPOSITE[id]), along = id === "s01" || id === "s23" ? 0 : 1;
@@ -1307,12 +1311,14 @@ function geoFrom3(B, T, cam, n) {
 // sits i slices in from corner 0 (toward corner 1 for x, corner 3 for y, and up for z), measured in depth. They're
 // drawn, picked and hidden the way faces are; bx.planes.hidden lists the hidden ones.
 const PLANE_SHADE = [0.75, 0.88];
-const surfaceShown = (bx, id) => (planeAxis(id) < 0 ? bx.faces[id] !== false : !bx.planes.hidden.includes(id));
+const surfaceShown = (bx, id) => (isModelSurface(id) ? !(bx.model && bx.model.hide.includes(+id.slice(1))) : planeAxis(id) < 0 ? bx.faces[id] !== false : !bx.planes.hidden.includes(id));
 // A face's or plane's look, its own settings where it has them and its box's otherwise: its fill color and opacity, and
 // its edges' color, weight and opacity
 const ownOf = (bx, id) => (bx.own && bx.own[id]) || {};
 const either = (v, d) => (v !== undefined ? v : d);
 function surfLook(bx, id) {
+  // (a model's surface: its own, or its model's)
+  if (isModelSurface(id)) { const M = bx.model, w = modelOwn(bx, id); return { fill: either(w.fill, M.color), opacity: either(w.opacity, M.opacity), stroke: either(w.stroke, M.stroke), width: either(w.width, M.width), edgeOp: either(w.edgeOp, 1) }; }
   const o = ownOf(bx, id);
   return { fill: either(o.fill, bx.fill), opacity: either(o.opacity, Math.min(1, Math.max(0, bx.ghost))), stroke: either(o.stroke, bx.stroke), width: either(o.width, bx.width), edgeOp: either(o.edgeOp, 1) };
 }
@@ -1331,6 +1337,7 @@ function surfDiv(bx, id) {
   return { on, nu, nv, diag: either(o.diag, D.diag), line, diagStyle, pattern: D.pattern || "A", hier: D.hier };
 }
 function setSurfaceShown(bx, id, on) {
+  if (isModelSurface(id)) { if (bx.model) { const i = +id.slice(1); bx.model.hide = bx.model.hide.filter(x => x !== i); if (!on) bx.model.hide.push(i); } return; }
   if (planeAxis(id) < 0) { bx.faces[id] = on; return; }
   bx.planes.hidden = bx.planes.hidden.filter(x => x !== id);
   if (!on) bx.planes.hidden.push(id);
@@ -2106,7 +2113,7 @@ function drawBox(c, bx, g, k, skip = null) {
   const G = boxGeo(bx, g), holds = !!modelOf(bx);
   // (a box holding a model draws it inside, after its back faces and before its front ones; with the box around it turned
   // off, just the model)
-  if (holds && bx.model.frame === false) { drawModel(c, bx, g, k, G); return; }
+  if (holds && bx.model.frame === false) { drawModel(c, bx, g, k, G, skip); return; }
   const PL = boxPlanes(bx, g, G), own = bx.own || {};
   const near = bx.div && (bx.div.on || Object.values(own).some(o => o.div)) ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
@@ -2175,7 +2182,7 @@ function drawBox(c, bx, g, k, skip = null) {
     if (split) hiddenEdges(pieceRuns(p), p.id);
     else { c.setLineDash([]); planeEdges(p); }
   }
-  if (holds) { drawModel(c, bx, g, k, G); c.lineJoin = "round"; c.lineCap = "round"; }
+  if (holds) { drawModel(c, bx, g, k, G, skip); c.lineJoin = "round"; c.lineCap = "round"; }
   for (const f of fronts) {
     if (op(f.id) > 0) fill(f, op(f.id), f.shade);
     drawDivisions(c, f, bx, k, 1, near);
@@ -2246,7 +2253,7 @@ function drawScene(c, k, b, inc) {
     }
   }
   c.restore();
-  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k, inc.hide && inc.hide.bi === i ? inc.hide.face : null));
+  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k, inc.hide && inc.hide.bi === i ? inc.hide.surf || inc.hide.face : null));
   if (inc.vps) drawVPs(c, k, g);
 }
 
@@ -2294,22 +2301,27 @@ function frame() {
   // a hidden face under the pointer with ⌘ or Ctrl held: a ghost of it, which a ⌘-click brings back. With Shift
   // held, the face under the pointer is drawn the same way, as it would be once a Shift-click hides it.
   const hb = hover && (hover.type === "hidden" || hiding) && state.boxes[hover.bi], hf = hb && surfaceGeo(hb, g, hover.face);
-  if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
+  // (a model's surface is tinted instead)
+  const hs = hb && (hover.surf || (isModelSurface(hover.face) ? hover.face : null));
+  if (hs) markSurface(hb, g, hs, "tint", accent); else if (hf) drawFaceGhost(hf, shade(hex2rgb(hb.fill), hf.shade), accent, 0.4);
   // the faces and planes picked to edit, outlined while the pop-up's up (and with Shift held, the one a click adds or drops)
   for (const { bi, id } of editing() ? ui.faces : []) {
+    if (state.boxes[bi] && isModelSurface(id)) { markSurface(state.boxes[bi], g, id, "outline", accent); continue; }
     const pb = state.boxes[bi], f = pb && surfaceGeo(pb, g, id); if (!f) continue;
     const trace = pl => pl.forEach((p, i) => { const q = toS(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
     ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.globalAlpha = 0.95;
     for (const poly of f.fills) { ctx.beginPath(); trace(poly); ctx.closePath(); ctx.stroke(); }
     ctx.restore();
   }
-  const pk = !drag && hover && hover.type === "pick" && state.boxes[hover.bi], pf = pk && surfaceGeo(pk, g, hover.face);
-  if (pf) drawFaceGhost(pf, accent, accent, 0.2);
+  const pk = !drag && hover && hover.type === "pick" && state.boxes[hover.bi], pf = pk && (hover.surf || surfaceGeo(pk, g, hover.face));
+  if (pk && hover.surf) markSurface(pk, g, hover.surf, "tint", accent); else if (pf) drawFaceGhost(pf, accent, accent, 0.2);
   // the face under the pointer, highlighted in the color of its axis, with its circle ghosted (in the accent color
   // without circles); the solid circle of the face last clicked on the selected box
   const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost = lt && state.rotateFaces && ringOf(lb, lt.face, g);
   const rf = bx && ringFace(), solid = rf && ringOf(bx, rf, g), gs = lt && surfaceGeo(lb, g, lt.face);
-  if (gs) drawFaceGhost(gs, ghost ? AXIS_COLORS[ghost.k] : accent, ghost ? AXIS_COLORS[ghost.k] : accent, 0.25);
+  // (over a model, its surface under the pointer is what a click picks, so that is tinted, and the box's face only says
+  // which circle shows)
+  if (lt && lt.surf) markSurface(lb, g, lt.surf, "tint", accent); else if (gs) drawFaceGhost(gs, ghost ? AXIS_COLORS[ghost.k] : accent, ghost ? AXIS_COLORS[ghost.k] : accent, 0.25);
   if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, hover && hover.type === "ring" && hover.ghost); // (a face on the same axis has the same circle)
   if (solid) drawRing(solid, paper);
   // selected box handles
@@ -2836,7 +2848,8 @@ const shapeOf = bx => { const m = bx && bx.model && /^shape-([a-z]+)-(\d+)$/.exe
 const shapeHere = () => (hasBox() ? shapeOf(state.boxes[state.sel]) : null);
 function setShapeN(v) {
   const bx = state.boxes[state.sel], sh = shapeOf(bx); if (!sh) return;
-  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; fitModelBox(bx); touch();
+  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; bx.model.own = {}; bx.model.hide = []; ui.faces = ui.faces.filter(p => !isModelSurface(p.id)); // (its surfaces are new ones)
+  fitModelBox(bx); touch();
 }
 // A new shape, where and as big as a new box would be, with just the shape showing
 function addShape(kind) {
@@ -2953,22 +2966,134 @@ function modelView(bx, g, G) {
   modelViews.set(bx, view);
   return view;
 }
+// A model's surfaces: its triangles gathered into the areas its creases bound (edges sharper than the model's crease
+// angle, and open ones), so a cylinder has a side and two ends, a pyramid its faces, and a sphere just one. Each can be
+// picked and edited on its own, as a box's faces can; in the drawing it goes by "m" and its number ("m0", "m3"). `of` is
+// each triangle's surface; `flat` whether a surface lies in one plane, and `nrm` the way it faces, as the file has it.
+const isModelSurface = id => /^m\d+$/.test(id);
+function meshSurfaces(m, crease) {
+  const key = String(crease); m.surfs = m.surfs || new Map();
+  if (m.surfs.has(key)) return m.surfs.get(key);
+  const E = meshEdges(m), { pos, idx } = m, nt = idx.length / 3, of = new Int32Array(nt).fill(-1), sharp = Math.cos(crease * deg), te = E.te, todo = [], flat = [], nrm = [];
+  let count = 0;
+  for (let t0 = 0; t0 < nt; t0++) {
+    if (of[t0] >= 0) continue;
+    of[t0] = count; todo.push(t0);
+    let sx = 0, sy = 0, sz = 0, fx = 0, fy = 0, fz = 0, first = true, even = true;
+    while (todo.length) {
+      const t = todo.pop(), a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+      const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2], vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.hypot(nx, ny, nz) || 1;
+      sx += nx; sy += ny; sz += nz;
+      if (first) { fx = nx / l; fy = ny / l; fz = nz / l; first = false; } else if (Math.abs((nx * fx + ny * fy + nz * fz) / l) < 0.9999) even = false;
+      for (let k = 0; k < 3; k++) {
+        const e = te[t * 3 + k]; if (E.open[e] || E.lap[e] || E.cos[e] < sharp) continue;
+        const o = E.t0[e] === t ? E.t1[e] : E.t0[e];
+        if (o >= 0 && of[o] < 0) { of[o] = count; todo.push(o); }
+      }
+    }
+    const l = Math.hypot(sx, sy, sz) || 1; flat.push(even); nrm.push([sx / l, sy / l, sz / l]); count++;
+  }
+  const out = { of, count, flat, nrm };
+  if (m.surfs.size >= 6) m.surfs.delete(m.surfs.keys().next().value); // (only the last few crease angles tried are kept)
+  m.surfs.set(key, out);
+  return out;
+}
+// What a surface is called: the top or the base if it's flat and faces straight up or down as the model sits, a face if
+// it's flat some other way, and a curved surface otherwise (numbered when there's more than one of the kind)
+function modelSurfaceName(bx, id) {
+  const m = modelOf(bx), i = +id.slice(1); if (!m) return "Surface";
+  const S = meshSurfaces(m, bx.model.crease); if (!(i < S.count)) return "Surface";
+  const up = { x: 0, y: 1, z: 2 }[bx.model.up], lift = S.nrm[i][up];
+  if (S.flat[i] && Math.abs(lift) > 0.999) return lift > 0 ? "Top" : "Base";
+  const kind = S.flat.map((f, j) => (f && Math.abs(S.nrm[j][up]) > 0.999 ? "end" : f ? "face" : "curved")), mine = kind[i], same = kind.filter(x => x === mine).length;
+  const nth = kind.slice(0, i + 1).filter(x => x === mine).length;
+  return (mine === "face" ? "Face" : "Curved surface") + (same > 1 ? " " + nth : "");
+}
+// A model surface's own settings, each in place of its model's (bx.model.own, by the surface's number)
+const modelOwn = (bx, id) => (bx.model && bx.model.own && bx.model.own[id.slice(1)]) || {};
+// The model's surfaces under a point on the page, nearest first (up to `most` of them): those you can see, or with
+// `hidden` the hidden ones, to bring one back
+function modelHit(bx, g, G, w, hidden, most = 2) {
+  const m = modelOf(bx), view = m && modelView(bx, g, G); if (!view) return [];
+  const { sx, sy, order } = view, { tri, par } = view.S, of = meshSurfaces(m, bx.model.crease).of, hide = new Set(bx.model.hide), out = [], x = w.x, y = w.y;
+  for (let n = order.length - 1; n >= 0 && out.length < most; n--) {
+    const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], c = tri[t * 3 + 2], ax = sx[a], ay = sy[a], bx2 = sx[b], by = sy[b], cx = sx[c], cy = sy[c];
+    if ((x < ax && x < bx2 && x < cx) || (x > ax && x > bx2 && x > cx) || (y < ay && y < by && y < cy) || (y > ay && y > by && y > cy)) continue;
+    const d1 = (bx2 - ax) * (y - ay) - (by - ay) * (x - ax), d2 = (cx - bx2) * (y - by) - (cy - by) * (x - bx2), d3v = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+    if (!((d1 >= 0 && d2 >= 0 && d3v >= 0) || (d1 <= 0 && d2 <= 0 && d3v <= 0))) continue;
+    const s = of[par[t]]; if (hide.has(s) !== !!hidden) continue;
+    const id = "m" + s; if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+// A surface marked on the canvas (never in an export), over the drawing: tinted, for the one under the pointer, or
+// outlined, for one picked to edit (its rim, and its outline against what's behind it)
+function markSurface(bx, g, id, how, color) {
+  const m = modelOf(bx), G = boxGeo(bx, g), mv = m && modelView(bx, g, G), want = +id.slice(1); if (!mv) return;
+  const { sx, sy, order, faces } = mv, { tri, par, er } = mv.S, of = meshSurfaces(m, bx.model.crease).of, E = meshEdges(m);
+  ctx.save(); ctx.translate(view.x, view.y); ctx.scale(view.z, view.z); ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.setLineDash([]);
+  if (how === "tint") {
+    // (all of it as one shape, each triangle taken the same way round so none cancels another where they overlap)
+    ctx.beginPath();
+    for (let n = 0; n < order.length; n++) {
+      const t = order[n]; if (of[par[t]] !== want) continue;
+      const a = tri[t * 3], b = tri[t * 3 + 1], c = tri[t * 3 + 2], round = (sx[b] - sx[a]) * (sy[c] - sy[a]) - (sy[b] - sy[a]) * (sx[c] - sx[a]) < 0;
+      ctx.moveTo(sx[a], sy[a]); if (round) { ctx.lineTo(sx[c], sy[c]); ctx.lineTo(sx[b], sy[b]); } else { ctx.lineTo(sx[b], sy[b]); ctx.lineTo(sx[c], sy[c]); } ctx.closePath();
+    }
+    ctx.globalAlpha = 0.32; ctx.fillStyle = color; ctx.fill("nonzero");
+  } else {
+    ctx.beginPath();
+    for (let n = 0; n < order.length; n++) {
+      const t = order[n]; if (of[par[t]] !== want) continue;
+      for (let k = 0; k < 3; k++) {
+        const e = er[t * 3 + k]; if (e < 0) continue;
+        const rim = E.open[e] || E.t1[e] < 0 || of[E.t0[e]] !== of[E.t1[e]], edge = !rim && faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0;
+        if (rim || edge) { const p = tri[t * 3 + k], q = tri[t * 3 + (k + 1) % 3]; ctx.moveTo(sx[p], sy[p]); ctx.lineTo(sx[q], sy[q]); }
+      }
+    }
+    ctx.globalAlpha = 0.95; ctx.strokeStyle = color; ctx.lineWidth = 2.5 / view.z; ctx.stroke();
+  }
+  ctx.restore();
+}
 // Draws it: each triangle filled in its shade, then the lines of the model at it, so the nearer triangles drawn after it
 // cover what they hide. Its lines: every edge, or just the open ones, the creases sharper than the model's crease angle
 // and the outline (edges between a triangle facing you and one facing away). A triangle draws the lines that touch any of
 // its corners, not just its own sides: along an outline the triangles are seen nearly edge-on, thinner than the line, and
 // the ones beside them would otherwise fill over half of it. (An edge cut into pieces through a lens is drawn piece by
-// piece instead, by the triangles along it.)
-function drawModel(c, bx, g, k, G) {
+// piece instead, by the triangles along it.) A surface with settings of its own takes them in place of the model's: its
+// color and opacity, and for the lines round and across it their color, weight and opacity; a hidden one (or `skip`, one
+// drawn as if hidden for the Shift-hover preview) is left out, with the lines only it has.
+function drawModel(c, bx, g, k, G, skip = null) {
   const M = bx.model, view = modelView(bx, g, G); if (!view) return;
-  const { S, sx, sy, order, lit, faces } = view, { tri, er } = S, E = meshEdges(meshes.get(M.id));
-  const rgb = hex2rgb(M.color), shades = Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1));
-  const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k), fills = M.opacity > 0, solid = M.opacity >= 0.999;
-  // (which edges are lines, kept with the view until the choice changes)
-  const mesh = meshes.get(M.id), lineKey = M.lines + " " + M.crease; let drawn = view.lineKey === lineKey ? view.drawn : null;
+  const mesh = meshes.get(M.id), { S, sx, sy, order, lit, faces } = view, { tri, er, par } = S, E = meshEdges(mesh), SF = meshSurfaces(mesh, M.crease), of = SF.of;
+  const shadesOf = hex => { const rgb = hex2rgb(hex); return Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1)); }, shades = shadesOf(M.color);
+  const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k);
+  // each surface's own: hidden or not, its shades and opacity, and its lines' look (0 for the model's)
+  const own = M.own || {}, special = Object.keys(own).length > 0 || M.hide.length > 0 || !!skip;
+  const gone = special ? new Uint8Array(SF.count) : null, shadeBy = special ? new Array(SF.count).fill(null) : null, opBy = special ? new Float32Array(SF.count).fill(M.opacity) : null, penBy = special ? new Uint8Array(SF.count) : null;
+  const pens = [{ stroke: M.stroke, lw, alpha: 1 }];
+  if (special) {
+    M.hide.forEach(s => { if (s < SF.count) gone[s] = 1; });
+    if (skip && isModelSurface(skip) && +skip.slice(1) < SF.count) gone[+skip.slice(1)] = 1;
+    for (const [s, o] of Object.entries(own)) {
+      if (!(+s < SF.count)) continue;
+      if (o.fill !== undefined) shadeBy[+s] = shadesOf(o.fill);
+      if (o.opacity !== undefined) opBy[+s] = o.opacity;
+      if (o.stroke !== undefined || o.width !== undefined || o.edgeOp !== undefined) { penBy[+s] = pens.length; pens.push({ stroke: either(o.stroke, M.stroke), lw: Math.max(either(o.width, M.width), 0.6 / k), alpha: either(o.edgeOp, 1) }); }
+    }
+  }
+  // (which edges are lines, and whose look each takes, kept with the view until the choices change)
+  const lineKey = [M.lines, M.crease, special ? M.hide.join() + "/" + (skip || "") + "/" + JSON.stringify(own) : ""].join(" "); let drawn = view.lineKey === lineKey ? view.drawn : null;
   if (!drawn) {
-    drawn = new Uint8Array(E.ne);
-    if (lines) for (let e = 0; e < E.ne; e++) drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0)) ? 1 : 0;
+    drawn = new Uint8Array(E.ne); const pen = new Uint8Array(E.ne);
+    if (lines) for (let e = 0; e < E.ne; e++) {
+      drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0)) ? 1 : 0;
+      if (!special || !drawn[e]) continue;
+      // (a line between two surfaces goes with them both: gone only if both are, and in the look of the one given its own)
+      const s0 = of[E.t0[e]], s1 = E.t1[e] >= 0 ? of[E.t1[e]] : s0;
+      if (gone[s0] && gone[s1]) drawn[e] = 0; else pen[e] = !gone[s0] && penBy[s0] ? penBy[s0] : !gone[s1] && penBy[s1] ? penBy[s1] : 0;
+    }
     if (lines && !all && mesh.thin) {
       // A thinned mesh is rough in small ways, which leaves stray scraps of line. An outline, a crease or an open rim runs
       // on from edge to edge, so lines joined into fewer than six edges are dropped.
@@ -2985,32 +3110,36 @@ function drawModel(c, bx, g, k, G) {
     for (let v = 0; v < nv0; v++) from[v + 1] += from[v];
     const at = new Uint32Array(from[nv0]), fill = from.slice(0, nv0);
     for (let e = 0; e < E.ne; e++) if (whole(e)) { at[fill[E.a[e]]++] = e; at[fill[E.b[e]]++] = e; }
-    view.drawn = drawn; view.lineKey = lineKey; view.from = from; view.at = at;
+    view.drawn = drawn; view.pen = pen; view.lineKey = lineKey; view.from = from; view.at = at;
   }
-  const { from, at } = view, nv0 = from.length - 1, EA = E.a, EB = E.b;
+  const { from, at, pen } = view, nv0 = from.length - 1, EA = E.a, EB = E.b, others = pens.length > 1, later = [];
   c.save(); c.lineJoin = "round"; c.lineCap = "round"; c.setLineDash([]);
   for (let n = 0; n < order.length; n++) {
-    const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2];
-    if (fills) {
+    const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2], s = special ? of[par[t]] : 0;
+    if (special && gone[s]) continue;
+    const op = special ? opBy[s] : M.opacity;
+    if (op > 0) {
+      const tone = (special && shadeBy[s] ? shadeBy[s] : shades)[lit[t]];
       c.beginPath(); c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); c.closePath();
-      c.globalAlpha = M.opacity; c.fillStyle = shades[lit[t]]; c.fill();
+      c.globalAlpha = op; c.fillStyle = tone; c.fill();
       // (a hair of the same color closes the seams between triangles, which would show as a mesh of light lines)
-      if (solid) { c.strokeStyle = shades[lit[t]]; c.lineWidth = 0.7 / k; c.stroke(); }
+      if (op >= 0.999) { c.strokeStyle = tone; c.lineWidth = 0.7 / k; c.stroke(); }
     }
     if (!lines) continue;
     // its own sides that are pieces of a cut edge (or with every edge a line, all of them), and the whole lines at its corners
     const e0 = er[t * 3], e1 = er[t * 3 + 1], e2 = er[t * 3 + 2], l0 = e0 >= 0 && drawn[e0] && (all || S.cut[e0]), l1 = e1 >= 0 && drawn[e1] && (all || S.cut[e1]), l2 = e2 >= 0 && drawn[e2] && (all || S.cut[e2]);
     const na = a < nv0 ? from[a + 1] - from[a] : 0, nb = b < nv0 ? from[b + 1] - from[b] : 0, nd = d < nv0 ? from[d + 1] - from[d] : 0;
     if (!(l0 || l1 || l2 || na || nb || nd)) continue;
-    c.beginPath();
-    if (l0) { c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); }
-    if (l1) { c.moveTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); }
-    if (l2) { c.moveTo(sx[d], sy[d]); c.lineTo(sx[a], sy[a]); }
+    // (lines in the model's look go in one stroke; any in a surface's own look are kept for a stroke each after it)
+    later.length = 0; c.beginPath();
+    const seg = (p, q, e) => { if (others && pen[e]) later.push(p, q, pen[e]); else { c.moveTo(sx[p], sy[p]); c.lineTo(sx[q], sy[q]); } };
+    if (l0) seg(a, b, e0); if (l1) seg(b, d, e1); if (l2) seg(d, a, e2);
     for (let i = 0; i < 3; i++) {
       const v = i === 0 ? a : i === 1 ? b : d; if (v >= nv0) continue;
-      for (let j = from[v]; j < from[v + 1]; j++) { const e = at[j]; c.moveTo(sx[EA[e]], sy[EA[e]]); c.lineTo(sx[EB[e]], sy[EB[e]]); }
+      for (let j = from[v]; j < from[v + 1]; j++) seg(EA[at[j]], EB[at[j]], at[j]);
     }
     c.globalAlpha = 1; c.strokeStyle = M.stroke; c.lineWidth = lw; c.stroke();
+    for (let i = 0; i < later.length; i += 3) { const P = pens[later[i + 2]]; c.beginPath(); c.moveTo(sx[later[i]], sy[later[i]]); c.lineTo(sx[later[i + 1]], sy[later[i + 1]]); c.globalAlpha = P.alpha; c.strokeStyle = P.stroke; c.lineWidth = P.lw; c.stroke(); }
   }
   c.restore();
 }
@@ -3101,9 +3230,9 @@ function removeModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model
 function modelNote() {
   const bx = state.boxes[state.sel], m = modelOf(bx); if (!bx || !bx.model) return "";
   const sh = shapeOf(bx);
-  if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side.`;
+  if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side. Click one of its surfaces to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together; a new number of sides or faces makes new surfaces, so what was set on the old ones goes.`;
   if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
-  return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge.`;
+  return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge. The creases also bound its surfaces: click one to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together. A crease angle that gathers it into different surfaces clears what was set on the old ones.`;
 }
 
 /* ---------- boxes ---------- */
@@ -3852,6 +3981,15 @@ function setP(path, val) {
     if (bx) { bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1)); Object.keys(bx.own).forEach(id => { if (id[0] === path.slice(-1)) delete bx.own[id]; }); }
     touch(); return;
   }
+  if (path === "boxes.$b.model.crease") {
+    // A new crease angle can gather a model's triangles into different surfaces. If it does, what was set on the old ones
+    // (and which were hidden or picked) no longer means anything, and goes.
+    const bx = state.boxes[state.sel], m = modelOf(bx), was = m && meshSurfaces(m, bx.model.crease).of;
+    rawSet(parts, val);
+    const now = m && meshSurfaces(m, bx.model.crease).of;
+    if (was && now && was.some((v, i) => v !== now[i])) { bx.model.own = {}; bx.model.hide = []; ui.faces = ui.faces.filter(p => !isModelSurface(p.id)); }
+    touch(); return;
+  }
   if (path === "boxes.$b.model.up") {
     // which way up the model sits changes its box's proportions
     rawSet(parts, val); const bx = state.boxes[state.sel]; if (bx) fitModelBox(bx);
@@ -4074,7 +4212,7 @@ const schema = [
     { t: "range", bind: "boxes.$b.model.sides", label: () => (shapeHere() ? shapeHere().S.of : "Sides"), min: 3, max: 64, step: 1, lo: 3, hi: 256, get: () => (shapeHere() ? Math.max(shapeHere().S.min || 3, shapeHere().n) : undefined), set: v => setShapeN(Math.max((shapeHere() && shapeHere().S.min) || 3, v)), when: () => !!shapeHere() && !!shapeHere().S.of && shapeHere().kind !== "poly" },
     { t: "select", bind: "boxes.$b.model.faces", label: "Faces", num: true, options: POLYHEDRA.map(([n, name]) => [n, `${n} · ${name}`]), get: () => (shapeHere() ? shapeHere().n : undefined), apply: v => { setShapeN(v); commit(); }, when: () => !!shapeHere() && shapeHere().kind === "poly" },
     { t: "toggle", bind: "boxes.$b.model.up", label: "Up axis", options: [["y", "Y"], ["z", "Z"], ["x", "X"]], when: modelHere },
-    { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], [() => (shapeHere() ? "Make it a plain box" : "Remove model"), removeModel, "warn"]], when: hasModel },
+    { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], ["Show all surfaces", () => { state.boxes[state.sel].model.hide = []; commit(); touch(); }, "", () => modelHere() && state.boxes[state.sel].model.hide.length > 0], [() => (shapeHere() ? "Make it a plain box" : "Remove model"), removeModel, "warn"]], when: hasModel },
     { t: "color", bind: "boxes.$b.model.color", label: "Model color", when: modelHere },
     { t: "range", bind: "boxes.$b.model.opacity", label: "Model opacity", min: 0, max: 1, step: 0.05, hi: 1, when: modelHere },
     { t: "check", bind: "boxes.$b.model.shade", label: "Shade it by which way it faces", when: modelHere },
@@ -4085,7 +4223,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -4887,6 +5025,14 @@ function hitTest(s, reach = "") {
     // leaves by. The pointer reaches the nearest one you can see, so a plane only once whatever is in front of it is hidden.
     const PL = boxPlanes(b, g, G), far = PL && PL.depth(w), inside = PL ? PL.planes.filter(under).sort((p, q) => far(p) - far(q)) : [];
     const at = [...front, ...inside, ...back], shown = f => surfaceShown(b, f.id), seen = at.findIndex(shown);
+    // A box holding a model: the model's own surface under the pointer is what a click picks (`surf`; with Alt, the one
+    // behind it), and the box's face found below only says which rotation circle shows. With ⌘, its hidden ones come back.
+    const model = modelOf(b) ? modelHit(b, g, G, w, reach === "restore") : [];
+    if (reach === "restore" && model.length) return { type: "hidden", bi, face: model[0] };
+    const surf = model.length ? model[reach === "behind" ? model.length - 1 : 0] : undefined;
+    // (with the box around a model not shown, only the model itself is there to take hold of: the empty space round it,
+    // inside its box, is empty)
+    if (modelOf(b) && b.model.frame === false && !surf) continue;
     if (reach === "restore") {
       // hidden faces come back furthest back first, even where faces you can see are in the way; a hidden plane comes
       // back from where nothing in front of it shows
@@ -4896,11 +5042,11 @@ function hitTest(s, reach = "") {
     if (!reach || reach === "behind") {
       // the nearest face or plane you can see (over empty space on the selected box, the nearest hidden face), or with
       // Alt the one behind it
-      if (seen < 0 && bi !== state.sel) continue;
+      if (seen < 0 && bi !== state.sel && !surf) continue;
       const near = Math.max(0, seen);
-      return { type: "body", bi, face: at[reach ? Math.min(near + 1, at.length - 1) : near].id };
+      return { type: "body", bi, face: at[reach && !surf ? Math.min(near + 1, at.length - 1) : near].id, surf };
     }
-    if (seen >= 0) return { type: reach === "hide" ? (ui.faces.length ? "pick" : "hide") : "body", bi, face: at[seen].id };
+    if (seen >= 0 || surf) return { type: reach === "hide" ? (ui.faces.length ? "pick" : "hide") : "body", bi, face: at[Math.max(0, seen)].id, surf };
   }
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
@@ -4946,8 +5092,9 @@ function keepLatch(h) {
   clearTimeout(latchTimer);
   if (h.type === "ring") { latchTry = null; return; }
   if (h.type === "body" && h.face) {
-    if (!latchRing() || (latch && latch.bi === h.bi && latch.face === h.face)) { latch = { bi: h.bi, face: h.face }; latchTry = null; return; }
-    latchTry = { bi: h.bi, face: h.face };
+    // (a model's surface under the pointer changes at once: the circle stays the same)
+    if (!latchRing() || (latch && latch.bi === h.bi && latch.face === h.face)) { latch = { bi: h.bi, face: h.face, surf: h.surf }; latchTry = null; return; }
+    latchTry = { bi: h.bi, face: h.face, surf: h.surf };
     latchTimer = setTimeout(() => { if (latchTry && !drag) { latch = latchTry; latchTry = null; redraw(); } }, LATCH_MS);
     return;
   }
@@ -4962,12 +5109,12 @@ function nearRing(R, s, m) {
   return s.x > x0 - m && s.x < x1 + m && s.y > y0 - m && s.y < y1 + m;
 }
 function showHover(h) {
-  const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost].join(), was = latch && [latch.bi, latch.face].join();
+  const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost, x.surf].join(), was = latch && [latch.bi, latch.face, latch.surf].join();
   keepLatch(h);
-  if (key(h) !== key(hover) || (latch && [latch.bi, latch.face].join()) !== was) { hover = h; redraw(); }
+  if (key(h) !== key(hover) || (latch && [latch.bi, latch.face, latch.surf].join()) !== was) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
-  const what = h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane is picked and hidden as a face is)
+  const what = h.surf || (h.face && isModelSurface(h.face)) ? "surface" : h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane, or a model's surface, is picked and hidden as a face is)
   const body = () => `Click to edit this ${what} · drag to move the box · Shift-click ${ui.faces.length ? "to edit it too" : "to hide it"}`;
   document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
@@ -5009,11 +5156,11 @@ canvas.addEventListener("pointerdown", e => {
   const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
   if (hit.type === "pick") {
     // with faces picked to edit, Shift-click adds one (on any box) or drops it
-    togglePick(hit.bi, hit.face); showHover(hitTest(s, faceReach(e))); return;
+    togglePick(hit.bi, hit.surf || hit.face); showHover(hitTest(s, faceReach(e))); return;
   }
   if ((restoreKey(e) && hit.type === "hidden") || (e.shiftKey && (hit.type === "hide" || hit.type === "body"))) {
     // ⌘-click (Ctrl-click) brings a hidden face back; Shift-click hides one
-    const b = state.boxes[hit.bi]; setSurfaceShown(b, hit.face, hit.type === "hidden"); state.sel = hit.bi; commit(); touch();
+    const b = state.boxes[hit.bi]; setSurfaceShown(b, hit.surf || hit.face, hit.type === "hidden"); state.sel = hit.bi; commit(); touch();
     showHover(hitTest(s, faceReach(e))); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view }, wasSel: state.sel === hit.bi };
@@ -5218,7 +5365,7 @@ function endPointer(e) {
   // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
   // solid; a click anywhere else puts them away
   if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) {
-    if (drag.type === "body") { ui.ring = state.rotateFaces ? { bi: drag.bi, face: drag.face } : null; openFaces([{ bi: drag.bi, id: drag.face }], drag.s0); }
+    if (drag.type === "body") { ui.ring = state.rotateFaces ? { bi: drag.bi, face: drag.face } : null; openFaces([{ bi: drag.bi, id: drag.surf || drag.face }], drag.s0); }
     else { ui.ring = null; closeFaces(); }
   }
   // a box you just reshaped or moved keeps this look when you switch perspective
@@ -5306,7 +5453,7 @@ const fpTitle = el("span", { class: "fp-title" }), fpClose = el("button", { type
 const fpHead = el("div", { class: "fp-head", title: "Drag to move" }, fpTitle, fpClose), fpBody = el("div", { class: "fp-body" });
 facePop.append(fpHead, fpBody); facePop.hidden = true; document.body.append(facePop);
 const editing = () => !facePop.hidden && ui.faces.length > 0;
-const pickValid = () => { ui.faces = ui.faces.filter(({ bi, id }) => state.boxes[bi] && (planeAxis(id) < 0 || planeIdsOf(state.boxes[bi]).includes(id))); };
+const pickValid = () => { ui.faces = ui.faces.filter(({ bi, id }) => { const b = state.boxes[bi]; return b && (isModelSurface(id) ? !!modelOf(b) && +id.slice(1) < meshSurfaces(modelOf(b), b.model.crease).count : planeAxis(id) < 0 || planeIdsOf(b).includes(id)); }); };
 const picks = () => ui.faces.filter(p => state.boxes[p.bi]).map(p => ({ bi: p.bi, id: p.id, bx: state.boxes[p.bi] }));
 const first = () => picks()[0];
 // the first one's setting as it stands (its own, or its box's), and a setting given to them all as their own
@@ -5314,8 +5461,13 @@ const lookGet = key => () => { const p = first(); return p && surfLook(p.bx, p.i
 const divGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id)[key]; };
 const lineGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id).line(p.bx.div.styles.A)[key]; };
 const diagGet = key => () => { const p = first(); return p && surfDiv(p.bx, p.id).diagStyle[key]; };
-const ownSet = key => v => { for (const p of picks()) (p.bx.own[p.id] = p.bx.own[p.id] || {})[key] = v; touch(); };
-const divided = () => editing() && picks().some(p => surfDiv(p.bx, p.id).on);
+// (where a face's, plane's or model surface's own settings are kept, made if they're to be written)
+const ownBag = (bx, id, make) => { const bag = isModelSurface(id) ? bx.model.own : bx.own, k = isModelSurface(id) ? id.slice(1) : id; if (make && !bag[k]) bag[k] = {}; return bag[k]; };
+const ownSet = key => v => { for (const p of picks()) ownBag(p.bx, p.id, true)[key] = v; touch(); };
+// A model's surfaces have a look of their own but no divisions, rotation or rays, which are the box's faces': those rows
+// show only while everything picked is a face or plane
+const onlyFaces = () => picks().every(p => !isModelSurface(p.id));
+const divided = () => editing() && onlyFaces() && picks().some(p => surfDiv(p.bx, p.id).on);
 // The directions a surface's division lines run in (those of the face it lies parallel to, for a plane): its lines across
 // u run along v, so their count is nu, and the other way nv
 const linesOf = id => { const k = planeAxis(id), [au, av] = FACE_AXES[k >= 0 ? ["s12", "s01", "top"][k] : id].map(a => a.slice(-1)); return { [av]: "nu", [au]: "nv" }; };
@@ -5323,7 +5475,7 @@ const linesName = d => (d === "z" ? (is3() ? "Lines to VP3" : radiusMode() ? "Li
 // The box's turn around the axis through a picked face, for each box with one picked on that axis
 function turnPicked(k, v) {
   const key = AXIS_KEYS[k], g = geo(); let refused = false;
-  for (const bx of new Set(picks().filter(p => faceAxis(p.id) === k).map(p => p.bx))) {
+  for (const bx of new Set(picks().filter(p => !isModelSurface(p.id) && faceAxis(p.id) === k).map(p => p.bx))) {
     const rot = Object.assign({}, bx.rot, { [key]: v });
     if (turnFits(bx, g, rot)) bx.rot = rot; else refused = true;
   }
@@ -5346,16 +5498,16 @@ function snapPicked(on) {
 }
 const FACE_ROWS = [
   { t: "check", bind: "face.shown", label: () => (ui.faces.length > 1 ? "Show them" : "Show"), get: () => picks().every(p => surfaceShown(p.bx, p.id)), mixed: () => sameAll(p => surfaceShown(p.bx, p.id)), set: v => { picks().forEach(p => setSurfaceShown(p.bx, p.id, v)); touch(); } },
-  ...["x", "y", "z"].map((key, k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${AXIS_NAMES[k]}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && picks().some(q => faceAxis(q.id) === k) })),
+  ...["x", "y", "z"].map((key, k) => ({ t: "range", bind: "face.rot." + key, label: `Rotate around ${AXIS_NAMES[k]}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, get: () => { const p = picks().find(q => !isModelSurface(q.id) && faceAxis(q.id) === k); return p && p.bx.rot[key]; }, set: v => turnPicked(k, v), when: () => editing() && onlyFaces() && picks().some(q => faceAxis(q.id) === k) })),
   { t: "range", bind: "face.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("opacity"), set: ownSet("opacity") },
   { t: "color", bind: "face.fill", label: "Color", get: lookGet("fill"), set: ownSet("fill") },
-  { t: "check", bind: "face.snap", label: () => (ui.faces.length > 1 ? "Snap rays to them" : "Snap rays to it"), get: () => picks().every(snapsTo), mixed: () => sameAll(snapsTo), set: snapPicked, when: () => editing() && !!pickBox() },
+  { t: "check", bind: "face.snap", label: () => (ui.faces.length > 1 ? "Snap rays to them" : "Snap rays to it"), get: () => picks().every(snapsTo), mixed: () => sameAll(snapsTo), set: snapPicked, when: () => editing() && !!pickBox() && onlyFaces() },
   { t: "sub", label: "Edges" },
   { t: "color", bind: "face.stroke", label: "Edge color", get: lookGet("stroke"), set: ownSet("stroke") },
   { t: "range", bind: "face.width", label: "Edge weight", min: 0.25, max: 8, step: 0.25, hi: 500, get: lookGet("width"), set: ownSet("width") },
   { t: "range", bind: "face.edgeOp", label: "Edge opacity", min: 0, max: 1, step: 0.05, hi: 1, get: lookGet("edgeOp"), set: ownSet("edgeOp") },
-  { t: "sub", label: "Divisions" },
-  { t: "check", bind: "face.div", label: () => (ui.faces.length > 1 ? "Divide them in perspective" : "Divide in perspective"), get: divGet("on"), mixed: () => sameAll(p => surfDiv(p.bx, p.id).on), set: ownSet("div") },
+  { t: "sub", label: "Divisions", when: () => editing() && onlyFaces() },
+  { t: "check", bind: "face.div", label: () => (ui.faces.length > 1 ? "Divide them in perspective" : "Divide in perspective"), get: divGet("on"), mixed: () => sameAll(p => surfDiv(p.bx, p.id).on), set: ownSet("div"), when: () => editing() && onlyFaces() },
   ...["x", "y", "z"].map(d => ({ t: "parts", bind: "face.lines." + d, label: () => linesName(d), hi: 128,
     get: () => { const p = picks().find(q => linesOf(q.id)[d]); return p && surfDiv(p.bx, p.id)[linesOf(p.id)[d]]; },
     set: v => { for (const p of picks()) { const key = linesOf(p.id)[d]; if (key) (p.bx.own[p.id] = p.bx.own[p.id] || {})[key] = v; } touch(); },
@@ -5367,15 +5519,15 @@ const FACE_ROWS = [
   ...[["color", "Diagonal color", "diagColor"], ["width", "Diagonal weight", "diagWidth"], ["opacity", "Diagonal opacity", "diagOp"]].map(([key, label, own]) => Object.assign(
     key === "color" ? { t: "color" } : key === "width" ? { t: "range", min: 0.05, max: 8, step: 0.05, lo: 0.05, hi: 500 } : { t: "range", min: 0, max: 1, step: 0.01, hi: 1 },
     { bind: "face." + own, label, get: diagGet(key), set: ownSet(own), when: () => divided() && picks().some(p => surfDiv(p.bx, p.id).diag !== "none") })),
-  { t: "btns", items: [["Use the box's settings", () => { picks().forEach(p => { delete p.bx.own[p.id]; }); commit(); touch(); }, "", () => picks().some(p => p.bx.own[p.id])]] }
+  { t: "btns", items: [[() => (!picks().some(p => isModelSurface(p.id)) ? "Use the box's settings" : !picks().every(p => isModelSurface(p.id)) ? "Use the box's and " + (picks().filter(p => isModelSurface(p.id)).every(p => shapeOf(p.bx)) ? "shape's" : "model's") + " settings" : picks().every(p => shapeOf(p.bx)) ? "Use the shape's settings" : "Use the model's settings"), () => { picks().forEach(p => { delete (isModelSurface(p.id) ? p.bx.model.own : p.bx.own)[isModelSurface(p.id) ? p.id.slice(1) : p.id]; }); commit(); touch(); }, "", () => picks().some(p => ownBag(p.bx, p.id))]] }
 ];
 FACE_ROWS.forEach(r => { if (!r.when) r.when = editing; fpBody.append(makeRow(r)); });
 // what's picked, by name: a face by where it sits and a plane by its axis and number, with its box
 function syncFaces() {
   if (facePop.hidden) return;
   pickValid(); if (!ui.faces.length) { closeFaces(); return; }
-  const ps = picks(), n = ps.length, planes = ps.filter(p => planeAxis(p.id) >= 0).length, boxes = new Set(ps.map(p => p.bi)).size;
-  fpTitle.textContent = n === 1 ? `${snapLabel(ps[0].id, ps[0].bx)} · ${ps[0].bx.name}` : `${n} ${planes === n ? "planes" : planes ? "faces and planes" : "faces"}${boxes > 1 ? ` on ${boxes} boxes` : ""}`;
+  const ps = picks(), n = ps.length, planes = ps.filter(p => planeAxis(p.id) >= 0).length, surfs = ps.filter(p => isModelSurface(p.id)).length, boxes = new Set(ps.map(p => p.bi)).size;
+  fpTitle.textContent = n === 1 ? `${snapLabel(ps[0].id, ps[0].bx)} · ${ps[0].bx.name}` : `${n} ${surfs ? "surfaces" : planes === n ? "planes" : planes ? "faces and planes" : "faces"}${boxes > 1 ? ` on ${boxes} boxes` : ""}`;
 }
 // kept on screen as its rows come and go
 function clampFaces() {
@@ -5400,7 +5552,8 @@ function togglePick(bi, id) {
   if (k >= 0) ui.faces.splice(k, 1); else ui.faces.push({ bi, id });
   if (!ui.faces.length) { closeFaces(); return; }
   // (the one last clicked is the selected box's, with its circle solid)
-  const last = ui.faces[ui.faces.length - 1]; state.sel = last.bi; ui.ring = state.rotateFaces ? { bi: last.bi, face: last.id } : null;
+  // (a model's surface has no circle of its own: the one its box already shows stays)
+  const last = ui.faces[ui.faces.length - 1]; state.sel = last.bi; ui.ring = !state.rotateFaces ? null : isModelSurface(last.id) ? (ui.ring && ui.ring.bi === last.bi ? ui.ring : null) : { bi: last.bi, face: last.id };
   touch();
 }
 fpClose.addEventListener("click", closeFaces);

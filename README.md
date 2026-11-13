@@ -95,6 +95,15 @@ A shape sits in a box of its own and fills it, exactly as an imported model does
 - the same choices as a model: Up axis and Turn 90° (to lay a cone on its side), color, opacity, shading, lines (the outline and its edges), and whether the box around it shows, which it doesn't to start with
 - **Make it a plain box** takes the shape away and leaves its box
 
+**Its surfaces can be picked and edited on their own**, exactly as a box's faces can. A surface is the area the shape's creases bound: a cylinder has its curved side, its top and its base; a tube an outside, an inside and two ends; a pyramid, a prism, a wedge and a polyhedron one for each flat face; a sphere, a torus and a capsule just the one. Hover over one and it's tinted; click it and the face pop-up opens for it, named for what it is (Top, Base, Face 3, Curved surface), with:
+
+- **Show**, to hide it or bring it back
+- its own **Opacity** and **Color**, in place of the shape's
+- its own **Edge color**, **Edge weight** and **Edge opacity**, for the lines round it and its outline. A line between two surfaces takes the look of the one given its own
+- **Use the shape's settings**, to drop what it was given
+
+Shift-click more surfaces, on any shape or box, to edit them together, and with nothing picked Shift-click hides one, as with faces; ⌘-click (Ctrl-click) where a hidden one was brings it back, and **Show all surfaces**, in the Shape group, brings back every one. Alt reaches the surface behind. The box's own rows (rotation, snapping rays, divisions) show only while everything picked is a box's face or plane. What's set on a surface lasts through undo, reloads and saved setups. Changing the shape's number of sides, segments or faces makes new surfaces, so the old ones' settings go; so does a crease angle that gathers it into different surfaces (one that leaves them as they are keeps everything). All of this works on an imported model's surfaces too.
+
 A shape is made from its kind and that one number, so a drawing only keeps those, and it needs nothing stored: it's there after a reload, in a saved setup, and on another device. Through the lenses its triangles are cut finer by how much of the view its box takes up, so straight sides bend smoothly.
 
 ## Importing 3D models
@@ -117,8 +126,10 @@ A model arrives in a box of its own, which it fills. The box is the model's boun
 - **Match its proportions** puts a box reshaped by its handles, which stretches the model, back to the model's own shape
 - **Model color** and **Model opacity**; **Shade it by which way it faces**, on to start with, lights it from the upper left, and off fills it flat, for a clean line drawing
 - **Lines**: Outline and creases (the outline against what's behind it, open edges, and creases sharper than **Crease angle**), Every triangle edge, or None, with their color and weight
-- **Show the box around it** draws the box's own faces and edges or leaves just the model (the box can still be picked and dragged by where its faces are)
+- **Show the box around it** draws the box's own faces and edges or leaves just the model. With it off, only the model itself is there to click and drag: the empty space round it, inside its box, is empty, so what's behind it can be reached
 - **Remove model** leaves the box
+
+A model's surfaces, the areas its creases bound, can each be picked and edited on their own (shown or hidden, its own color, opacity and edges), just as a shape's can: see Shapes above.
 
 Triangles are drawn furthest first, so nearer parts cover what's behind them, and a line is covered where a nearer part hides it. A model is never mirrored, whichever way round its box was built. One with more than 60,000 triangles is thinned to under that when it's imported, so it stays quick to draw (about 40 ms a redraw at 50,000), and the message says from how many. Models are kept on the device beside the drawing (in the browser's IndexedDB, where it allows it), so they're there when the page is opened again, and they're written into a saved setup file; a drawing whose model isn't on the device shows its box with a note to import it again. They're in the PNG, JPG and PDF exports, as vectors in the PDF.
 
@@ -158,7 +169,14 @@ Everything runs in a single `index.html` with no build step. Work is saved in th
   - **Edges:** a face's own edge color and weight drew on the edges it shares with plain faces, and on its own. The box's other edges drew exactly as before, and of two faces with their own edges, the first in front won.
   - **Saving and loading:** a face's own line count moved the rays spaced along the box. The settings lasted through saving and loading, with bad values dropped. An older save's O-key opacities opened as the faces' own, and a plane's settings went when its direction's count changed.
   - **Export:** the PDF exported with faces' own settings. No errors in the console.
-  - **Shapes:**
+  - **Surfaces of shapes and models:**
+  - **Found right:** the shapes came out with the surfaces they should: sphere, torus and capsule 1; hemisphere and cone 2; cylinder and truncated cone 3 (Base, Curved surface, Top); tube 4; pyramid and wedge 5; six-sided prism 8; an eight-sided cylinder 10; the polyhedra 4, 8, 12, 20 and 32.
+  - **Picking, with real pointer events on a cylinder:** hovering its side tinted it and the hint read Click to edit this surface. A click opened Curved surface · Cylinder 1 with Show, Opacity, Color, the Edges rows and Use the shape's settings, and none of the box's rows. Shift-click on the top made it 2 surfaces, and an opacity set went to both, undid and redid.
+  - **Hiding:** unticking Show hid both. ⌘ over where the top had been found it and a ⌘-click brought it back, and Show all surfaces brought back the rest. With nothing picked, Shift-click hid the side.
+  - **Drawing:** in all eight views, shapes with surfaces recolored, made see-through, given their own lines and hidden drew and exported with no errors, as PNG and PDF. The tint and the outline of what's picked never reached an export.
+  - **Together with a box:** with a cylinder's side picked, Shift-click on a plain box's face made it 2 surfaces, showing just what both have (Show, Opacity, Color, the Edges rows), and a color set went to both. Shift-click on the side again dropped it. Dragging the cylinder by a surface moved it and opened nothing. With its box not shown, the space round it inside its box picked nothing, and the box behind could be reached through it.
+  - **Keeping them:** the settings came back from a saved drawing, with bad values and numbers dropped. A cylinder's lasted from a crease angle of 30° to 60°, where its surfaces are the same, and went at 120°, where they merge into one. A pyramid's went when its base got a fifth side.
+- **Shapes:**
   - **Made right:** each of the twelve, and the seven polyhedra, came out a closed solid (no open edges, every triangle wound the same way, facing outward). The polyhedra had the right corners and edges for 4, 6, 8, 12, 14, 20 and 32 faces. A cylinder's lines were its two rims, a cone's its base, and a sphere's just its outline.
   - **The dropdown:** it lists Box and the twelve shapes under Add shape, and goes back to reading Add shape after each pick. Picking seven in a row added seven, the box plain and the rest shapes with their boxes hidden.
   - **The panel:** a pyramid's Sides of its base went from 4 to 6 and its box took the new proportions; below 3 it stopped at 3, a sphere's segments at 6, and undo put it back. The wedge showed no number, and the polyhedron showed Faces with its seven choices. Make it a plain box left a ghosted box.
