@@ -421,7 +421,19 @@ function cleanOwn(raw) {
   }
   return o;
 }
-const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, ghost: 0.3, own: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
+// A box can hold an imported 3D model, which fills it (see the 3D models section): bx.model names the mesh, which is kept
+// apart from the drawing, and says which way up it is, how many quarter turns it has had, and how it's drawn.
+const MODEL_LINES = ["outline", "all", "none"];
+function cleanModel(raw) {
+  if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !/^[\w-]{4,40}$/.test(raw.id)) return null;
+  const col = (v, d) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v : d), num = (v, lo, hi, d) => (Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d);
+  return {
+    id: raw.id, name: typeof raw.name === "string" ? raw.name.slice(0, 80) : "Model", up: ["x", "y", "z"].includes(raw.up) ? raw.up : "z", turn: [0, 1, 2, 3].includes(raw.turn) ? raw.turn : 0,
+    color: col(raw.color, "#d5dde3"), stroke: col(raw.stroke, "#1f2a33"), width: num(raw.width, 0.05, 50, 1), opacity: num(raw.opacity, 0, 1, 1),
+    lines: MODEL_LINES.includes(raw.lines) ? raw.lines : "outline", crease: num(raw.crease, 1, 180, 30), shade: raw.shade !== false, frame: raw.frame !== false
+  };
+}
+const boxDefaults = () => ({ name: "Box", b0: P(0, 300), b2: P(0, 200), anchor: 0, h: 220, H: 0.3, fit: null, model: null, ghost: 0.3, own: {}, dashHidden: true, centerH: false, rot: { x: 0, y: 0, z: 0 }, showVPs: true, showRays: true, rayFit: false, rayFaces: "sides", raySnap: null, stroke: "#1f2a33", fill: "#dfe6eb", width: 2, faces: { top: true, bottom: true, s01: true, s12: true, s23: true, s30: true }, planes: { x: 1, y: 1, z: 1, hidden: [] }, div: divDefaults() });
 
 // Saved values fill in the defaults; anything missing, of the wrong type or not a finite number keeps
 // the default
@@ -508,6 +520,7 @@ function normalize(s) {
     // solid ones open fully opaque and wireframes see-through, at either end of the one opacity there is now; and the
     // faces' and planes' own settings, by id
     if (b.mode === "solid") o.ghost = 1; else if (b.mode === "wire") o.ghost = 0;
+    o.model = cleanModel(b.model);
     o.own = {};
     if (b.own && typeof b.own === "object") for (const [id, v] of Object.entries(b.own)) { if (SURFACE_ID.test(id) && v && typeof v === "object") { const c = cleanOwn(v); if (Object.keys(c).length) o.own[id] = c; } }
     // (the faces' own opacities were kept on their own before they had other settings)
@@ -2090,7 +2103,11 @@ function drawOrder(g) {
   return order;
 }
 function drawBox(c, bx, g, k, skip = null) {
-  const G = boxGeo(bx, g), PL = boxPlanes(bx, g, G), own = bx.own || {};
+  const G = boxGeo(bx, g), holds = !!modelOf(bx);
+  // (a box holding a model draws it inside, after its back faces and before its front ones; with the box around it turned
+  // off, just the model)
+  if (holds && bx.model.frame === false) { drawModel(c, bx, g, k, G); return; }
+  const PL = boxPlanes(bx, g, G), own = bx.own || {};
   const near = bx.div && (bx.div.on || Object.values(own).some(o => o.div)) ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
   const backs = G.faces.filter(f => !f.front && vis(f)), fronts = G.faces.filter(f => f.front && vis(f));
@@ -2158,6 +2175,7 @@ function drawBox(c, bx, g, k, skip = null) {
     if (split) hiddenEdges(pieceRuns(p), p.id);
     else { c.setLineDash([]); planeEdges(p); }
   }
+  if (holds) { drawModel(c, bx, g, k, G); c.lineJoin = "round"; c.lineCap = "round"; }
   for (const f of fronts) {
     if (op(f.id) > 0) fill(f, op(f.id), f.shade);
     drawDivisions(c, f, bx, k, 1, near);
@@ -2381,6 +2399,595 @@ function drawScaleHandle(accent, ink, panel) {
 }
 const redraw = () => { dirty = true; };
 const touch = () => { dirty = true; panelDirty = true; };
+
+/* ---------- 3D models ---------- */
+// An imported model sits in a box of its own and fills it: the box is the model's bounding box, so moving, turning and
+// resizing the box does the same to the model, in every view, and everything a box can do still works on it. The mesh
+// itself is kept here, apart from the drawing (which only names it, in bx.model), so undo and the saved drawing stay
+// small; it's stored on this device beside the drawing, and written into a saved setup file.
+// A mesh: { name, pos: Float32Array of x y z as the file has them, idx: Uint32Array of triangles, thin: whether it was thinned }.
+const meshes = new Map(), meshMissing = new Set(); // by id; and the ids whose mesh couldn't be found on this device
+const MAX_TRIS = 60000, MAX_MODEL_BYTES = 300 * 1048576;
+const MODEL_TYPES = { obj: "OBJ", stl: "STL", ply: "PLY", off: "OFF", glb: "glTF", gltf: "glTF", "3mf": "3MF", amf: "AMF" };
+const MODEL_ACCEPT = Object.keys(MODEL_TYPES).map(x => "." + x).join(",");
+
+// ---- Reading the files ----
+// Each reader gives { pos, idx, up }: flat x y z, triangles as indices into them, and the axis the format usually has up.
+const fan = (idx, f) => { for (let i = 1; i + 1 < f.length; i++) idx.push(f[0], f[i], f[i + 1]); };
+function readOBJ(text) {
+  const pos = [], idx = [];
+  for (const raw of text.split("\n")) {
+    const c0 = raw.charCodeAt(0);
+    if (c0 !== 118 && c0 !== 102 && c0 !== 32 && c0 !== 9) continue; // (only lines starting v or f, give or take leading space)
+    const t = raw.trim().split(/\s+/);
+    if (t[0] === "v") pos.push(+t[1], +t[2], +t[3]);
+    else if (t[0] === "f") {
+      const n = pos.length / 3, f = [];
+      for (let i = 1; i < t.length; i++) { const k = parseInt(t[i], 10); if (Number.isFinite(k)) f.push(k < 0 ? n + k : k - 1); }
+      fan(idx, f);
+    }
+  }
+  return { pos, idx, up: "y" };
+}
+function readSTL(buf) {
+  const dv = new DataView(buf), len = buf.byteLength, n = len >= 84 ? dv.getUint32(80, true) : 0, pos = [], idx = [];
+  const head = new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(len, 512)));
+  const binary = len >= 84 && (84 + n * 50 === len || !(/^\s*solid/.test(head) && /facet|endsolid/.test(new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(len, 4096))))));
+  if (binary) {
+    const count = Math.min(n, Math.floor((len - 84) / 50));
+    for (let i = 0; i < count; i++) {
+      const o = 84 + i * 50 + 12;
+      for (let k = 0; k < 9; k++) pos.push(dv.getFloat32(o + k * 4, true));
+      idx.push(i * 3, i * 3 + 1, i * 3 + 2);
+    }
+  } else {
+    const re = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/g, text = new TextDecoder().decode(buf); let m;
+    while ((m = re.exec(text))) pos.push(+m[1], +m[2], +m[3]);
+    for (let i = 0; i + 2 < pos.length / 3; i += 3) idx.push(i, i + 1, i + 2);
+  }
+  return { pos, idx, up: "z" };
+}
+const PLY_TYPES = { char: [1, "getInt8"], int8: [1, "getInt8"], uchar: [1, "getUint8"], uint8: [1, "getUint8"], short: [2, "getInt16"], int16: [2, "getInt16"], ushort: [2, "getUint16"], uint16: [2, "getUint16"], int: [4, "getInt32"], int32: [4, "getInt32"], uint: [4, "getUint32"], uint32: [4, "getUint32"], float: [4, "getFloat32"], float32: [4, "getFloat32"], double: [8, "getFloat64"], float64: [8, "getFloat64"] };
+function readPLY(buf) {
+  const bytes = new Uint8Array(buf), probe = new TextDecoder("latin1").decode(bytes.subarray(0, Math.min(bytes.length, 65536)));
+  const end = probe.indexOf("end_header"); if (!/^ply/.test(probe) || end < 0) throw new Error("it isn't a PLY file");
+  const start = probe.indexOf("\n", end) + 1, els = []; let format = "ascii";
+  for (const line of probe.slice(0, end).split(/\r?\n/)) {
+    const t = line.trim().split(/\s+/);
+    if (t[0] === "format") format = t[1];
+    else if (t[0] === "element") els.push({ name: t[1], count: +t[2], props: [] });
+    else if (t[0] === "property" && els.length) els[els.length - 1].props.push(t[1] === "list" ? { list: true, count: t[2], type: t[3], name: t[4] } : { type: t[1], name: t[2] });
+  }
+  const pos = [], idx = [];
+  const take = (el, row) => { // one row's values, by property name (a list as an array)
+    if (el.name === "vertex") pos.push(+row.x, +row.y, +row.z);
+    else if (el.name === "face") { const p = el.props.find(q => q.list); if (p) fan(idx, row[p.name]); }
+  };
+  if (format === "ascii") {
+    const tok = new TextDecoder().decode(bytes.subarray(start)).split(/\s+/); let at = tok[0] === "" ? 1 : 0;
+    for (const el of els) for (let i = 0; i < el.count; i++) {
+      const row = {};
+      for (const p of el.props) { if (p.list) { const n = +tok[at++], a = []; for (let k = 0; k < n; k++) a.push(+tok[at++]); row[p.name] = a; } else row[p.name] = +tok[at++]; }
+      take(el, row);
+    }
+  } else {
+    const dv = new DataView(buf), le = format !== "binary_big_endian"; let at = start;
+    const rd = type => { const T = PLY_TYPES[type]; if (!T) throw new Error("it uses a number type this can't read"); const v = dv[T[1]](at, le); at += T[0]; return v; };
+    for (const el of els) for (let i = 0; i < el.count; i++) {
+      const row = {};
+      for (const p of el.props) { if (p.list) { const n = rd(p.count), a = []; for (let k = 0; k < n; k++) a.push(rd(p.type)); row[p.name] = a; } else row[p.name] = rd(p.type); }
+      take(el, row);
+    }
+  }
+  return { pos, idx, up: "z" };
+}
+function readOFF(text) {
+  const lines = text.split("\n").map(l => l.replace(/#.*/, "").trim()).filter(Boolean), pos = [], idx = [];
+  let at = 0, first = lines[0] || "";
+  if (/OFF/i.test(first)) { first = first.replace(/^\S*OFF\s*/i, ""); if (first) lines[0] = first; else at = 1; } // (the counts can share the OFF line)
+  const [nv, nf] = (lines[at++] || "").split(/\s+/).map(Number);
+  if (!(nv > 0) || !(nf >= 0)) throw new Error("it isn't an OFF file");
+  for (let i = 0; i < nv; i++) { const t = (lines[at++] || "").split(/\s+/); pos.push(+t[0], +t[1], +t[2]); }
+  for (let i = 0; i < nf; i++) { const t = (lines[at++] || "").split(/\s+/).map(Number), n = t[0]; fan(idx, t.slice(1, 1 + n)); }
+  return { pos, idx, up: "z" };
+}
+// glTF, as one .glb or a .gltf with its buffers written into it: every mesh of the scene, each where its node puts it
+const b64bytes = str => { const bin = atob(str.replace(/\s+/g, "")), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
+function readGLTF(buf) {
+  const dv = new DataView(buf); let json, bin = null;
+  if (buf.byteLength >= 12 && dv.getUint32(0, true) === 0x46546c67) {
+    for (let at = 12; at + 8 <= buf.byteLength;) {
+      const n = dv.getUint32(at, true), type = dv.getUint32(at + 4, true), body = new Uint8Array(buf, at + 8, Math.min(n, buf.byteLength - at - 8));
+      if (type === 0x4e4f534a) json = JSON.parse(new TextDecoder().decode(body)); else if (type === 0x004e4942 && !bin) bin = body;
+      at += 8 + n;
+    }
+  } else json = JSON.parse(new TextDecoder().decode(buf));
+  if (!json || !json.asset) throw new Error("it isn't a glTF file");
+  const squeezed = (json.extensionsRequired || []).find(x => /draco|meshopt/i.test(x));
+  if (squeezed) throw new Error("its geometry is compressed (" + squeezed + "), which this can't read: export it without mesh compression");
+  const buffers = (json.buffers || []).map((b, i) => {
+    if (!b.uri) return i === 0 ? bin : null;
+    if (/^data:/.test(b.uri)) return b64bytes(b.uri.slice(b.uri.indexOf(",") + 1));
+    throw new Error("its geometry is in a separate file (" + b.uri.slice(0, 40) + "): export it as a single .glb instead");
+  });
+  const SIZE = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }, GET = { 5120: "getInt8", 5121: "getUint8", 5122: "getInt16", 5123: "getUint16", 5125: "getUint32", 5126: "getFloat32" };
+  const NORM = { 5120: 127, 5121: 255, 5122: 32767, 5123: 65535 }, COMPS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+  const accessor = i => {
+    const a = (json.accessors || [])[i]; if (!a) return null;
+    const nc = COMPS[a.type] || 1, out = new Float64Array(a.count * nc), view = a.bufferView !== undefined ? json.bufferViews[a.bufferView] : null;
+    const data = view && buffers[view.buffer || 0]; if (!data) return out;
+    const sz = SIZE[a.componentType], step = view.byteStride || sz * nc, base = data.byteOffset + (view.byteOffset || 0) + (a.byteOffset || 0), d = new DataView(data.buffer), k = a.normalized && NORM[a.componentType] ? 1 / NORM[a.componentType] : 1;
+    for (let r = 0; r < a.count; r++) for (let c = 0; c < nc; c++) { const v = d[GET[a.componentType]](base + r * step + c * sz, true); out[r * nc + c] = k === 1 ? v : Math.max(-1, v * k); }
+    return out;
+  };
+  // a node's own matrix, column by column as glTF writes it, and two multiplied
+  const mul4 = (a, b) => { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3]; return o; };
+  const local = n => {
+    if (n.matrix && n.matrix.length === 16) return n.matrix;
+    const [x, y, z, w] = n.rotation || [0, 0, 0, 1], [sx, sy, sz] = n.scale || [1, 1, 1], [tx, ty, tz] = n.translation || [0, 0, 0];
+    return [(1 - 2 * (y * y + z * z)) * sx, 2 * (x * y + z * w) * sx, 2 * (x * z - y * w) * sx, 0, 2 * (x * y - z * w) * sy, (1 - 2 * (x * x + z * z)) * sy, 2 * (y * z + x * w) * sy, 0, 2 * (x * z + y * w) * sz, 2 * (y * z - x * w) * sz, (1 - 2 * (x * x + y * y)) * sz, 0, tx, ty, tz, 1];
+  };
+  const pos = [], idx = [], nodes = json.nodes || [], seen = new Set();
+  const visit = (i, M, depth) => {
+    const n = nodes[i]; if (!n || depth > 64) return;
+    const W = mul4(M, local(n)), mesh = n.mesh !== undefined ? (json.meshes || [])[n.mesh] : null;
+    for (const prim of (mesh && mesh.primitives) || []) {
+      if (prim.extensions && Object.keys(prim.extensions).some(x => /draco|meshopt/i.test(x))) throw new Error("its geometry is compressed, which this can't read: export it without mesh compression");
+      const mode = prim.mode === undefined ? 4 : prim.mode, P = prim.attributes && accessor(prim.attributes.POSITION);
+      if (!P || mode < 4 || mode > 6) continue;
+      const base = pos.length / 3, nv = P.length / 3;
+      for (let v = 0; v < nv; v++) { const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2]; pos.push(W[0] * x + W[4] * y + W[8] * z + W[12], W[1] * x + W[5] * y + W[9] * z + W[13], W[2] * x + W[6] * y + W[10] * z + W[14]); }
+      const I = prim.indices !== undefined ? accessor(prim.indices) : Float64Array.from({ length: nv }, (_, k) => k);
+      if (mode === 4) for (let k = 0; k + 2 < I.length; k += 3) idx.push(base + I[k], base + I[k + 1], base + I[k + 2]);
+      else if (mode === 5) for (let k = 0; k + 2 < I.length; k++) idx.push(base + I[k + (k % 2)], base + I[k + 1 - (k % 2)], base + I[k + 2]);
+      else for (let k = 1; k + 1 < I.length; k++) idx.push(base + I[0], base + I[k], base + I[k + 1]);
+    }
+    (n.children || []).forEach(c => visit(c, W, depth + 1));
+  };
+  const scene = (json.scenes || [])[json.scene || 0], kids = new Set(nodes.flatMap(n => n.children || []));
+  const roots = scene && scene.nodes ? scene.nodes : nodes.map((n, i) => i).filter(i => !kids.has(i));
+  roots.forEach(i => { if (!seen.has(i)) { seen.add(i); visit(i, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 0); } });
+  return { pos, idx, up: "y" };
+}
+// A zip's files, by name: each a function giving its bytes (stored as they are, or deflated)
+async function unzip(buf) {
+  const dv = new DataView(buf), len = buf.byteLength, files = new Map(); let eocd = -1;
+  for (let i = len - 22; i >= Math.max(0, len - 65558); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error("it isn't a zip archive");
+  let at = dv.getUint32(eocd + 16, true); const count = dv.getUint16(eocd + 10, true);
+  for (let i = 0; i < count && at + 46 <= len && dv.getUint32(at, true) === 0x02014b50; i++) {
+    const method = dv.getUint16(at + 10, true), size = dv.getUint32(at + 20, true), nameLen = dv.getUint16(at + 28, true), extra = dv.getUint16(at + 30, true), note = dv.getUint16(at + 32, true), local = dv.getUint32(at + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(buf, at + 46, nameLen));
+    files.set(name, async () => {
+      const from = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true), data = new Uint8Array(buf, from, size);
+      if (method === 0) return data;
+      if (method !== 8 || typeof DecompressionStream === "undefined") throw new Error("this browser can't unpack it");
+      return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    });
+    at += 46 + nameLen + extra + note;
+  }
+  return files;
+}
+const isZip = buf => buf.byteLength > 4 && new DataView(buf).getUint32(0, true) === 0x04034b50;
+const xmlOf = bytes => { const doc = new DOMParser().parseFromString(new TextDecoder().decode(bytes), "application/xml"); if (doc.getElementsByTagName("parsererror").length) throw new Error("its XML can't be read"); return doc; };
+const tags = (node, name) => Array.from(node.getElementsByTagNameNS("*", name));
+// 3MF: a zip holding an XML model, whose build lists the objects to make, each a mesh or made of other objects, placed
+// by a transform (twelve numbers: three rows of a matrix, then the move)
+async function read3MF(buf) {
+  const files = await unzip(buf), name = [...files.keys()].find(n => /3dmodel\.model$/i.test(n)) || [...files.keys()].find(n => /\.model$/i.test(n));
+  if (!name) throw new Error("it has no 3D model inside");
+  const doc = xmlOf(await files.get(name)()), objects = new Map(), pos = [], idx = [];
+  for (const o of tags(doc, "object")) objects.set(o.getAttribute("id"), o);
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], tf = str => { const t = (str || "").trim().split(/\s+/).map(Number); return t.length === 12 && t.every(Number.isFinite) ? t : I; };
+  // (a point as a row, times the matrix: first a, then b)
+  const then = (a, b) => { const o = []; for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) o.push((r < 3 ? a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c] : a[9] * b[c] + a[10] * b[3 + c] + a[11] * b[6 + c] + b[9 + c])); return o; };
+  const place = (id, M, depth) => {
+    const o = objects.get(id); if (!o || depth > 32) return;
+    const mesh = tags(o, "mesh")[0];
+    if (mesh) {
+      const base = pos.length / 3;
+      for (const v of tags(mesh, "vertex")) { const x = +v.getAttribute("x"), y = +v.getAttribute("y"), z = +v.getAttribute("z"); pos.push(x * M[0] + y * M[3] + z * M[6] + M[9], x * M[1] + y * M[4] + z * M[7] + M[10], x * M[2] + y * M[5] + z * M[8] + M[11]); }
+      for (const t of tags(mesh, "triangle")) idx.push(base + +t.getAttribute("v1"), base + +t.getAttribute("v2"), base + +t.getAttribute("v3"));
+    }
+    for (const c of tags(o, "component")) place(c.getAttribute("objectid"), then(tf(c.getAttribute("transform")), M), depth + 1);
+  };
+  const items = tags(doc, "item");
+  if (items.length) items.forEach(it => place(it.getAttribute("objectid"), tf(it.getAttribute("transform")), 0)); else for (const id of objects.keys()) place(id, I, 0);
+  return { pos, idx, up: "z" };
+}
+// AMF: XML (sometimes zipped), each object's mesh a list of vertices and volumes of triangles
+async function readAMF(buf) {
+  let bytes = new Uint8Array(buf);
+  if (isZip(buf)) { const files = await unzip(buf), name = [...files.keys()].find(n => /\.amf$/i.test(n)) || [...files.keys()][0]; if (!name) throw new Error("it is empty"); bytes = await files.get(name)(); }
+  const doc = xmlOf(bytes), pos = [], idx = [], num = (node, tag) => { const e = tags(node, tag)[0]; return e ? +e.textContent : NaN; };
+  for (const mesh of tags(doc, "mesh")) {
+    const base = pos.length / 3;
+    for (const v of tags(mesh, "vertex")) pos.push(num(v, "x"), num(v, "y"), num(v, "z"));
+    for (const t of tags(mesh, "triangle")) idx.push(base + num(t, "v1"), base + num(t, "v2"), base + num(t, "v3"));
+  }
+  return { pos, idx, up: "z" };
+}
+async function readModel(name, buf) {
+  const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1], kind = ext && ext.toLowerCase();
+  if (kind === "obj") return readOBJ(new TextDecoder().decode(buf));
+  if (kind === "stl") return readSTL(buf);
+  if (kind === "ply") return readPLY(buf);
+  if (kind === "off") return readOFF(new TextDecoder().decode(buf));
+  if (kind === "glb" || kind === "gltf") return readGLTF(buf);
+  if (kind === "3mf") return read3MF(buf);
+  if (kind === "amf") return readAMF(buf);
+  if (kind === "stp" || kind === "step" || kind === "igs" || kind === "iges") throw new Error("STEP and IGES hold exact CAD surfaces, which this can't read: export it from your CAD program as OBJ, STL, glTF or 3MF");
+  throw new Error("this reads " + [...new Set(Object.values(MODEL_TYPES))].join(", ") + " files");
+}
+
+// ---- Tidying a mesh ----
+// Points at the same place become one (an STL repeats every corner), triangles with a bad or doubled corner go, and a mesh
+// too fine to draw quickly is thinned by gathering its points into a grid of cells, one point each, finer or coarser until
+// it's under the limit. Gives { pos, idx, from } (`from`: the triangles before thinning, when it was thinned).
+function tidyMesh(rawPos, rawIdx) {
+  const nv = Math.floor(rawPos.length / 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], ok = new Uint8Array(nv);
+  for (let i = 0; i < nv; i++) {
+    const x = rawPos[i * 3], y = rawPos[i * 3 + 1], z = rawPos[i * 3 + 2];
+    if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) continue;
+    ok[i] = 1;
+    if (x < lo[0]) lo[0] = x; if (y < lo[1]) lo[1] = y; if (z < lo[2]) lo[2] = z; if (x > hi[0]) hi[0] = x; if (y > hi[1]) hi[1] = y; if (z > hi[2]) hi[2] = z;
+  }
+  const span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  if (!(span > 0)) throw new Error("it has no shape to draw");
+  // gathered into `cells` cells along its longest side: a great many for points that are simply the same, far fewer to thin it
+  const gather = cells => {
+    const k = cells / span, K = cells + 2, ids = new Map(), map = new Int32Array(nv).fill(-1), sum = [], cnt = [];
+    for (let i = 0; i < nv; i++) {
+      if (!ok[i]) continue;
+      const x = rawPos[i * 3], y = rawPos[i * 3 + 1], z = rawPos[i * 3 + 2], key = Math.round((x - lo[0]) * k) + K * (Math.round((y - lo[1]) * k) + K * Math.round((z - lo[2]) * k));
+      let id = ids.get(key);
+      if (id === undefined) { id = cnt.length; ids.set(key, id); cnt.push(0); sum.push(0, 0, 0); }
+      map[i] = id; cnt[id]++; sum[id * 3] += x; sum[id * 3 + 1] += y; sum[id * 3 + 2] += z;
+    }
+    const idx = [], N = cnt.length, got = new Set();
+    for (let t = 0; t + 2 < rawIdx.length; t += 3) {
+      const a = map[rawIdx[t]], b = map[rawIdx[t + 1]], c = map[rawIdx[t + 2]];
+      if (a === undefined || b === undefined || c === undefined || a < 0 || b < 0 || c < 0 || a === b || b === c || a === c) continue;
+      // (the same three points make one triangle, however many gathered onto them)
+      const lo3 = Math.min(a, b, c), hi3 = Math.max(a, b, c), key = (lo3 * N + (a + b + c - lo3 - hi3)) * N + hi3;
+      if (N < 200000) { if (got.has(key)) continue; got.add(key); }
+      idx.push(a, b, c);
+    }
+    const pos = new Float32Array(cnt.length * 3);
+    for (let i = 0; i < cnt.length; i++) for (let c = 0; c < 3; c++) pos[i * 3 + c] = sum[i * 3 + c] / cnt[i];
+    return { pos, idx };
+  };
+  let out = gather(1 << 17); const whole = out.idx.length / 3;
+  if (!whole) throw new Error("it has no faces to draw");
+  for (let cells = 320; out.idx.length / 3 > MAX_TRIS && cells >= 8; cells = Math.floor(cells * 0.8)) out = gather(cells);
+  // (points no triangle uses go too)
+  const used = new Int32Array(out.pos.length / 3).fill(-1), pos = [], idx = new Uint32Array(out.idx.length);
+  out.idx.forEach((v, i) => { if (used[v] < 0) { used[v] = pos.length / 3; pos.push(out.pos[v * 3], out.pos[v * 3 + 1], out.pos[v * 3 + 2]); } idx[i] = used[v]; });
+  return { pos: new Float32Array(pos), idx, from: out.idx.length / 3 < whole ? whole : 0 };
+}
+// A mesh's edges, each once: the triangle either side (or -1), whether those two wind opposite ways round as a file may
+// have them (`same`: they run along the edge the same way, with their faces turned opposite ways, so one counts as
+// flipped), and the cosine of the angle between their faces (1 for flat across it). `open` edges are always lines of the
+// model: those with one triangle, or more than two. A thinned mesh has triangles lying over each other where its points
+// were gathered, which are no part of its shape: two that run along an edge the same way with their faces turned the same
+// way, and edges with more than two triangles, are never lines of it. And each triangle's three edges.
+function meshEdges(m) {
+  if (m.edges) return m.edges;
+  const { pos, idx } = m, nt = idx.length / 3, nv = pos.length / 3, byKey = new Map();
+  const ea = [], eb = [], t0 = [], t1 = [], d0 = [], same = [], many = [], te = new Uint32Array(nt * 3), nrm = new Float32Array(nt * 3);
+  for (let t = 0; t < nt; t++) {
+    const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+    const ux = pos[b * 3] - pos[a * 3], uy = pos[b * 3 + 1] - pos[a * 3 + 1], uz = pos[b * 3 + 2] - pos[a * 3 + 2], vx = pos[c * 3] - pos[a * 3], vy = pos[c * 3 + 1] - pos[a * 3 + 1], vz = pos[c * 3 + 2] - pos[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.hypot(nx, ny, nz) || 1;
+    nrm[t * 3] = nx / l; nrm[t * 3 + 1] = ny / l; nrm[t * 3 + 2] = nz / l;
+    for (let k = 0; k < 3; k++) {
+      const p = idx[t * 3 + k], q = idx[t * 3 + (k + 1) % 3], fwd = p < q, key = fwd ? p * nv + q : q * nv + p;
+      let e = byKey.get(key);
+      if (e === undefined) { e = ea.length; byKey.set(key, e); ea.push(fwd ? p : q); eb.push(fwd ? q : p); t0.push(t); t1.push(-1); d0.push(fwd ? 1 : 0); same.push(0); many.push(0); }
+      else if (t1[e] < 0) { t1[e] = t; same[e] = (fwd ? 1 : 0) === d0[e] ? 1 : 0; } else many[e] = 1;
+      te[t * 3 + k] = e;
+    }
+  }
+  const ne = ea.length, cos = new Float32Array(ne).fill(1), open = new Uint8Array(ne), lap = new Uint8Array(ne);
+  for (let e = 0; e < ne; e++) {
+    if (many[e]) { if (m.thin) lap[e] = 1; else open[e] = 1; continue; }
+    if (t1[e] < 0) { open[e] = 1; continue; }
+    const a = t0[e] * 3, b = t1[e] * 3, dot = nrm[a] * nrm[b] + nrm[a + 1] * nrm[b + 1] + nrm[a + 2] * nrm[b + 2];
+    if (same[e] && dot > 0) { if (m.thin) lap[e] = 1; else cos[e] = -dot; } else cos[e] = same[e] ? -dot : dot;
+  }
+  return (m.edges = { ne, a: Uint32Array.from(ea), b: Uint32Array.from(eb), t0: Int32Array.from(t0), t1: Int32Array.from(t1), same: Uint8Array.from(same), cos, open, lap, te });
+}
+// A mesh turned to sit in a box: which file axis is up, and quarter turns about it, then each point as a share of the way
+// along the box's width, length and height (q, 0 to 1 each), with the model's own size each way (dims). Through a lens,
+// where a straight edge bends, triangles big for the box are cut into smaller ones (`fine`); `par` is the triangle each
+// came from and `er` its sides' edges in the mesh (-1 for a cut across a triangle, which isn't an edge).
+function modelShape(m, up, turn, fine) {
+  const key = up + turn + (fine ? "f" : ""), had = m.shapes && m.shapes[key]; if (had) return had;
+  const { pos, idx } = m, nv = pos.length / 3, nt = idx.length / 3, p = new Float64Array(nv * 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < nv; i++) {
+    const fx = pos[i * 3], fy = pos[i * 3 + 1], fz = pos[i * 3 + 2];
+    let [x, y, z] = up === "y" ? [fx, -fz, fy] : up === "x" ? [fy, fz, fx] : [fx, fy, fz];
+    for (let k = 0; k < turn; k++) [x, y] = [-y, x];
+    p[i * 3] = x; p[i * 3 + 1] = y; p[i * 3 + 2] = z;
+    if (x < lo[0]) lo[0] = x; if (y < lo[1]) lo[1] = y; if (z < lo[2]) lo[2] = z; if (x > hi[0]) hi[0] = x; if (y > hi[1]) hi[1] = y; if (z > hi[2]) hi[2] = z;
+  }
+  const dims = [0, 1, 2].map(c => hi[c] - lo[c]), big = Math.max(...dims) || 1, q = [];
+  for (let i = 0; i < nv; i++) for (let c = 0; c < 3; c++) q.push(dims[c] > 0 ? (p[i * 3 + c] - lo[c]) / dims[c] : 0.5);
+  const te = meshEdges(m).te, cut = new Uint8Array(meshEdges(m).ne); let tri, par, er; // (cut: the edges that were cut into pieces)
+  if (!fine) { tri = idx; par = Uint32Array.from({ length: nt }, (_, t) => t); er = Int32Array.from(te); }
+  else {
+    const T = [], Pa = [], E = [], w = dims.map(d => d / big), budget = 2.5 * MAX_TRIS; let made = 0;
+    const len = (a, b) => Math.hypot((q[a * 3] - q[b * 3]) * w[0], (q[a * 3 + 1] - q[b * 3 + 1]) * w[1], (q[a * 3 + 2] - q[b * 3 + 2]) * w[2]);
+    for (let t = 0; t < nt; t++) {
+      const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+      let n = Math.min(12, Math.ceil(Math.max(len(a, b), len(b, c), len(c, a)) * 8)) || 1;
+      while (n > 1 && made + n * n > budget - (nt - t)) n--; // (never past what there's room for)
+      made += n * n;
+      if (n === 1) { T.push(a, b, c); Pa.push(t); E.push(te[t * 3], te[t * 3 + 1], te[t * 3 + 2]); continue; }
+      cut[te[t * 3]] = cut[te[t * 3 + 1]] = cut[te[t * 3 + 2]] = 1;
+      // a grid of points across it: i steps from a toward b, j toward c
+      const at = [];
+      for (let i = 0; i <= n; i++) for (let j = 0; i + j <= n; j++) {
+        if (!j && !i) at.push(a); else if (i === n) at.push(b); else if (j === n) at.push(c);
+        else { at.push(q.length / 3); for (let k = 0; k < 3; k++) q.push(q[a * 3 + k] + (q[b * 3 + k] - q[a * 3 + k]) * i / n + (q[c * 3 + k] - q[a * 3 + k]) * j / n); }
+      }
+      const g = (i, j) => at[i * (n + 1) - i * (i - 1) / 2 + j];
+      for (let i = 0; i < n; i++) for (let j = 0; i + j < n; j++) {
+        // (its sides: along a-b where j is 0, along b-c where i + j is n, along c-a where i is 0)
+        T.push(g(i, j), g(i + 1, j), g(i, j + 1)); Pa.push(t); E.push(j === 0 ? te[t * 3] : -1, i + j + 1 === n ? te[t * 3 + 1] : -1, i === 0 ? te[t * 3 + 2] : -1);
+        if (i + j + 1 < n) { T.push(g(i + 1, j), g(i + 1, j + 1), g(i, j + 1)); Pa.push(t); E.push(-1, -1, -1); }
+      }
+    }
+    tri = Uint32Array.from(T); par = Uint32Array.from(Pa); er = Int32Array.from(E);
+  }
+  return ((m.shapes = m.shapes || {})[key] = { q: Float32Array.from(q), tri, par, er, cut, dims });
+}
+const modelOf = bx => (bx && bx.model && meshes.get(bx.model.id)) || null;
+// The proportions a box needs to hold its model unstretched, in fitBox's terms (largest side 1), keeping which way the
+// box already runs along each axis
+function modelDims(bx, g) {
+  const m = modelOf(bx); if (!m) return null;
+  const d = modelShape(m, bx.model.up, bx.model.turn, false).dims, big = Math.max(...d) || 1, now = boxDims(bx, g), keep = v => Math.max(0.03, v / big);
+  return { a: Math.sign(now.a || 1) * keep(d[0]), c: Math.sign(now.c || 1) * keep(d[1]), h: keep(d[2]) };
+}
+const modelStretched = (bx, g) => { const d = modelDims(bx, g), now = boxDims(bx, g); return !!d && ["a", "c", "h"].some(k => Math.abs(Math.abs(d[k]) - Math.abs(now[k])) > 0.01); };
+// The box rebuilt to the model's proportions, where it is and as big as it looks
+function fitModelBox(bx, g = geo()) {
+  const d = modelDims(bx, g); if (!d) return;
+  const G = homeGeo(bx, g), sb = screenBox([...G.B, ...G.T]);
+  fitBox(bx, d, sb.c, sb.s, g, boxPlace(bx, g)); captureFit(bx, g);
+}
+
+// ---- Drawing a model ----
+// Where a model's points land for the box as it stands, worked out again only when the box or the view changes: each
+// point on the page (sx, sy) and in the view's 3D (the eye at 0), then each triangle's distance, the way it faces and how
+// lit it is, and the order to draw them in, furthest first, so nearer ones cover what's behind them.
+const LIGHT = n3(V3(-0.35, 0.8, -0.5)), modelViews = new WeakMap();
+function modelView(bx, g, G) {
+  const m = modelOf(bx); if (!m) return null;
+  const F = boxFrame(bx, g, G), fine = !!g.cam, S = modelShape(m, bx.model.up, bx.model.turn, fine);
+  const key = [state.mode, state.curvi.style4, fine ? JSON.stringify([state.curvi, state.cone.cv, state.horizon]) : "", bx.model.id, bx.model.up, bx.model.turn, F.in3, F.O.x, F.O.y, F.O.z, ...F.ax.flatMap(v => [v.x, v.y, v.z]), ...[...G.B, ...G.T].flatMap(p => [p.x, p.y])].join();
+  const had = modelViews.get(bx); if (had && had.key === key) return had;
+  const { q, tri, par } = S, nv = q.length / 3, nt = tri.length / 3, { O, ax, cam } = F;
+  // A box can be built either way round, and the views differ in which way round their own space runs, either of which
+  // would show the model mirrored. So it goes by what's seen: a small triangle in the middle of the box, across two of its
+  // directions, is looked at from the side its third direction points to or from the other, and should come out on the
+  // page turning the way a model's would from there. If it doesn't, the model is laid across the box's width the other way.
+  const spot = t => V3(O.x + ax[0].x * t[0] + ax[1].x * t[1] + ax[2].x * t[2], O.y + ax[0].y * t[0] + ax[1].y * t[1] + ax[2].y * t[2], O.z + ax[0].z * t[0] + ax[1].z * t[1] + ax[2].z * t[2]);
+  const onPage = t => (F.in3 ? cam.proj(spot(t)) : F.at(t));
+  let flip = d3(c3(ax[0], ax[1]), ax[2]) > 0;
+  {
+    const mid = [0.5, 0.5, 0.5], pairs = [[0, 1], [1, 2], [2, 0]].map(([i, j]) => ({ i, j, toward: d3(ax[3 - i - j], spot(mid)) })).sort((x, y) => Math.abs(y.toward) - Math.abs(x.toward))[0];
+    const step = k => mid.map((v, c) => (c === k ? v + 0.05 : v)), a = onPage(mid), b = onPage(step(pairs.i)), d = onPage(step(pairs.j));
+    if (a && b && d && pairs.toward) {
+      const turn = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x); // (clockwise on the page if positive, y running down it)
+      // (i, j and the third run the same way round as width, length, height; `toward` < 0 is the third pointing at the eye,
+      // from where a model's own i and j run anticlockwise)
+      if (Number.isFinite(turn) && turn) flip = (turn < 0) !== (pairs.toward < 0);
+    }
+  }
+  const X = new Float64Array(nv), Y = new Float64Array(nv), Z = new Float64Array(nv), sx = new Float64Array(nv), sy = new Float64Array(nv), bad = new Uint8Array(nv);
+  for (let i = 0; i < nv; i++) {
+    const u = flip ? 1 - q[i * 3] : q[i * 3], v = q[i * 3 + 1], w = q[i * 3 + 2];
+    X[i] = O.x + ax[0].x * u + ax[1].x * v + ax[2].x * w; Y[i] = O.y + ax[0].y * u + ax[1].y * v + ax[2].y * w; Z[i] = O.z + ax[0].z * u + ax[1].z * v + ax[2].z * w;
+  }
+  let pts = null; // (the points as the lens takes them, for telling where an edge crosses a seam)
+  if (F.in3) {
+    if (cam.crosses && fine) pts = new Array(nv);
+    for (let i = 0; i < nv; i++) {
+      const p = V3(X[i], Y[i], Z[i]), s = inFront(cam, p) ? cam.proj(p) : null;
+      if (s && Number.isFinite(s.x) && Number.isFinite(s.y)) { sx[i] = s.x; sy[i] = s.y; } else bad[i] = 1;
+      if (pts) pts[i] = p;
+    }
+  } else {
+    // A box drawn straight on the page is a flat picture of a box in space, so one map takes every point there: the corner
+    // at 0, plus so much toward each of the three vanishing points (worked out from the box's own corners). Checked against
+    // the box's own placing of two spots, and left to that if they differ.
+    const h = p => [p.x, p.y, 1], cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], dt = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const at = F.at, o = h(at([0, 0, 0])), col = k => {
+      const e = [0, 0, 0], f = [0, 0, 0], g2 = [0, 0, 0]; e[k] = 1; f[(k + 1) % 3] = 1; g2[k] = 1; g2[(k + 1) % 3] = 1;
+      let V = cr(cr(o, h(at(e))), cr(h(at(f)), h(at(g2)))); const big = Math.max(Math.abs(V[0]), Math.abs(V[1]), Math.abs(V[2])) || 1; V = V.map(x => x / big);
+      const c1 = cr(h(at(e)), o), c2 = cr(h(at(e)), V), a = -dt(c1, c2) / (dt(c2, c2) || 1);
+      return V.map(x => x * a);
+    };
+    const C = [col(0), col(1), col(2)], map = (u, v, w) => { const d = o[2] + C[0][2] * u + C[1][2] * v + C[2][2] * w; return [(o[0] + C[0][0] * u + C[1][0] * v + C[2][0] * w) / d, (o[1] + C[0][1] * u + C[1][1] * v + C[2][1] * w) / d]; };
+    const size = Math.hypot(G.B[2].x - G.B[0].x, G.B[2].y - G.B[0].y) + Math.hypot(G.T[0].x - G.B[0].x, G.T[0].y - G.B[0].y) || 1;
+    const exact = [[1, 1, 1], [0.5, 0.25, 0.75]].every(t => { const a = at(t), b = map(...t); return Math.hypot(a.x - b[0], a.y - b[1]) < 1e-6 * size; });
+    for (let i = 0; i < nv; i++) {
+      const u = flip ? 1 - q[i * 3] : q[i * 3], v = q[i * 3 + 1], w = q[i * 3 + 2];
+      if (exact) { const s = map(u, v, w); sx[i] = s[0]; sy[i] = s[1]; } else { const s = at([u, v, w]); sx[i] = s.x; sy[i] = s.y; }
+      if (!(Number.isFinite(sx[i]) && Number.isFinite(sy[i]))) bad[i] = 1;
+    }
+  }
+  const far = new Float64Array(nt), lit = new Uint8Array(nt), faces = new Int8Array(meshes.get(bx.model.id).idx.length / 3), list = [];
+  for (let t = 0; t < nt; t++) {
+    const a = tri[t * 3], b = tri[t * 3 + 1], c = tri[t * 3 + 2];
+    if (bad[a] || bad[b] || bad[c]) continue;
+    if (pts && (cam.crosses(pts[a], pts[b]) || cam.crosses(pts[b], pts[c]) || cam.crosses(pts[c], pts[a]))) continue; // (a piece across a seam is left out)
+    const ux = X[b] - X[a], uy = Y[b] - Y[a], uz = Z[b] - Z[a], vx = X[c] - X[a], vy = Y[c] - Y[a], vz = Z[c] - Z[a];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1;
+    const cx = (X[a] + X[b] + X[c]) / 3, cy = (Y[a] + Y[b] + Y[c]) / 3, cz = (Z[a] + Z[b] + Z[c]) / 3;
+    const toward = nx * cx + ny * cy + nz * cz < 0 ? 1 : -1; // (the eye is at 0)
+    faces[par[t]] = toward;
+    lit[t] = Math.round(31 * (0.5 + 0.5 * toward * (nx * LIGHT.x + ny * LIGHT.y + nz * LIGHT.z) / l));
+    far[t] = Math.hypot(cx, cy, cz);
+    list.push(t);
+  }
+  const order = Uint32Array.from(list).sort((i, j) => far[j] - far[i]);
+  const view = { key, S, sx, sy, order, lit, faces };
+  modelViews.set(bx, view);
+  return view;
+}
+// Draws it: each triangle filled in its shade, then the lines of the model at it, so the nearer triangles drawn after it
+// cover what they hide. Its lines: every edge, or just the open ones, the creases sharper than the model's crease angle
+// and the outline (edges between a triangle facing you and one facing away). A triangle draws the lines that touch any of
+// its corners, not just its own sides: along an outline the triangles are seen nearly edge-on, thinner than the line, and
+// the ones beside them would otherwise fill over half of it. (An edge cut into pieces through a lens is drawn piece by
+// piece instead, by the triangles along it.)
+function drawModel(c, bx, g, k, G) {
+  const M = bx.model, view = modelView(bx, g, G); if (!view) return;
+  const { S, sx, sy, order, lit, faces } = view, { tri, er } = S, E = meshEdges(meshes.get(M.id));
+  const rgb = hex2rgb(M.color), shades = Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1));
+  const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k), fills = M.opacity > 0, solid = M.opacity >= 0.999;
+  // (which edges are lines, kept with the view until the choice changes)
+  const mesh = meshes.get(M.id), lineKey = M.lines + " " + M.crease; let drawn = view.lineKey === lineKey ? view.drawn : null;
+  if (!drawn) {
+    drawn = new Uint8Array(E.ne);
+    if (lines) for (let e = 0; e < E.ne; e++) drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0)) ? 1 : 0;
+    if (lines && !all && mesh.thin) {
+      // A thinned mesh is rough in small ways, which leaves stray scraps of line. An outline, a crease or an open rim runs
+      // on from edge to edge, so lines joined into fewer than six edges are dropped.
+      const top = new Int32Array(mesh.pos.length / 3).fill(-1), find = v => { let r = v; while (top[r] >= 0) r = top[r]; while (top[v] >= 0) { const n = top[v]; top[v] = r; v = n; } return r; };
+      const size = new Int32Array(mesh.pos.length / 3);
+      for (let e = 0; e < E.ne; e++) if (drawn[e]) { const x = find(E.a[e]), y = find(E.b[e]); if (x !== y) { top[y] = x; size[x] += size[y] + 1; } else size[x]++; }
+      for (let e = 0; e < E.ne; e++) if (drawn[e] && size[find(E.a[e])] < 6) drawn[e] = 0;
+    }
+    // each point's lines, one after another: point v's are at[from[v]] up to at[from[v + 1]]
+    const nv0 = mesh.pos.length / 3, from = new Uint32Array(nv0 + 1);
+    // (with every edge a line, each triangle just draws its own sides)
+    const whole = e => drawn[e] && !S.cut[e] && !all;
+    for (let e = 0; e < E.ne; e++) if (whole(e)) { from[E.a[e] + 1]++; from[E.b[e] + 1]++; }
+    for (let v = 0; v < nv0; v++) from[v + 1] += from[v];
+    const at = new Uint32Array(from[nv0]), fill = from.slice(0, nv0);
+    for (let e = 0; e < E.ne; e++) if (whole(e)) { at[fill[E.a[e]]++] = e; at[fill[E.b[e]]++] = e; }
+    view.drawn = drawn; view.lineKey = lineKey; view.from = from; view.at = at;
+  }
+  const { from, at } = view, nv0 = from.length - 1, EA = E.a, EB = E.b;
+  c.save(); c.lineJoin = "round"; c.lineCap = "round"; c.setLineDash([]);
+  for (let n = 0; n < order.length; n++) {
+    const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2];
+    if (fills) {
+      c.beginPath(); c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); c.closePath();
+      c.globalAlpha = M.opacity; c.fillStyle = shades[lit[t]]; c.fill();
+      // (a hair of the same color closes the seams between triangles, which would show as a mesh of light lines)
+      if (solid) { c.strokeStyle = shades[lit[t]]; c.lineWidth = 0.7 / k; c.stroke(); }
+    }
+    if (!lines) continue;
+    // its own sides that are pieces of a cut edge (or with every edge a line, all of them), and the whole lines at its corners
+    const e0 = er[t * 3], e1 = er[t * 3 + 1], e2 = er[t * 3 + 2], l0 = e0 >= 0 && drawn[e0] && (all || S.cut[e0]), l1 = e1 >= 0 && drawn[e1] && (all || S.cut[e1]), l2 = e2 >= 0 && drawn[e2] && (all || S.cut[e2]);
+    const na = a < nv0 ? from[a + 1] - from[a] : 0, nb = b < nv0 ? from[b + 1] - from[b] : 0, nd = d < nv0 ? from[d + 1] - from[d] : 0;
+    if (!(l0 || l1 || l2 || na || nb || nd)) continue;
+    c.beginPath();
+    if (l0) { c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); }
+    if (l1) { c.moveTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); }
+    if (l2) { c.moveTo(sx[d], sy[d]); c.lineTo(sx[a], sy[a]); }
+    for (let i = 0; i < 3; i++) {
+      const v = i === 0 ? a : i === 1 ? b : d; if (v >= nv0) continue;
+      for (let j = from[v]; j < from[v + 1]; j++) { const e = at[j]; c.moveTo(sx[EA[e]], sy[EA[e]]); c.lineTo(sx[EB[e]], sy[EB[e]]); }
+    }
+    c.globalAlpha = 1; c.strokeStyle = M.stroke; c.lineWidth = lw; c.stroke();
+  }
+  c.restore();
+}
+
+// ---- Keeping the meshes ----
+// On this device, beside the drawing, so a model is still there when the page is opened again (where the browser allows it)
+const MESH_DB = "tpp-studio-meshes";
+function meshDB(mode, work) {
+  return new Promise(done => {
+    try {
+      const open = indexedDB.open(MESH_DB, 1);
+      open.onupgradeneeded = () => open.result.createObjectStore("meshes");
+      open.onerror = () => done(null);
+      open.onsuccess = () => {
+        try {
+          const tx = open.result.transaction("meshes", mode), req = work(tx.objectStore("meshes"));
+          tx.oncomplete = () => { done(req ? req.result : null); open.result.close(); };
+          tx.onerror = tx.onabort = () => { done(null); open.result.close(); };
+        } catch (e) { done(null); }
+      };
+    } catch (e) { done(null); }
+  });
+}
+function keepMesh(id, m) { meshes.set(id, m); meshMissing.delete(id); return meshDB("readwrite", st => st.put({ name: m.name, pos: m.pos, idx: m.idx, thin: !!m.thin }, id)); }
+// The meshes the drawing names, fetched if they aren't here yet; and those nothing names any more, forgotten
+async function loadMeshes() {
+  const want = [...new Set(state.boxes.filter(b => b.model).map(b => b.model.id))];
+  for (const id of want) {
+    if (meshes.has(id) || meshMissing.has(id)) continue;
+    const rec = await meshDB("readonly", st => st.get(id));
+    if (rec && rec.pos && rec.idx) meshes.set(id, { name: rec.name, pos: new Float32Array(rec.pos), idx: new Uint32Array(rec.idx), thin: !!rec.thin }); else meshMissing.add(id);
+    touch();
+  }
+}
+async function pruneMeshes() { const keys = await meshDB("readonly", st => st.getAllKeys()), want = new Set(state.boxes.filter(b => b.model).map(b => b.model.id)); for (const k of keys || []) if (!want.has(k) && !meshes.has(k)) await meshDB("readwrite", st => st.delete(k)); }
+// For a saved setup file: the meshes its boxes name, as text
+const bytesB64 = bytes => { let sOut = ""; for (let i = 0; i < bytes.length; i += 0x8000) sOut += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(sOut); };
+function packMeshes() {
+  const out = {};
+  for (const b of state.boxes) { const m = modelOf(b); if (m && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
+  return out;
+}
+function unpackMeshes(raw) {
+  if (!raw || typeof raw !== "object") return;
+  for (const [id, r] of Object.entries(raw)) {
+    try {
+      if (!/^[\w-]{4,40}$/.test(id) || !r || typeof r.pos !== "string" || typeof r.idx !== "string") continue;
+      const pb = b64bytes(r.pos), ib = b64bytes(r.idx), pos = new Float32Array(pb.buffer.slice(0, pb.length - pb.length % 4)), idx = new Uint32Array(ib.buffer.slice(0, ib.length - ib.length % 4));
+      if (!pos.length || idx.length < 3 || idx.length % 3 || idx.some(v => v >= pos.length / 3)) continue;
+      keepMesh(id, { name: typeof r.name === "string" ? r.name.slice(0, 80) : "Model", pos, idx, thin: !!r.thin });
+    } catch (e) { /* a mesh that can't be read is left out; its box says it's missing */ }
+  }
+}
+
+// ---- Bringing one in ----
+// The file is read, tidied and kept, and a new box made for it: the model's proportions, about twice a new box's size,
+// its faces see-through and undivided so the model shows, and selected.
+async function importModel(file) {
+  try {
+    if (file.size > MAX_MODEL_BYTES) throw new Error("it is over " + Math.round(MAX_MODEL_BYTES / 1048576) + " MB");
+    toast("Reading " + file.name + "…");
+    await new Promise(r => setTimeout(r, 30)); // (so the message shows before the work starts)
+    const raw = await readModel(file.name, await file.arrayBuffer()), mesh = tidyMesh(raw.pos, raw.idx);
+    const name = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 60) || "Model", id = "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    keepMesh(id, { name, pos: mesh.pos, idx: mesh.idx, thin: !!mesh.from });
+    const g = geo(), bx = makeBox(g, state.boxes.length), G0 = homeGeo(bx, g), sb = screenBox([...G0.B, ...G0.T]);
+    bx.name = name.slice(0, 28); bx.model = cleanModel({ id, name, up: raw.up }); bx.ghost = 0; bx.div.on = false;
+    fitBox(bx, modelDims(bx, g), sb.c, sb.s * 1.8, g, boxPlace(bx, g)); captureFit(bx, g);
+    state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch();
+    const n = mesh.idx.length / 3;
+    toast(mesh.from ? `Imported ${name}: thinned from ${mesh.from.toLocaleString()} to ${n.toLocaleString()} triangles to keep drawing quick` : `Imported ${name}: ${n.toLocaleString()} triangles`);
+  } catch (e) { toast(`Couldn't import ${file.name}: ${e && e.message ? e.message : "it can't be read"}`); }
+}
+const modelIn = el("input", { type: "file", accept: MODEL_ACCEPT, hidden: "hidden", "aria-label": "3D model file" });
+document.body.append(modelIn);
+modelIn.addEventListener("change", async () => { const files = [...modelIn.files]; modelIn.value = ""; for (const f of files) await importModel(f); });
+const pickModel = () => modelIn.click();
+// (a model file dropped on the page comes in the same way; anything else dropped is left alone)
+const droppedModels = e => [...((e.dataTransfer && e.dataTransfer.files) || [])].filter(f => /\.(obj|stl|ply|off|glb|gltf|3mf|amf|stp|step|igs|iges)$/i.test(f.name));
+window.addEventListener("dragover", e => { if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+window.addEventListener("drop", async e => { const files = droppedModels(e); if (!files.length) return; e.preventDefault(); for (const f of files) await importModel(f); });
+// The panel's doings for the selected box's model
+const hasModel = () => hasBox() && !!state.boxes[state.sel].model;
+const modelHere = () => hasModel() && !!modelOf(state.boxes[state.sel]);
+function turnModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; bx.model.turn = (bx.model.turn + 1) % 4; fitModelBox(bx); commit(); touch(); }
+function matchModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; fitModelBox(bx); commit(); touch(); }
+function removeModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model) return; bx.model = null; commit(); touch(); toast("Model removed. Its box stays, and undo brings the model back."); }
+function modelNote() {
+  const bx = state.boxes[state.sel], m = modelOf(bx); if (!bx || !bx.model) return "";
+  if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
+  return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge.`;
+}
 
 /* ---------- boxes ---------- */
 function makeBox(g, slot = 0) {
@@ -3128,6 +3735,11 @@ function setP(path, val) {
     if (bx) { bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1)); Object.keys(bx.own).forEach(id => { if (id[0] === path.slice(-1)) delete bx.own[id]; }); }
     touch(); return;
   }
+  if (path === "boxes.$b.model.up") {
+    // which way up the model sits changes its box's proportions
+    rawSet(parts, val); const bx = state.boxes[state.sel]; if (bx) fitModelBox(bx);
+    touch(); return;
+  }
   if (path === "boxes.$b.rayFit") {
     // only one box at a time spaces the rays
     if (val) state.boxes.forEach(b => { b.rayFit = false; });
@@ -3337,6 +3949,20 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
+    { t: "btns", items: [["Import 3D model…", pickModel, ""]] },
+    { t: "note", html: "Brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF or AMF file, or drop the file on the page. It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. Models are kept on this device and written into a saved setup file." },
+    { t: "sub", label: "3D model", when: hasModel },
+    { t: "readout", label: () => (modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
+    { t: "toggle", bind: "boxes.$b.model.up", label: "Up axis", options: [["y", "Y"], ["z", "Z"], ["x", "X"]], when: modelHere },
+    { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], ["Remove model", removeModel, "warn"]], when: hasModel },
+    { t: "color", bind: "boxes.$b.model.color", label: "Model color", when: modelHere },
+    { t: "range", bind: "boxes.$b.model.opacity", label: "Model opacity", min: 0, max: 1, step: 0.05, hi: 1, when: modelHere },
+    { t: "check", bind: "boxes.$b.model.shade", label: "Shade it by which way it faces", when: modelHere },
+    { t: "select", bind: "boxes.$b.model.lines", label: "Lines", options: [["outline", "Outline and creases"], ["all", "Every triangle edge"], ["none", "None"]], when: modelHere },
+    { t: "range", bind: "boxes.$b.model.crease", label: "Crease angle, °", min: 1, max: 90, step: 1, lo: 1, hi: 180, when: () => modelHere() && state.boxes[state.sel].model.lines === "outline" },
+    { t: "color", bind: "boxes.$b.model.stroke", label: "Line color", when: () => modelHere() && state.boxes[state.sel].model.lines !== "none" },
+    { t: "range", bind: "boxes.$b.model.width", label: "Line weight", min: 0.25, max: 4, step: 0.05, lo: 0.05, hi: 50, when: () => modelHere() && state.boxes[state.sel].model.lines !== "none" },
+    { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
@@ -4019,7 +4645,7 @@ function exportFile() {
   }, type, quality);
 }
 function saveSetup() {
-  const json = JSON.stringify(state, null, 2);
+  const packed = packMeshes(), json = JSON.stringify(Object.keys(packed).length ? Object.assign({}, state, { meshes: packed }) : state, null, 2); // (with the models its boxes hold)
   offerFile("perspective-setup.json", json, () => {
     const ta = el("textarea", { readonly: "readonly", "aria-label": "Setup JSON" }); ta.value = json;
     const copy = el("button", { class: "btn", type: "button" }, "Copy");
@@ -4032,9 +4658,9 @@ document.getElementById("fileIn").addEventListener("change", e => {
   const rd = new FileReader();
   rd.onload = () => {
     let s = null;
-    try { const raw = JSON.parse(rd.result); if (looksLikeSetup(raw)) s = normalize(raw); } catch (err) { s = null; }
+    try { const raw = JSON.parse(rd.result); if (looksLikeSetup(raw)) { s = normalize(raw); unpackMeshes(raw.meshes); } } catch (err) { s = null; }
     if (!s) { toast("That file is not a setup saved from this tool."); return; }
-    state = s; commit(); touch(); fitView(); toast("Setup loaded");
+    state = s; commit(); touch(); fitView(); loadMeshes(); toast("Setup loaded");
   };
   rd.readAsText(f); e.target.value = "";
 });
@@ -4699,6 +5325,7 @@ if (freshStart) {
 }
 buildPanel();
 updateHistoryButtons();
+loadMeshes().then(pruneMeshes);
 new ResizeObserver(() => redraw()).observe(canvas);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
 new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
