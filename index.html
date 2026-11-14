@@ -398,7 +398,7 @@ function defaultState() {
     ground: { show: false, size: 80, color: "#7d8b96", byVP: true, width: 0.6, opacity: 0.45, keep: false },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
-    snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
+    snap: { on: true, radius: 14, points: true, lines: true, corners: true, divisions: true, dots: true },
     boxes: [], sel: -1,
     // US Letter, 8.5 × 11 inches upright (at DRAW_PPI), centered on the drawing's origin. Its size is shown in `units`
     // (px, in or mm). In inches and millimeters, `ppi` is how many pixels to the inch a PNG or JPG gets.
@@ -1862,7 +1862,7 @@ function snapPoint(w, excludeBox) {
   const S = state.snap, r = S.radius / view.z, data = snapData(), skip = new Set([].concat(excludeBox));
   let best = null, bd = r;
   if (S.points) for (const p of data.pts) { const d = Math.hypot(p.x - w.x, p.y - w.y); if (d < bd) { bd = d; best = { pt: p, kind: "point" }; } }
-  if (S.corners) { const g = geo(); state.boxes.forEach((bx, bi) => { if (skip.has(bi)) return; const G = boxGeo(bx, g); [...G.B, ...G.T].forEach(p => { const d = len(sub(p, w)); if (d < bd) { bd = d; best = { pt: P(p.x, p.y), kind: "point" }; } }); }); }
+  if (S.corners || S.divisions) { let at = null; eachBoxSpot(skip, e => w.x > e.x0 - r && w.x < e.x1 + r && w.y > e.y0 - r && w.y < e.y1 + r, p => { const dx = p.x - w.x, dy = p.y - w.y, d = Math.sqrt(dx * dx + dy * dy); if (d < bd) { bd = d; at = p; } }); if (at) best = { pt: P(at.x, at.y), kind: "point" }; }
   if (best) return best;
   if (S.lines) {
     bd = r * 0.7;
@@ -1878,8 +1878,10 @@ function snapPoint(w, excludeBox) {
   }
   return best;
 }
-function snapOnVertical(base, w) {
-  // snap a point moving on the vertical through base to ray/horizon crossings
+function snapOnVertical(base, w, skip = []) {
+  // snap a point moving on the vertical through base to ray/horizon crossings, and to the other boxes' spots (see
+  // eachBoxSpot) lying on it, as near as the snap radius (for a box beside this one, those along the edge they share), each
+  // by how far it is from where the point is on the vertical, so a spot right on it comes before one just beside it
   const g = geo(), r = state.snap.radius / view.z, up = g.up(base);
   const s = dot(sub(w, base), up), proj = add(base, mul(up, s));
   let best = null, bd = r;
@@ -1889,14 +1891,26 @@ function snapOnVertical(base, w) {
     if (!x || (L.fwd && x.u < 0)) continue;
     const d = Math.abs(x.t - s); if (d < bd) { bd = d; best = P(x.x, x.y); }
   }
+  const side = (x, y) => cross(sub(P(x, y), base), up), near = e => { const c = [side(e.x0, e.y0), side(e.x1, e.y0), side(e.x0, e.y1), side(e.x1, e.y1)]; return Math.min(...c) < r && Math.max(...c) > -r; };
+  if (state.snap.corners || state.snap.divisions) eachBoxSpot(skip, near, p => {
+    const v = sub(p, base), t = dot(v, up), off = Math.abs(cross(v, up)); if (off > r) return;
+    const d = Math.hypot(t - s, off); if (d < bd) { bd = d; best = add(base, mul(up, t)); }
+  });
   return best ? { pt: best, s: dot(sub(best, base), up) } : { pt: proj, s, free: true };
 }
 // Camera version: the vertical through a corner is a great circle; snap to where other guides cross it.
-function snapTopCurvi(Bu, w, g) {
+function snapTopCurvi(Bu, w, g, skip = []) {
   const cam = g.cam, r = state.snap.radius / view.z, hl = Math.hypot(Bu.x, Bu.z);
   if (hl < 1e-9) return null;
   const e1 = V3(Bu.x / hl, 0, Bu.z / hl), Nv = c3(UP3, e1);
   let best = null, bd = r;
+  // (the other boxes' spots that lie on it, as near as the snap radius: each where it's nearest on the circle, by how far
+  // it is from where the pointer is on the circle, so a spot right on it comes before one just beside it)
+  const onCircle = S => { const D = n3(cam.unproj(S)), a = d3(D, e1); return a > 0 ? cam.projG(n3(a3(m3(e1, a), m3(UP3, d3(D, UP3))))) : null; }, wc = onCircle(w);
+  if (wc && (state.snap.corners || state.snap.divisions)) eachBoxSpot(skip, null, p => {
+    const pr = onCircle(p); if (!pr || Math.hypot(pr.x - p.x, pr.y - p.y) > r) return;
+    const d = Math.hypot(p.x - wc.x, p.y - wc.y); if (d < bd) { bd = d; best = P(pr.x, pr.y); }
+  });
   for (const a of snapData().arcs) {
     if (a.fam === "v" || Math.abs(d3(a.A, UP3)) > 0.999) continue; // other verticals never cross this one usefully
     const x = c3(Nv, a.N), xl = l3(x); if (xl < 1e-9) continue;
@@ -1908,6 +1922,60 @@ function snapTopCurvi(Bu, w, g) {
     }
   }
   return best;
+}
+// Where a dragged point snaps on the other boxes, on screen, as {p, corner}: with Snap to other boxes' corners, their
+// corners; with Snap to other boxes' divisions, where the division lines of their faces and planes cross each other and
+// meet the edges, the middles of their diagonals' crosses, and their planes' corners, all measured in depth as they're
+// drawn. Only faces and planes that show have them, and only on a box that's drawn: a shape or model with its box turned
+// off keeps just its corners. Each spot (a point) goes to `fn`, from the boxes not in `skip` (the ones being dragged) whose extent on
+// screen `near` says the snap can reach (all, without it), each box's worked out once it's first needed and kept through
+// a drag while the other boxes stay put.
+let spotCache = null;
+function eachBoxSpot(skip, near, fn) {
+  if (!(skip instanceof Set)) skip = new Set([].concat(skip));
+  const key = JSON.stringify([[...skip], state.snap.corners, state.snap.divisions, state.boxes.map((b, bi) => (skip.has(bi) ? 0 : [b.b0, b.b2, b.h, b.H, b.rot]))]);
+  if (!(drag && spotCache && spotCache.drag === drag && spotCache.key === key)) {
+    const g = geo();
+    spotCache = { drag, key, g, boxes: state.boxes.map((bx, bi) => {
+      if (skip.has(bi)) return null;
+      // (a box's faces, all six, cover everything on it and in it on screen)
+      const G = boxGeo(bx, g), e = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      for (const q of [...G.B, ...G.T, ...G.faces.flatMap(f => f.fills.flat())]) { e.x0 = Math.min(e.x0, q.x); e.y0 = Math.min(e.y0, q.y); e.x1 = Math.max(e.x1, q.x); e.y1 = Math.max(e.y1, q.y); }
+      return { bx, G, e, spots: null };
+    }) };
+  }
+  for (const b of spotCache.boxes) if (b && (!near || near(b.e))) { if (!b.spots) b.spots = spotsOf(b.bx, spotCache.g, b.G).map(s => s.p); for (const p of b.spots) fn(p); }
+  if (!drag) spotCache = null;
+}
+// (each face's side of the box: its direction, x, y or z, and 0 at corner 0 or 1 across from it)
+const FACE_AT = { s01: [1, 0], s12: [0, 1], s23: [1, 1], s30: [0, 0], bottom: [2, 0], top: [2, 1] };
+const MOST_SPOTS = 4096; // (past 64 × 64 cells a surface gives just the spots on its edges)
+function spotsOf(bx, g, G = boxGeo(bx, g)) {
+  const out = state.snap.corners ? [...G.B, ...G.T].map(p => ({ p: P(p.x, p.y), corner: true })) : [];
+  if (!state.snap.divisions || (bx.model && bx.model.frame === false)) return out;
+  const F = boxFrame(bx, g, G), seen = new Set(["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"].map(c => cornerSpot(c).join()));
+  const put = q => {
+    const id = q.map(v => Math.round(v * 1e9) / 1e9).join(); if (seen.has(id)) return; seen.add(id);
+    const s = F.in3 ? F.cam.proj(F.at(q)) : F.at(q);
+    if (s && Number.isFinite(s.x) && Number.isFinite(s.y)) out.push({ p: P(s.x, s.y), corner: false });
+  };
+  // each face and plane that shows: the direction it's across and where along it, and the directions its u and v run
+  const n = [bx.planes.x, bx.planes.y, bx.planes.z], surfaces = [], axis = a => "xyz".indexOf(a.slice(-1));
+  for (const [id, [k, t]] of Object.entries(FACE_AT)) if (bx.faces[id] !== false) surfaces.push({ id, k, t, a: axis(FACE_AXES[id][0]), b: axis(FACE_AXES[id][1]) });
+  for (let k = 0; k < 3; k++) for (let i = 1; i < n[k]; i++) { const id = "xyz"[k] + i; if (surfaceShown(bx, id)) surfaces.push({ id, k, t: i / n[k], a: [1, 0, 0][k], b: [2, 2, 1][k] }); }
+  for (const S of surfaces) {
+    const D = surfDiv(bx, S.id), nu = D.on ? D.nu : 1, nv = D.on ? D.nv : 1;
+    const at = (u, v) => { const q = [0, 0, 0]; q[S.k] = S.t; q[S.a] = u; q[S.b] = v; put(q); };
+    const many = (nu + 1) * (nv + 1) > MOST_SPOTS;
+    for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) if (!many || i === 0 || i === nu || j === 0 || j === nv) at(i / nu, j / nv);
+    if (!D.on) continue;
+    // (the diagonals cross in the middle of each X: the face's, each column's or row's, or each cell's)
+    const dg = D.diag;
+    if (dg === "face") at(0.5, 0.5);
+    else if (dg === "columns" || dg === "rows") { const alongU = (dg === "columns") !== (S.id === "bottom"); for (let i = 0; i < (alongU ? nu : nv); i++) alongU ? at((i + 0.5) / nu, 0.5) : at(0.5, (i + 0.5) / nv); }
+    else if (dg === "cells" && nu * nv <= MOST_SPOTS) for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) at((i + 0.5) / nu, (j + 0.5) / nv);
+  }
+  return out;
 }
 
 /* ---------- drawing ---------- */
@@ -5135,7 +5203,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings and to other boxes' corners and division points. Drag a round handle to set height; it snaps the same way along its vertical. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -5204,6 +5272,7 @@ const schema = [
     { t: "check", bind: "snap.points", label: "Snap to ray intersections" },
     { t: "check", bind: "snap.lines", label: "Slide along rays when no crossing is near" },
     { t: "check", bind: "snap.corners", label: "Snap to other boxes' corners" },
+    { t: "check", bind: "snap.divisions", label: "Snap to other boxes' divisions and planes" },
     { t: "check", bind: "snap.dots", label: "Mark intersections on the canvas" },
     { t: "btns", items: [["Reset everything", resetAll, "warn"]] }
   ]}
@@ -6215,21 +6284,21 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "top": {
-      const bx = state.boxes[state.sel];
+      const bx = state.boxes[state.sel], held = drag.group ? [state.sel, ...drag.group.map(o => o.i)] : [state.sel];
       if (resizeEvenly(e, bx, w, g, useSnap)) break;
       if (drag.turn) dragTurnedTop(bx, drag.turn, drag.i, w, g);
       else if (keptCentered(bx)) {
         // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
         let S = w;
-        if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
-        else { const r = useSnap ? snapOnVertical(drag.base, w) : null; S = r ? r.pt : w; if (r && !r.free) snapMark = { pt: r.pt, kind: "point" }; }
+        if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g, held); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
+        else { const r = useSnap ? snapOnVertical(drag.base, w, held) : null; S = r ? r.pt : w; if (r && !r.free) snapMark = { pt: r.pt, kind: "point" }; }
         centeredTop(bx, S, g);
       } else if (g.cam) {
         let S = w;
-        if (useSnap) { const sp = snapTopCurvi(drag.base3, w, g); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
+        if (useSnap) { const sp = snapTopCurvi(drag.base3, w, g, held); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
         bx.H = Math.max(1e-3, topFromScreen(drag.base3, S, g));
       } else {
-        const r = useSnap ? snapOnVertical(drag.base, w) : { s: dot(sub(w, drag.base), g.up(drag.base)), free: true };
+        const r = useSnap ? snapOnVertical(drag.base, w, held) : { s: dot(sub(w, drag.base), g.up(drag.base)), free: true };
         if (useSnap && !r.free) snapMark = { pt: r.pt, kind: "point" };
         const h = Math.max(1, r.s);
         if (staysInView(Object.assign({}, bx, { h }), bx, g)) bx.h = h;
