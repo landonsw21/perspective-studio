@@ -393,8 +393,9 @@ function defaultState() {
     linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true, boxOrder: "distance",
     // the vertical guides follow a pattern of line styles, as rays do, counted from the middle one (or the outermost)
     verticals: { show: true, count: 16, spacing: 100, offset: 0, pattern: "A", from: "center", styles: { A: lineStyle("#7d8b96", 0.6, "solid", 0.4), B: lineStyle("#b3bcc3", 0.4, "solid", 0.3) } },
-    // the ground plane: shown as a grid, its squares `size` px wide at the foot of the page; `keep` keeps every object on it
-    ground: { show: false, size: 80, width: 0.6, opacity: 0.45, keep: false },
+    // the ground plane: shown as a grid, its lines `size` px apart at the foot of the page, in `color` (or with `byVP`, each
+    // way in its VP's ray color); `keep` keeps every object on it
+    ground: { show: false, size: 80, color: "#7d8b96", byVP: true, width: 0.6, opacity: 0.45, keep: false },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
@@ -3346,13 +3347,17 @@ function planeHit(cam, S, y) {
   return m3(n, y / n.y);
 }
 // The ground drawn as a grid: lines on it running the two ways the boxes' sides do, so each runs to a VP (in 1-point, to
-// the VP and across the picture), spaced so a square is `size` px wide where the ground meets the foot of the page, and
-// reaching back to where the squares are about 6 px wide. Each way takes the color of the rays of the VP it runs
-// to. Worked out again only when the view, the page or the grid changes.
+// the VP and across the picture), `size` px apart where the ground meets the foot of the page. It goes on to infinity:
+// each line runs from the foot of the view all the way to its VP, and the lines carry on to the horizon, keeping every
+// one while they're at least GROUND_GAP px apart on screen, then every other one, every fourth and so on as they crowd
+// together toward it, so the grid thins out evenly rather than turning into a dark band. Each way is drawn in the grid's
+// color, or its VP's ray color. Worked out again when the view, the page, the grid or the zoom (by half or double) changes.
+const GROUND_GAP = 6;
 let groundCache = null;
 function groundLines(g) {
-  const cam = convCam(g), G = state.ground, V = state.viewport, [A1, A2] = cam.axes;
-  const key = JSON.stringify([state.mode, state.curvi.style4, state.horizon, state.vps.map(v => [v.dist, v.drop]), g.cam ? [state.curvi, state.cone.cv] : 0, G.size, V.x, V.y, V.w, V.h]);
+  const cam = convCam(g), G = state.ground, V = state.viewport, [A1, A2] = cam.axes, vb = visibleBounds(), q = 400 / view.z;
+  const zoomStep = Math.round(Math.log2(view.z) * 2), round = v => Math.round(v / q);
+  const key = JSON.stringify([state.mode, state.curvi.style4, state.horizon, state.vps.map(v => [v.dist, v.drop]), g.cam ? [state.curvi, state.cone.cv] : 0, G.size, V.x, V.y, V.w, V.h, zoomStep, g.cam ? 0 : [vb.x, vb.y, vb.x + vb.w, vb.y + vb.h].map(round)]);
   if (groundCache && groundCache.key === key) return groundCache.out;
   const out = [];
   groundCache = { key, out };
@@ -3365,42 +3370,95 @@ function groundLines(g) {
   if (!p0 || !p1 || !p2) return out;
   const pxPer = Math.max(Math.hypot(p1.x - p0.x, p1.y - p0.y), Math.hypot(p2.x - p0.x, p2.y - p0.y)) / e;
   if (!(pxPer > 0)) return out;
-  // (back to where squares are about 6 px across, past which they'd only make a dark band along the horizon)
-  const sp = Math.max(1, G.size) / pxPer, far0 = l3(O) * Math.max(12, G.size) / 6, cap = g.cam ? 120 : 300;
-  const n = Math.min(cap, Math.ceil(far0 / sp)), far = n * sp, R0 = l3(O);
-  // each way's color: that of the VP its lines run to
-  const colorOf = dir => {
-    for (const vi of fams()) { const r = rayDir(vi, g, cam); if (r && Math.abs(d3(n3(r), dir)) > 0.999) return state.vps[vi].rays.styles.A.color; }
-    return state.horizontals.color;
+  const sp = Math.max(1, G.size) / pxPer, R0 = l3(O), gap = GROUND_GAP / view.z, CAP = 1e6;
+  // the part of the drawing worth drawing in (flat views): what's in view and the page, with room round them
+  const pad = Math.max(V.w, V.h), X0 = Math.min(vb.x, V.x) - pad, Y0 = Math.min(vb.y, V.y) - pad, X1 = Math.max(vb.x + vb.w, V.x + V.w) + pad, Y1 = Math.max(vb.y + vb.h, V.y + V.h) + pad;
+  // a straight run on screen kept to that area, or null (Liang and Barsky's way)
+  const clip = (a, b) => {
+    let t0 = 0, t1 = 1; const dx = b.x - a.x, dy = b.y - a.y;
+    for (const [p, q2] of [[-dx, a.x - X0], [dx, X1 - a.x], [-dy, a.y - Y0], [dy, Y1 - a.y]]) {
+      if (Math.abs(p) < 1e-12) { if (q2 < 0) return null; continue; }
+      const r = q2 / p; if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; } else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    return [P(a.x + dx * t0, a.y + dy * t0), P(a.x + dx * t1, a.y + dy * t1)];
   };
-  for (const [along, across] of [[A1, A2], [A2, A1]]) {
-    const color = colorOf(along), lines = [];
-    for (let i = -n; i <= n; i++) {
+  const distToLine = (p, L) => { const [a, b] = L, dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1; return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / l; };
+  [[A1, A2], [A2, A1]].forEach(([along, across], way) => {
+    const lines = [];
+    // Line i of this way, on screen: through a flat camera, from where it comes nearest you in front to its VP (or, with
+    // none, both ways off the page), kept to the area worth drawing; through a lens, sampled out to all but infinity.
+    // `at` is a spot on it to measure how far it is from the last line kept.
+    const lineAt = i => {
       const base = a3(O, m3(across, i * sp));
       if (cam.depthOf && !g.cam) {
-        // through a flat camera, the part in front of you, straight
-        const at = t => a3(base, m3(along, t)), d0 = cam.depthOf(at(-far)), d1 = cam.depthOf(at(far)), eps = 1e-3 * R0;
-        let t0 = -far, t1 = far;
-        if (d0 < eps && d1 < eps) continue;
-        if (d0 < eps) t0 = -far + (eps - d0) / (d1 - d0) * 2 * far; else if (d1 < eps) t1 = -far + (eps - d0) / (d1 - d0) * 2 * far;
-        const a = cam.proj(at(t0)), b = cam.proj(at(t1));
-        if (a && b && [a.x, a.y, b.x, b.y].every(Number.isFinite)) lines.push([P(a.x, a.y), P(b.x, b.y)]);
-      } else {
-        // through a lens, sampled most finely near you
-        const sm = Math.atan(far / R0), pts = [];
-        for (let k = 0; k <= 64; k++) pts.push(a3(base, m3(along, R0 * Math.tan(-sm + 2 * sm * k / 64))));
-        lines.push(...projPath(cam, pts, false));
+        const kk = cam.depthOf(along), db = cam.depthOf(base), eps = 1e-3 * R0;
+        let a, b;
+        let vp = null;
+        if (Math.abs(kk) < 1e-9) { if (db <= eps) return null; a = cam.proj(a3(base, m3(along, -1e6 * R0))); b = cam.proj(a3(base, m3(along, 1e6 * R0))); }
+        else { const t0 = (eps - db) / kk; a = cam.proj(a3(base, m3(along, t0))); b = cam.proj(m3(along, Math.sign(kk))); vp = b; }
+        if (!a || !b || ![a.x, a.y, b.x, b.y].every(Number.isFinite)) return null;
+        // (`near`: its end nearest you, `vp`: the VP it runs to, if it has one, for trimming it where it crowds the others)
+        const seg = clip(a, b); return seg ? { pls: [seg], seg, near: P(a.x, a.y), vp: vp && P(vp.x, vp.y) } : { pls: [], seg: null };
+      }
+      const pts = [], sm = Math.atan(1e4);
+      for (let k = 0; k <= 72; k++) pts.push(a3(base, m3(along, R0 * Math.tan(-sm + 2 * sm * k / 72))));
+      // (each sample on screen too, to measure lines against each other spot for spot)
+      const samp = pts.map(p => { if (!inFront(cam, p)) return null; const q = cam.proj(p); return q && Number.isFinite(q.x) && Number.isFinite(q.y) ? P(q.x, q.y) : null; });
+      return { pls: projPath(cam, pts, false), samp };
+    };
+    // how far apart two lines are, at their widest across the area drawn (through a lens, spot for spot along them, as far
+    // in or out along each; a seam between can make two spots far apart that aren't, so a jump past a quarter of the view
+    // doesn't count)
+    const apart = (L, K) => {
+      if (L.seg && K.seg) return Math.max(distToLine(L.seg[0], K.seg), distToLine(L.seg[1], K.seg));
+      if (L.samp && K.samp) {
+        const far = 0.25 * Math.max(V.w, V.h); let most = -1;
+        L.samp.forEach((p, k) => { const o = K.samp[k]; if (!p || !o) return; const d = Math.hypot(p.x - o.x, p.y - o.y); if (d < far && d > most) most = d; });
+        return most < 0 ? Infinity : most;
+      }
+      return Infinity;
+    };
+    const first = lineAt(0), kept = first ? [{ i: 0, L: first }] : [];
+    for (const dir of [1, -1]) {
+      // (and never more than so many tries or lines, whatever the view does)
+      let step = 1, last = first, idx = 0, empty = 0, tries = 0, count = 0;
+      while (Math.abs(idx + dir * step) <= CAP && ++tries < 20000 && count < (g.cam ? 600 : 4000)) {
+        const i = idx + dir * step, L = lineAt(i);
+        if (!L || !L.pls.length) { idx = i; if (++empty > 3) { step *= 2; empty = 0; } continue; } // (off the area: on through faster)
+        empty = 0;
+        if (last && apart(L, last) < gap) { step *= 2; if (step > CAP) break; continue; } // (crowding: keep every other one from here)
+        kept.push({ i, L }); last = L; idx = i; count++;
       }
     }
-    out.push({ color, lines });
-  }
+    // Lines that run to a VP crowd together toward it, so each stops short of it where it comes nearer than GROUND_GAP to
+    // the lines either side of it in its own rank: line i, a multiple of 2^l but not of 2^(l+1), against lines i ± 2^l,
+    // which are of a coarser rank and run on further. So the lines every other, every fourth, every eighth... one carry on
+    // ever nearer the VP, and the grid stays as open toward the horizon as anywhere. (Line 0 runs all the way.)
+    const angle = L => Math.atan2(L.near.y - L.vp.y, L.near.x - L.vp.x), cache = new Map(kept.map(k => [k.i, k.L]));
+    const lineNo = i => { if (!cache.has(i)) cache.set(i, lineAt(i)); return cache.get(i); };
+    for (const { i, L } of kept) {
+      if (!L.vp || i === 0) { lines.push(...L.pls); continue; }
+      let r = 1, m = Math.abs(i); while (m % 2 === 0) { m /= 2; r *= 2; }
+      const th = angle(L); let least = Math.PI;
+      for (const j of [i - r, i + r]) { const K = lineNo(j); if (K && K.vp) { let d = Math.abs(angle(K) - th); if (d > Math.PI) d = 2 * Math.PI - d; least = Math.min(least, d); } }
+      const reach = gap / Math.max(1e-9, Math.sin(Math.min(least, Math.PI / 2))), u = sub(L.near, L.vp), lu = len(u);
+      if (!(lu > reach)) continue;
+      const seg = clip(L.near, add(L.vp, mul(u, reach / lu))); if (seg) lines.push(seg);
+    }
+    out.push({ way, along, lines });
+  });
   return out;
 }
 function drawGround(c, k, g) {
   const G = state.ground; if (!G.show || g.iso) return;
+  const cam = convCam(g), colorOf = dir => {
+    if (!G.byVP) return G.color;
+    for (const vi of fams()) { const r = rayDir(vi, g, cam); if (r && Math.abs(d3(n3(r), dir)) > 0.999) return state.vps[vi].rays.styles.A.color; }
+    return G.color;
+  };
   c.save(); c.lineJoin = "round"; c.lineCap = "butt"; c.setLineDash([]); c.globalAlpha = G.opacity; c.lineWidth = Math.max(G.width, 0.5 / k);
-  for (const { color, lines } of groundLines(g)) {
-    c.strokeStyle = color; c.beginPath();
+  for (const { along, lines } of groundLines(g)) {
+    c.strokeStyle = colorOf(along); c.beginPath();
     for (const pl of lines) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
     c.stroke();
   }
@@ -4161,6 +4219,7 @@ function setP(path, val) {
     if (bx) { bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1)); Object.keys(bx.own).forEach(id => { if (id[0] === path.slice(-1)) delete bx.own[id]; }); }
     touch(); return;
   }
+  if (path === "ground.color") { rawSet(parts, val); state.ground.byVP = false; touch(); return; } // (a color chosen is the one it's drawn in)
   if (path === "ground.keep") {
     // turning it on sets every object down onto the ground
     if (val) { setObjectsDown(); return; }
@@ -4388,10 +4447,12 @@ const schema = [
   ]},
   { id: "ground", title: "Ground plane", when: () => !isIso(), rows: [
     { t: "check", bind: "ground.show", label: "Show the ground plane" },
-    { t: "range", bind: "ground.size", label: "Square size, px at the foot of the page", min: 10, max: 300, step: 1, lo: 2, hi: 5000, when: () => state.ground.show },
+    { t: "range", bind: "ground.size", label: "Spacing, px at the foot of the page", min: 10, max: 300, step: 1, lo: 2, hi: 5000, when: () => state.ground.show },
+    { t: "color", bind: "ground.color", label: "Color", when: () => state.ground.show },
+    { t: "check", bind: "ground.byVP", label: "Color each way as its VP's rays", when: () => state.ground.show },
     { t: "range", bind: "ground.width", label: "Line weight", min: 0.25, max: 4, step: 0.05, lo: 0.05, hi: 100, when: () => state.ground.show },
     { t: "range", bind: "ground.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => state.ground.show },
-    { t: "note", html: "The ground is the level surface one eye height below the eye: the floor everything stands on. It's drawn as a grid whose lines run along it to the vanishing points (in 1-point, to the VP and across the picture), each way in the color of its VP's rays, with squares as wide as Square size where it meets the foot of the page, shrinking toward the horizon. It's in the export with the rays." },
+    { t: "note", html: "The ground is the level surface one eye height below the eye: the floor everything stands on. It's drawn as a grid whose lines run along it to the vanishing points (in 1-point, to the VP and across the picture), Spacing apart where it meets the foot of the page, and on to infinity: each line runs all the way to its VP, and the lines carry on up to the horizon, thinning to every other one, every fourth and so on as they crowd together toward it. It's drawn in its own Color, weight and opacity, or with Color each way as its VP's rays, each way in its VP's ray color (choosing a color turns that off). It's in the export with the rays." },
     { t: "btns", items: [["Set objects down", setObjectsDown, "solid"]] },
     { t: "check", bind: "ground.keep", label: "Keep objects on the ground" },
     { t: "note", html: "A drawing doesn't say how far off a box is, so any box whose lowest point is below eye level can be standing on the ground: it's read at the distance that puts it there. One at or above eye level is floating. Set objects down drops each floating one straight down onto the ground, directly below where it was, keeping its size, its way round and how far off it is: it comes down just far enough for its lowest point (a turned box's lowest corner, or a shape's or model's own lowest point) to touch the ground, just below the horizon; and keeps every object on the ground from then on. Dragged, an object slides along the ground, keeping its size: down the page it comes nearer and grows, up toward the horizon it goes further off and shrinks, and its corner snaps to ray crossings on its own level. Copies pasted or added land on the ground, and none stands on another. Untick Keep objects on the ground to drag them freely again." },
