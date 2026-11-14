@@ -3830,7 +3830,7 @@ function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captur
 function addCopy(c, g, moved = false) {
   if (!moved || rayBox()) c.rayFit = false; // the rays stay with the original
   captureFit(c, g);
-  if (!moved) c.name = "Box " + (state.boxes.length + 1);
+  if (!moved) c.name = (c.name.replace(/\s*\d+$/, "") || "Box") + " " + (state.boxes.length + 1); // (a copy keeps what it's called, Cone or a model's name, with a number of its own)
   state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
 }
 // The copy goes right beside the original
@@ -3843,14 +3843,15 @@ function dupBox() {
 // Pasted into a different view (another perspective, a moved horizon or VP, a changed lens), it's rebuilt at the
 // same place and size on screen with the same proportions, as switching perspective rebuilds a box. A paste goes
 // under the pointer, by its middle, keeping its depth as dragging it there would. With the pointer where it was
-// at the copy or the last paste, or off the drawing, it goes beside the last box pasted (or the one copied).
+// at the copy or the last paste, or off the drawing, it's pasted in place: exactly where the box copied is (or the last
+// one pasted), over it.
 // The first paste after a cut moves the box rather than copying it: it goes back where it was, or under the pointer.
 let clip = null;
 const viewKey = () => JSON.stringify([state.mode, state.horizon.x, state.horizon.y, state.horizon.tilt, state.vps.map(v => [v.dist, v.drop]), state.cone.cv, state.drawingScale, state.curvi]);
 function copyBox(cut) {
   const bx = state.boxes[state.sel]; if (!bx) return;
   const g = geo();
-  clip = { last: clone(bx), plan: boxPlans(g)[state.sel], key: viewKey(), at: lastPos, cut, side: 1 };
+  clip = { last: clone(bx), plan: boxPlans(g)[state.sel], key: viewKey(), at: lastPos, cut };
   if (cut) delBox();
   toast(`${cut ? "Cut" : "Copied"} ${bx.name}`);
 }
@@ -3863,9 +3864,10 @@ function pasteBox() {
     fitBox(c, p.dims, p.c, p.s, g, p.place);
     if (keptCentered(c)) centerOnHorizon(c, g);
   }
-  if (lastPos && !(clip.at && len(sub(lastPos, clip.at)) < 4)) { const got = moveCopy(c, toW(lastPos), g); if (got) c = got.nb; }
-  else if (!clip.cut) { const b = besideOf(c, g, clip.side); if (b) { c = b.nb; clip.side = b.side; } }
+  const moved = lastPos && !(clip.at && len(sub(lastPos, clip.at)) < 4);
+  if (moved) { const got = moveCopy(c, toW(lastPos), g); if (got) c = got.nb; }
   addCopy(c, g, clip.cut);
+  if (!moved && !clip.cut) toast(`Pasted ${c.name} in place, over the box copied: drag it away, or move the pointer before pasting to paste it there`);
   Object.assign(clip, { last: clone(c), plan: boxPlans(g)[state.sel], key: viewKey(), at: lastPos, cut: false });
 }
 // Stacks the boxes as given, front first, and makes that the custom order: the list of boxes itself, back box first
@@ -4259,7 +4261,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or beside the box if the pointer hasn't moved.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
