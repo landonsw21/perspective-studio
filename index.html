@@ -3301,8 +3301,8 @@ function modelNote() {
 // a drawing only fixes each box's direction from the eye, not how far off it is (see boxSolids), so each is read at the
 // distance that puts its lowest point on the ground: any box with its lowest point below eye level is standing on it,
 // wherever it's drawn. One wholly at or above eye level can't be, at any distance: it's floating, and Set objects down
-// drops it straight down onto the ground (from as high above the eye as its lowest point is, so it lands as far below,
-// mirrored across the horizon), keeping its size, its way round and how far off it is.
+// drops it straight down, keeping its size, its way round and how far off it is, just far enough to be on the ground: its
+// lowest point comes to rest just below eye level, so it lands directly below where it was, as big as it was.
 // A box's lowest point in its own frame (box3's, at its own scale): its lowest corner, or for one holding a model or
 // shape, the model's own lowest point, with the size of the box to measure "near eye level" by
 function lowestOf(bx, g) {
@@ -3320,11 +3320,13 @@ function lowestOf(bx, g) {
 }
 const floating = (bx, g) => { const { low, size } = lowestOf(bx, g); return low > -1e-3 * size; };
 // Box bx dropped onto the ground if it's floating, as a new box, or null if it's on the ground already or the view can't
-// show it there
+// show it there. It comes down until its lowest point is a twentieth of its height below eye level, or a little further
+// if the view needs its base clear of the horizon.
 function dropBox(bx, g) {
   const { low, size } = lowestOf(bx, g); if (low <= -1e-3 * size) return null;
-  const fall = low > 1e-3 * size ? 2 * low : low + size, { B, H } = box3(bx, g);
-  return boxFrom3(bx, B.map(p => a3(p, V3(0, -fall, 0))), H, g);
+  const { B, H } = box3(bx, g), tall = Math.abs(turnFrame(bx, g).H) || size;
+  for (let gap = 0.05 * tall, i = 0; i < 10; i++, gap *= 2) { const nb = boxFrom3(bx, B.map(p => a3(p, V3(0, -(low + gap), 0))), H, g); if (nb) return nb; }
+  return null;
 }
 function setObjectsDown() {
   const g = geo(); let dropped = 0, stuck = 0;
@@ -4392,7 +4394,7 @@ const schema = [
     { t: "note", html: "The ground is the level surface one eye height below the eye: the floor everything stands on. It's drawn as a grid whose lines run along it to the vanishing points (in 1-point, to the VP and across the picture), each way in the color of its VP's rays, with squares as wide as Square size where it meets the foot of the page, shrinking toward the horizon. It's in the export with the rays." },
     { t: "btns", items: [["Set objects down", setObjectsDown, "solid"]] },
     { t: "check", bind: "ground.keep", label: "Keep objects on the ground" },
-    { t: "note", html: "A drawing doesn't say how far off a box is, so any box whose lowest point is below eye level can be standing on the ground: it's read at the distance that puts it there. One at or above eye level is floating. Set objects down drops each floating one straight down onto the ground, keeping its size, its way round and how far off it is, with its lowest point (a turned box's lowest corner, or a shape's or model's own lowest point) touching the ground; and keeps every object on the ground from then on. Dragged, an object slides along the ground, keeping its size: down the page it comes nearer and grows, up toward the horizon it goes further off and shrinks, and its corner snaps to ray crossings on its own level. Copies pasted or added land on the ground, and none stands on another. Untick Keep objects on the ground to drag them freely again." },
+    { t: "note", html: "A drawing doesn't say how far off a box is, so any box whose lowest point is below eye level can be standing on the ground: it's read at the distance that puts it there. One at or above eye level is floating. Set objects down drops each floating one straight down onto the ground, directly below where it was, keeping its size, its way round and how far off it is: it comes down just far enough for its lowest point (a turned box's lowest corner, or a shape's or model's own lowest point) to touch the ground, just below the horizon; and keeps every object on the ground from then on. Dragged, an object slides along the ground, keeping its size: down the page it comes nearer and grows, up toward the horizon it goes further off and shrinks, and its corner snaps to ray crossings on its own level. Copies pasted or added land on the ground, and none stands on another. Untick Keep objects on the ground to drag them freely again." },
   ]},
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
