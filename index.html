@@ -1537,6 +1537,24 @@ function aimedRot(cam, M, k, d) {
   return mulM([0, 1, 2].map(i => [0, 1, 2].map(j => (i === j ? 1 : 0) + K[i][j] + K2[i][j] / (1 + c))), M);
 }
 // A turn by angle a around axis k (0 X, 1 Y, 2 Z), carrying the next axis toward the one after it
+// The turn of a box dragged round its circle R by `a` (radians, from where the drag began), with Shift held: the one
+// nearest it that brings the box's angle around that axis, from its default (square to the page, as its slider and the
+// angle shown while dragging measure it), to a multiple of 45°. The box still turns about the circle's own axis. For a box
+// turned about one axis that's simply every 45°; turned about several, the angle that axis's slider shows still lands on
+// one. (If none can be found nearby, that angle is set to it as the slider would.)
+function snapTurn(R, a, near) {
+  const key = AXIS_KEYS[R.k], turn = x => rotAngles(mulM(R.F.M, axisTurn(R.k, x)), near), off = (r, want) => ((r[key] - want + 540) % 360) - 180;
+  const want = Math.round(turn(a)[key] / 45) * 45;
+  let x = a, r = turn(x);
+  for (let i = 0; i < 12 && Math.abs(off(r, want)) > 0.005; i++) {
+    const h = 1e-3, slope = (off(turn(x + h), want) - off(r, want)) / h; // (degrees of that angle per radian of turn)
+    if (!(Math.abs(slope) > 1e-6)) break;
+    x -= Math.max(-1, Math.min(1, off(r, want) / slope)); r = turn(x);
+  }
+  if (Math.abs(off(r, want)) > 0.05) r = Object.assign({}, turn(a), { [key]: want });
+  r[key] = wrapAngle(((want % 360) + 360) % 360); // (exactly on it, 0 rather than 360)
+  return r;
+}
 function axisTurn(k, a) {
   const c = Math.cos(a), s = Math.sin(a), i = (k + 1) % 3, j = (k + 2) % 3, M = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   M[i][i] = c; M[i][j] = -s; M[j][i] = s; M[j][j] = c;
@@ -2334,7 +2352,8 @@ function frame() {
   // (over a model, its surface under the pointer is what a click picks, so that is tinted, and the box's face only says
   // which circle shows)
   if (hl && hl.surf) markSurface(hb2, g, hl.surf, "tint", accent); else if (gs) drawFaceGhost(gs, hk ? AXIS_COLORS[hk.k] : accent, hk ? AXIS_COLORS[hk.k] : accent, 0.25);
-  if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, hover && hover.type === "ring" && hover.ghost); // (a face on the same axis has the same circle)
+  const onCircle = hover && (hover.type === "ring" ? hover : hover.ring);
+  if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, !!onCircle && !!onCircle.ghost); // (a face on the same axis has the same circle)
   if (solid) drawRing(solid, paper);
   // selected box handles
   if (bx) {
@@ -2371,7 +2390,8 @@ function drawRing(R, panel, ghosted = false, over = false) {
   const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.c; // (its axis, through its middle)
   ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
   if (ghosted) ctx.globalAlpha = over ? 0.75 : 0.4; // (`over`: a ghosted circle under the pointer, ready to grab)
-  ctx.lineWidth = live || over || (!ghosted && hover && hover.type === "ring" && !hover.ghost) ? 3.5 : 2.25;
+  const on = hover && (hover.type === "ring" ? hover : hover.ring);
+  ctx.lineWidth = live || over || (!ghosted && on && !on.ghost) ? 3.5 : 2.25;
   ctx.beginPath(); ringPaths(R).forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); })); ctx.stroke();
   ctx.fillStyle = color;
   for (const { p, u } of ringArrows(R)) {
@@ -4268,7 +4288,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "check", bind: "boxes.$b.showRays", label: () => (isIso() ? "Show rays from its front faces" : "Show rays from its front faces to them"), when: () => hasBox() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Hover over a face or plane of any box to highlight it and ghost its rotation circle on it, square to the axis through it: red for X, green for Y, blue for Z (on the selected box, hidden faces too). Hold Alt (⌥) for the face behind it. The circle sits inside the face, so move onto it and drag it to turn the box around that axis. Click the face and the circle turns solid, as the face's pop-up opens: drag the circle, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Hover over a face or plane of any box to highlight it and ghost its rotation circle on it, square to the axis through it: red for X, green for Y, blue for Z (on the selected box, hidden faces too). Hold Alt (⌥) for the face behind it. The circle sits inside the face, so move onto it and drag it to turn the box around that axis. Hold Shift while dragging and it snaps the box's angle around that axis, from its default (square to the page, the angle shown beside the pointer and on the axis's slider), to every 45°. A click on the circle, not a drag, does what clicking the face does (with Shift, hides it), and the face's pop-up has that axis's angle to type. Click the face and the circle turns solid, as the pop-up opens. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -5028,6 +5048,9 @@ const spos = e => { const r = canvas.getBoundingClientRect(); return P(e.clientX
 // or while faces are picked to edit, one to add to them or drop ("pick").
 function hitTest(s, reach = "") {
   const g = geo(), w = toW(s);
+  // (a circle under the pointer goes with the face found there, as `ring`, rather than in place of it, since circles sit
+  // inside their faces: a drag on it turns the box (in 45° steps with Shift), and a click does what clicking the face does)
+  let shiftRing = null;
   const bx = state.boxes[state.sel];
   const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * VP_MARKER + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
   if (bx) {
@@ -5035,11 +5058,11 @@ function hitTest(s, reach = "") {
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
     const rf = ringFace();
-    if (rf && onRing(ringOf(bx, rf, g), s)) return { type: "ring", bi: state.sel, face: rf };
+    if (rf && onRing(ringOf(bx, rf, g), s)) shiftRing = { type: "ring", bi: state.sel, face: rf };
   }
   // the circle the face under the pointer showed, ghosted, which the pointer has gone on to (on any box)
   const lr = latchRing();
-  if (lr && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) return { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
+  if (!shiftRing && lr && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) shiftRing = { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
   if (bx) { const own = vpOf(state.sel); if (own) return own; } // (its own before the page's, which move far more)
   if (!state.lockFrame) {
     // (where a VP sits on the diamond, as 1-point's and the panorama's do to begin with, Alt reaches the diamond under it)
@@ -5066,7 +5089,8 @@ function hitTest(s, reach = "") {
     // A box holding a model: the model's own surface under the pointer is what a click picks (`surf`; with Alt, the one
     // behind it), and the box's face found below only says which rotation circle shows. With ⌘, its hidden ones come back.
     const model = modelOf(b) ? modelHit(b, g, G, w, reach === "restore") : [];
-    if (reach === "restore" && model.length) return { type: "hidden", bi, face: model[0] };
+    const withRing = h => (shiftRing ? Object.assign(h, { ring: shiftRing }) : h);
+    if (reach === "restore" && model.length) return withRing({ type: "hidden", bi, face: model[0] });
     const surf = model.length ? model[reach === "behind" ? model.length - 1 : 0] : undefined;
     // (with the box around a model not shown, only the model itself is there to take hold of: the empty space round it,
     // inside its box, is empty)
@@ -5075,17 +5099,18 @@ function hitTest(s, reach = "") {
       // hidden faces come back furthest back first, even where faces you can see are in the way; a hidden plane comes
       // back from where nothing in front of it shows
       const hid = [...at].reverse().find(f => !shown(f) && (planeAxis(f.id) < 0 || at.slice(0, at.indexOf(f)).every(o => !shown(o))));
-      if (hid) return { type: "hidden", bi, face: hid.id };
+      if (hid) return withRing({ type: "hidden", bi, face: hid.id });
     }
     if (!reach || reach === "behind") {
       // the nearest face or plane you can see (over empty space on the selected box, the nearest hidden face), or with
       // Alt the one behind it
       if (seen < 0 && bi !== state.sel && !surf) continue;
       const near = Math.max(0, seen);
-      return { type: "body", bi, face: at[reach && !surf ? Math.min(near + 1, at.length - 1) : near].id, surf };
+      return withRing({ type: "body", bi, face: at[reach && !surf ? Math.min(near + 1, at.length - 1) : near].id, surf });
     }
-    if (seen >= 0 || surf) return { type: reach === "hide" ? (ui.faces.length ? "pick" : "hide") : "body", bi, face: at[Math.max(0, seen)].id, surf };
+    if (seen >= 0 || surf) return withRing({ type: reach === "hide" ? (ui.faces.length ? "pick" : "hide") : "body", bi, face: at[Math.max(0, seen)].id, surf });
   }
+  if (shiftRing) return shiftRing;
   if (V.show) {
     const a = toS(P(V.x, V.y)), b = toS(P(V.x + V.w, V.y + V.h));
     const corners = [a, P(b.x, a.y), b, P(a.x, b.y)];
@@ -5108,7 +5133,7 @@ const HINTS = {
   vresize: "Drag to resize the export area",
   vmove: "Drag the edge to move the export area",
   vscale: "Drag in toward the middle of the export area to shrink the whole drawing, or out to enlarge it",
-  ring: "Drag around the circle to rotate the box · click it to type the angle",
+  ring: "Drag around the circle to rotate the box · hold Shift to snap to every 45° · click it to type the angle",
   boxvp: "Drag to turn the box, its edges following this point · it catches on the horizon, hold Alt to stop that",
   body: "Drag to move the box · Shift-click a face to hide it · hold ⌘ (Ctrl) over a hidden one to bring it back",
   hidden: "⌘-click (Ctrl-click) to bring this face back",
@@ -5126,16 +5151,23 @@ const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) 
 let latch = null;
 function keepLatch(h) {
   if (h.type === "ring") return;
-  latch = h.type === "body" && h.face ? { bi: h.bi, face: h.face, surf: h.surf } : null;
+  // (on a circle that's another face's, behind this one, that face's circle stays)
+  if (h.ring && h.ring.ghost && h.ring.face !== h.face) return;
+  latch = (h.type === "body" || h.type === "hide" || h.type === "pick") && h.face ? { bi: h.bi, face: h.face, surf: h.surf } : null;
 }
 function showHover(h) {
-  const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost, x.surf].join(), was = latch && [latch.bi, latch.face, latch.surf].join();
+  const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost, x.surf, x.ring && x.ring.face].join(), was = latch && [latch.bi, latch.face, latch.surf].join();
   keepLatch(h);
   if (key(h) !== key(hover) || (latch && [latch.bi, latch.face, latch.surf].join()) !== was) { hover = h; redraw(); }
   const vd = h.type === "vp" ? VP_DRAGS[h.mk.drag] : null;
   canvas.style.cursor = vd ? vd[1] : CURSORS[h.type] || "default";
   const what = h.surf || (h.face && isModelSurface(h.face)) ? "surface" : h.face && planeAxis(h.face) >= 0 ? "plane" : "face"; // (a plane, or a model's surface, is picked and hidden as a face is)
   const body = () => `Click to edit this ${what} · drag to move the box · Shift-click ${ui.faces.length ? "to edit it too" : "to hide it"}`;
+  if (h.ring) {
+    canvas.style.cursor = "grab";
+    const click = h.type === "pick" ? `Shift-click to edit this ${what} too` : h.type === "hide" ? `Shift-click to hide this ${what}` : h.type === "hidden" ? `⌘-click to bring this ${what} back` : `Click to edit this ${what}`;
+    document.getElementById("stHint").textContent = `Drag the circle to turn the box · hold Shift for 45° steps · ${click}`; return;
+  }
   document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) { lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } };
@@ -5173,7 +5205,10 @@ canvas.addEventListener("pointerdown", e => {
     drag = null; snapMark = null; return;
   }
   if (pointers.size > 2) return;
-  const hit = hitTest(s, faceReach(e)), w = toW(s), g = geo();
+  let hit = hitTest(s, faceReach(e)); const w = toW(s), g = geo();
+  // Pressed on a circle: a drag turns the box (in 45° steps with Shift), and a click (no drag) does what clicking the face
+  // under it would
+  if (hit.ring) { const alt = hit; hit = Object.assign({}, alt.ring, { alt, before: { sel: state.sel, ring: ui.ring } }); }
   if (hit.type === "pick") {
     // with faces picked to edit, Shift-click adds one (on any box) or drops it
     togglePick(hit.bi, hit.surf || hit.face); showHover(hitTest(s, faceReach(e))); return;
@@ -5271,7 +5306,7 @@ canvas.addEventListener("pointermove", e => {
     case "ring": {
       const bx = state.boxes[state.sel], R = drag.ring, t = ringTheta(R, w, drag.theta, Math.PI / 3);
       drag.total += t - drag.theta; drag.theta = t; drag.at = s;
-      const rot = rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)), bx.rot);
+      const rot = e.shiftKey ? snapTurn(R, drag.total, bx.rot) : rotAngles(mulM(R.F.M, axisTurn(R.k, drag.total)), bx.rot);
       if (turnFits(bx, g, rot)) bx.rot = rot; else toast("The view can't show this box at that angle");
       break;
     }
@@ -5381,7 +5416,16 @@ function endPointer(e) {
   if (pointers.size < 2) pinch = null;
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
-  if (drag.type === "ring" && !drag.moved) ringClick = drag.s0;
+  if (drag.type === "ring" && !drag.moved) {
+    if (drag.alt) {
+      // (a click on a circle, with no drag: what clicking the face under it does, with Shift or ⌘ as held)
+      state.sel = drag.before.sel; ui.ring = drag.before.ring;
+      const a = drag.alt, id = a.surf || a.face;
+      if (a.type === "pick") togglePick(a.bi, id);
+      else if (a.type === "hide" || a.type === "hidden") { setSurfaceShown(state.boxes[a.bi], id, a.type === "hidden"); state.sel = a.bi; }
+      else { state.sel = a.bi; ui.ring = state.rotateFaces ? { bi: a.bi, face: a.face } : null; openFaces([{ bi: a.bi, id }], drag.s0); }
+    } else ringClick = drag.s0;
+  }
   // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
   // solid; a click anywhere else puts them away
   if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) {
