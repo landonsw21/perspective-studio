@@ -2188,11 +2188,11 @@ function drawOrder(g) {
   }
   return order;
 }
-function drawBox(c, bx, g, k, skip = null) {
+function drawBox(c, bx, g, k, skip = null, bare = false) {
   const G = boxGeo(bx, g), holds = !!modelOf(bx);
   // (a box holding a model draws it inside, after its back faces and before its front ones; with the box around it turned
-  // off, just the model)
-  if (holds && bx.model.frame === false) { drawModel(c, bx, g, k, G, skip); return; }
+  // off, or `bare`, as in an export, just the model: the box only says where it sits)
+  if (holds && (bare || bx.model.frame === false)) { drawModel(c, bx, g, k, G, skip); return; }
   const PL = boxPlanes(bx, g, G), own = bx.own || {};
   const near = bx.div && (bx.div.on || Object.values(own).some(o => o.div)) ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
@@ -2333,7 +2333,7 @@ function drawScene(c, k, b, inc) {
     }
   }
   c.restore();
-  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k, inc.hide && inc.hide.bi === i ? inc.hide.surf || inc.hide.face : null));
+  if (inc.boxes) drawOrder(g).forEach(i => drawBox(c, state.boxes[i], g, k, inc.hide && inc.hide.bi === i ? inc.hide.surf || inc.hide.face : null, !!inc.bare));
   if (inc.vps) drawVPs(c, k, g);
 }
 
@@ -4697,7 +4697,7 @@ const schema = [
     { t: "range", bind: "boxes.$b.model.crease", label: "Crease angle, °", min: 1, max: 90, step: 1, lo: 1, hi: 180, when: () => modelHere() && state.boxes[state.sel].model.lines === "outline" },
     { t: "color", bind: "boxes.$b.model.stroke", label: "Line color", when: () => modelHere() && state.boxes[state.sel].model.lines !== "none" },
     { t: "range", bind: "boxes.$b.model.width", label: "Line weight", min: 0.25, max: 4, step: 0.05, lo: 0.05, hi: 50, when: () => modelHere() && state.boxes[state.sel].model.lines !== "none" },
-    { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it", when: modelHere },
+    { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
     { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
@@ -5203,7 +5203,8 @@ document.getElementById("modal").addEventListener("click", e => { if (e.target.i
 // The drawing inside the export area, with the parts ticked under Export area, at scale k
 function drawExport(c, k) {
   const V = state.viewport, E = state.export;
-  drawScene(c, k, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false });
+  // (shapes and models go out without the boxes they sit in)
+  drawScene(c, k, { x: V.x, y: V.y, w: V.w, h: V.h }, { rays: E.rays, verticals: E.verticals, horizon: E.horizon, vps: E.vps, boxes: E.boxes, cone: E.cone, dots: false, clipToView: false, bare: true });
 }
 // The export area as pixels, at its resolution (kept to 64 megapixels), on white or see-through
 // How much an exported PNG or JPG enlarges the drawing's pixels: the Resolution multiple, or in inches and millimeters
