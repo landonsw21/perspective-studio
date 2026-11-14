@@ -2350,24 +2350,24 @@ function frame() {
   // The face under the pointer, highlighted in the color of its axis (in the accent color without circles), with its circle
   // ghosted on it (see keepLatch); the solid circle of the face last clicked on the selected box. Over a circle, the face it
   // belongs to stays highlighted.
-  const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost = lt && state.rotateFaces && ringOf(lb, lt.face, g);
+  const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost0 = lt && state.rotateFaces && ringOf(lb, lt.face, g), ghost = ghost0 && !seenFromAfar(lb, g) ? ghost0 : null;
   const over = !drag && hover && hover.type === "body" && hover.face && state.boxes[hover.bi] ? hover : null, hl = pf ? null : over || lt, hb2 = hl && state.boxes[hl.bi];
-  const hk = hl && state.rotateFaces && (hl === lt ? ghost : ringOf(hb2, hl.face, g));
-  const rf = bx && ringFace(), solid = rf && ringOf(bx, rf, g), gs = hl && surfaceGeo(hb2, g, hl.face);
+  const hk = hl && state.rotateFaces && (hl === lt ? ghost0 : ringOf(hb2, hl.face, g));
+  const rf = bx && ringFace(), solid = rf && !seenFromAfar(bx, g) && ringOf(bx, rf, g), gs = hl && surfaceGeo(hb2, g, hl.face);
   // (over a model, its surface under the pointer is what a click picks, so that is tinted, and the box's face only says
   // which circle shows)
   if (hl && hl.surf) markSurface(hb2, g, hl.surf, "tint", accent); else if (gs) drawFaceGhost(gs, hk ? AXIS_COLORS[hk.k] : accent, hk ? AXIS_COLORS[hk.k] : accent, 0.25);
   const onCircle = hover && (hover.type === "ring" ? hover : hover.ring);
   if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, !!onCircle && !!onCircle.ghost); // (a face on the same axis has the same circle)
   if (solid) drawRing(solid, paper);
-  // selected box handles
+  // selected box handles (none on one seen from afar, which is just moved: its dashed uprights still show it's selected)
   if (bx) {
-    const G = boxGeo(bx, g);
+    const G = boxGeo(bx, g), far = seenFromAfar(bx, g);
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); G.verts.forEach(paths => paths.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }))); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
-    G.B.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? accent : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
-    G.T.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? accent : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+    if (!far) G.B.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? accent : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
+    if (!far) G.T.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? accent : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
   }
   if (snapMark) {
     const s = toS(snapMark.pt); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([]);
@@ -5250,7 +5250,8 @@ function hitTest(s, reach = "") {
   let shiftRing = null;
   const bx = state.boxes[state.sel];
   const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * VP_MARKER + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
-  if (bx) {
+  // (an object seen from afar, small on screen, has no handles or circles to catch the pointer: pressed anywhere, it moves)
+  if (bx && !seenFromAfar(bx, g)) {
     const G = boxGeo(bx, g);
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
@@ -5259,7 +5260,7 @@ function hitTest(s, reach = "") {
   }
   // the circle the face under the pointer showed, ghosted, which the pointer has gone on to (on any box)
   const lr = latchRing();
-  if (!shiftRing && lr && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) shiftRing = { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
+  if (!shiftRing && lr && !seenFromAfar(state.boxes[lr.bi], g) && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) shiftRing = { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
   if (bx) { const own = vpOf(state.sel); if (own) return own; } // (its own before the page's, which move far more)
   if (!state.lockFrame) {
     // (where a VP sits on the diamond, as 1-point's and the panorama's do to begin with, Alt reaches the diamond under it)
@@ -5320,6 +5321,10 @@ function hitTest(s, reach = "") {
   return { type: "pan" };
 }
 const onRing = (R, s) => ringPaths(R).some(pl => pl.some((p, i) => i && segDist(s, toS(pl[i - 1]), toS(p)) < 7));
+// An object seen from afar: its outline less than FAR_PX across on screen, where its corner handles and rotation circle would
+// cover most of it. It shows none, and pressed anywhere it moves; zoomed in or brought nearer, they come back.
+const FAR_PX = 72;
+function seenFromAfar(bx, g) { const G = boxGeo(bx, g), pts = [...G.B, ...G.T], xs = pts.map(p => p.x), ys = pts.map(p => p.y); return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * view.z < FAR_PX; }
 const HINTS = {
   pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
   top: "Drag to set the box height · snaps where rays cross this edge",
