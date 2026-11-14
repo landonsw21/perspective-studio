@@ -1689,6 +1689,38 @@ function ringOf(bx, face, g) {
 }
 // (a spot behind you through a flat camera has nowhere to go on screen)
 const inFront = (cam, p) => !cam.depthOf || cam.depthOf(p) > 0.02 * l3(p);
+// The gumball a face's circle comes with, as Rhino's: an arrow out of the middle of the face along the axis through it,
+// to move the box that way, and a square on the arrow's shaft, to stretch the box that way (see gumDrag). In 3D, with its
+// circle R: the middle of the face (`base`), the way out of the box (`out`, a unit length), the square's spot (`sq3`) and
+// the arrow's tip (`tip3`), and on the page those, and where the shaft starts to catch the pointer (`from`, outside the
+// part of it over the face's middle, which is left to the face and its circle). The arrow is as long as the circle is
+// wide, give or take what keeps it between about 56 and 150 px. Faces only: a plane has none.
+const FACE_OUT = { s30: -1, s12: 1, s01: -1, s23: 1, bottom: -1, top: 1 };
+function gumballOf(bx, face, g, R = ringOf(bx, face, g)) {
+  const side = FACE_OUT[face]; if (!side) return null;
+  const F = R.F, k = R.k, ext = [F.a, F.c, F.H][k], out = m3(n3(F.ax[k]), side * (Math.sign(ext) || 1)), cam = F.cam;
+  const on = p => { if (!inFront(cam, p)) return null; const q = cam.proj(p); return q && Number.isFinite(q.x) && Number.isFinite(q.y) ? P(q.x, q.y) : null; };
+  const base = R.c, b = on(base); if (!b || !(R.r > 0)) return null;
+  let L = 1.4 * R.r; const t1 = on(a3(base, m3(out, L)));
+  if (t1) { const px = len(sub(t1, b)) * view.z; if (px > 1e-6) L *= Math.min(6, Math.min(150, Math.max(56, px)) / px); }
+  const sq3 = a3(base, m3(out, 0.6 * L)), tip3 = a3(base, m3(out, L)), sq = on(sq3), tip = on(tip3), from = on(a3(base, m3(out, 0.3 * L)));
+  return sq && tip && from ? { F, k, face, out, base, sq3, tip3, b, sq, tip, from, L } : null;
+}
+// The part of gumball Gb under screen point s, if any: its square ("gscale") or its arrow ("gmove")
+function gumPart(Gb, s) {
+  const sq = toS(Gb.sq), tip = toS(Gb.tip), from = toS(Gb.from);
+  if (Math.abs(s.x - sq.x) < 8 && Math.abs(s.y - sq.y) < 8) return "gscale";
+  return len(sub(s, tip)) < 11 || segDist(s, from, tip) < 5 ? "gmove" : null;
+}
+// The step along line P0 + t·A (in the view's 3D) whose point is nearest the line of sight through screen point S, or
+// null where that's behind you or the line runs straight along the line of sight
+function lineParam(cam, P0, A, S) {
+  const r = cam.unproj(cam.wrapS ? cam.wrapS(S) : S); if (!r) return null;
+  const a = d3(A, A), b = d3(A, r), c = d3(r, r), d = d3(A, P0), e = d3(r, P0), den = a * c - b * b;
+  if (!(den > 1e-12 * a * c)) return null;
+  const t = (b * e - c * d) / den;
+  return (e + t * b) / c > 0 ? t : null;
+}
 function ringPaths(R) {
   const cam = R.F.cam, pts = []; for (let i = 0; i <= 144; i++) pts.push(R.at(i / 144 * 2 * Math.PI));
   if (!cam.depthOf) return projPath(cam, pts, false);
@@ -1717,32 +1749,32 @@ function ringTheta(R, w, from = 0, span = Math.PI) {
   for (let n = 0; n < 14; n++, step /= 2) for (const t of [best - step, best + step]) { const d = miss(t); if (d < bd) { bd = d; best = t; } }
   return best;
 }
-// Dragging a turned box's corners, along its own axes. Base corner i slides over the plane of its base with the
-// opposite corner staying put; top corner i slides up its own edge with the base staying put. F is the box as it
-// was when the drag began. Either way the new middle is the new home's middle, so the box stays turned as it was.
+// Dragging a box's corners, along its own axes. Base corner i slides over the plane of its base, and with `top` top corner
+// i over the plane of its top, with the corner diagonally across from it on that plane staying put, so the box keeps its
+// height. F is the box as it was when the drag began. The new middle is the new home's middle, so a turned box stays
+// turned as it was. (An upright box's base corners have their own way on the page; see bottomFromDiag.)
 function homeFrom(F, Cn, a, c, H) {
   const [A1, A2] = F.cam.axes;
   return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => a3(a3(a3(Cn, m3(A1, u * a / 2)), m3(A2, v * c / 2)), m3(UP3, -H / 2)));
 }
-function dragTurnedBase(bx, F, i, S, g) {
-  const fixed = F.B[(i + 2) % 4], n = n3(c3(F.ax[0], F.ax[1])), dir = n3(F.cam.unproj(S)), dn = d3(dir, n), t = d3(fixed, n) / dn;
+function dragTurnedBase(bx, F, i, S, g, top = false) {
+  const fixed = (top ? F.T : F.B)[(i + 2) % 4], n = n3(c3(F.ax[0], F.ax[1])), hn = d3(fixed, n);
+  let dir = n3(F.cam.unproj(F.cam.wrapS ? F.cam.wrapS(S) : S)), dn = d3(dir, n);
+  // (a top seen almost edge-on, near eye level as it often is, has the pointer slip past it: the corner then stays on the
+  // top's side of eye level, no further off than 20 times the corner across, sliding along it, as a base corner does)
+  const slant = Math.abs(hn) / (20 * (l3(fixed) || 1));
+  if (top && !(dn * hn > 0 && Math.abs(dn) >= slant)) { dir = n3(a3(dir, m3(n, Math.sign(hn) * slant - dn))); dn = d3(dir, n); }
+  const t = hn / dn;
   if (Math.abs(dn) < 1e-6 || !(t > 0)) return;
   const Mi = inv3([0, 1, 2].map(r => F.ax.map(v => [v.x, v.y, v.z][r]))), v = s3(m3(dir, t), fixed), l = mat3(Mi, v);
   const a = l.x * (i === 1 || i === 2 ? 1 : -1), c = l.y * (i === 2 || i === 3 ? 1 : -1), least = 0.01 * Math.max(Math.abs(F.a), Math.abs(F.c), F.H);
   if (Math.abs(a) < least || Math.abs(c) < least) return;
-  const nb = boxFrom3(bx, homeFrom(F, a3(a3(fixed, m3(v, 0.5)), m3(F.ax[2], F.H / 2)), a, c, F.H), F.H, g);
-  if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
-}
-function dragTurnedTop(bx, F, i, S, g) {
-  const base = F.B[i], len2 = l3(F.ax[2]), up = n3(F.ax[2]), d = n3(F.cam.unproj(S)), b = d3(up, d), dn = 1 - b * b;
-  if (dn < 1e-6) return;
-  const H = Math.max(0.02 * F.H, (b * d3(d, base) - d3(up, base)) / dn / len2);
-  const nb = boxFrom3(bx, homeFrom(F, a3(F.C, m3(F.ax[2], (H - F.H) / 2)), F.a, F.c, H), H, g);
+  const nb = boxFrom3(bx, homeFrom(F, a3(a3(fixed, m3(v, 0.5)), m3(F.ax[2], (top ? -1 : 1) * F.H / 2)), a, c, F.H), F.H, g);
   if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
 }
 // The point a resize by corner i keeps still, as a function of the box's frame: the base corner across from it (the one
 // diagonally opposite), or for a box kept centered on the horizon (which grows evenly above and below it) the middle of
-// the upright edge there. Dragging a base corner keeps that corner put, and the height handle keeps the whole base put.
+// the upright edge there.
 const pinOf = (bx, i) => { const j = (i + 2) % 4; return keptCentered(bx) ? F => m3(a3(F.B[j], F.T[j]), 0.5) : F => F.B[j]; };
 // Shift held while resizing: the box grows or shrinks evenly, its sides and height alike, about that point (`pin`), so
 // it keeps its proportions and its footing, from F, the box as it was when Shift went down. The corner held (top corner i
@@ -1874,51 +1906,6 @@ function snapPoint(w, excludeBox) {
     for (const a of data.arcs) for (const pl of a.polys) for (let i = 1; i < pl.length; i++) {
       const q = segClosest(w, pl[i - 1], pl[i]), d = len(sub(q, w));
       if (d < bd) { bd = d; best = { pt: q, kind: "line" }; }
-    }
-  }
-  return best;
-}
-function snapOnVertical(base, w, skip = []) {
-  // snap a point moving on the vertical through base to ray/horizon crossings, and to the other boxes' spots (see
-  // eachBoxSpot) lying on it, as near as the snap radius (for a box beside this one, those along the edge they share), each
-  // by how far it is from where the point is on the vertical, so a spot right on it comes before one just beside it
-  const g = geo(), r = state.snap.radius / view.z, up = g.up(base);
-  const s = dot(sub(w, base), up), proj = add(base, mul(up, s));
-  let best = null, bd = r;
-  for (const L of snapData().lines) {
-    if (L.fam === "v" || L.fam === "r2") continue;
-    const x = isect(base, up, L.p, L.d);
-    if (!x || (L.fwd && x.u < 0)) continue;
-    const d = Math.abs(x.t - s); if (d < bd) { bd = d; best = P(x.x, x.y); }
-  }
-  const side = (x, y) => cross(sub(P(x, y), base), up), near = e => { const c = [side(e.x0, e.y0), side(e.x1, e.y0), side(e.x0, e.y1), side(e.x1, e.y1)]; return Math.min(...c) < r && Math.max(...c) > -r; };
-  if (state.snap.corners || state.snap.divisions) eachBoxSpot(skip, near, p => {
-    const v = sub(p, base), t = dot(v, up), off = Math.abs(cross(v, up)); if (off > r) return;
-    const d = Math.hypot(t - s, off); if (d < bd) { bd = d; best = add(base, mul(up, t)); }
-  });
-  return best ? { pt: best, s: dot(sub(best, base), up) } : { pt: proj, s, free: true };
-}
-// Camera version: the vertical through a corner is a great circle; snap to where other guides cross it.
-function snapTopCurvi(Bu, w, g, skip = []) {
-  const cam = g.cam, r = state.snap.radius / view.z, hl = Math.hypot(Bu.x, Bu.z);
-  if (hl < 1e-9) return null;
-  const e1 = V3(Bu.x / hl, 0, Bu.z / hl), Nv = c3(UP3, e1);
-  let best = null, bd = r;
-  // (the other boxes' spots that lie on it, as near as the snap radius: each where it's nearest on the circle, by how far
-  // it is from where the pointer is on the circle, so a spot right on it comes before one just beside it)
-  const onCircle = S => { const D = n3(cam.unproj(S)), a = d3(D, e1); return a > 0 ? cam.projG(n3(a3(m3(e1, a), m3(UP3, d3(D, UP3))))) : null; }, wc = onCircle(w);
-  if (wc && (state.snap.corners || state.snap.divisions)) eachBoxSpot(skip, null, p => {
-    const pr = onCircle(p); if (!pr || Math.hypot(pr.x - p.x, pr.y - p.y) > r) return;
-    const d = Math.hypot(p.x - wc.x, p.y - wc.y); if (d < bd) { bd = d; best = P(pr.x, pr.y); }
-  });
-  for (const a of snapData().arcs) {
-    if (a.fam === "v" || Math.abs(d3(a.A, UP3)) > 0.999) continue; // other verticals never cross this one usefully
-    const x = c3(Nv, a.N), xl = l3(x); if (xl < 1e-9) continue;
-    const p = m3(x, 1 / xl);
-    for (const s of [p, m3(p, -1)]) {
-      if (d3(s, e1) < 0 || !onArc(a, s)) continue;
-      const pr = cam.projG(s); if (!pr) continue;
-      const d = Math.hypot(pr.x - w.x, pr.y - w.y); if (d < bd) { bd = d; best = P(pr.x, pr.y); }
     }
   }
   return best;
@@ -2501,6 +2488,12 @@ function frame() {
   const onCircle = hover && (hover.type === "ring" ? hover : hover.ring);
   if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, !!onCircle && !!onCircle.ghost); // (a face on the same axis has the same circle)
   if (solid) drawRing(solid, paper);
+  // the gumballs that come with them: the face under the pointer's, ghosted, and the face last clicked on the selected box's
+  // (shown even with the circles turned off, as the way to move and stretch a box along one axis)
+  const gSolid = bx && ui.ring && ui.ring.bi === state.sel && !seenFromAfar(bx, g) ? gumballOf(bx, ui.ring.face, g) : null;
+  const gGhost = lt && !seenFromAfar(lb, g) && !(gSolid && lt.bi === state.sel && lt.face === ui.ring.face) ? gumballOf(lb, lt.face, g) : null;
+  if (gGhost) drawGumball(gGhost, paper, true);
+  if (gSolid) drawGumball(gSolid, paper);
   // selected box handles (none on one seen from afar, which is just moved: its dashed uprights still show it's selected)
   if (bx) {
     const G = boxGeo(bx, g), far = seenFromAfar(bx, g);
@@ -2553,6 +2546,32 @@ function drawRing(R, panel, ghosted = false, over = false) {
     const t = ringLabel(R.k, state.boxes[state.sel].rot[AXIS_KEYS[R.k]]), p = drag.at;
     ctx.font = '500 11px "IBM Plex Mono", monospace';
     const tw = ctx.measureText(t).width;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
+    ctx.fillStyle = color; ctx.fillText(t, p.x + 15, p.y + 4);
+  }
+  ctx.restore();
+}
+// A gumball (see gumballOf): its shaft, the arrowhead at its tip and the square on it, in its axis color, ghosted for the
+// face under the pointer, thicker over the part the pointer is on, and while its square is dragged, how far the box has
+// stretched that way
+function drawGumball(Gb, panel, ghosted = false) {
+  const color = AXIS_COLORS[Gb.k], b = toS(Gb.b), sq = toS(Gb.sq), tip = toS(Gb.tip), mine = h => h && (h.type === "gmove" || h.type === "gscale") && h.face === Gb.face && !!h.ghost === ghosted;
+  const live = !ghosted && drag && (drag.type === "gmove" || drag.type === "gscale") && drag.face === Gb.face ? drag.type : null, on = live || (mine(hover) ? hover.type : null);
+  ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  if (ghosted) ctx.globalAlpha = on ? 0.8 : 0.45;
+  ctx.lineWidth = on === "gmove" ? 3.5 : 2.25;
+  ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(tip.x, tip.y); ctx.stroke();
+  const d = sub(tip, sq), l = len(d);
+  if (l > 1) {
+    const u = mul(d, 1 / l), n = P(-u.y, u.x), big = on === "gmove" ? 1.25 : 1, back = sub(tip, mul(u, 13 * big));
+    ctx.beginPath(); ctx.moveTo(tip.x + u.x * 2, tip.y + u.y * 2); ctx.lineTo(back.x + n.x * 6 * big, back.y + n.y * 6 * big); ctx.lineTo(back.x - n.x * 6 * big, back.y - n.y * 6 * big); ctx.closePath(); ctx.fill();
+  }
+  const half = on === "gscale" ? 6 : 4.5;
+  ctx.fillRect(sq.x - half, sq.y - half, 2 * half, 2 * half);
+  ctx.globalAlpha = ghosted ? ctx.globalAlpha : 1; ctx.lineWidth = 1.25; ctx.strokeStyle = panel; ctx.strokeRect(sq.x - half, sq.y - half, 2 * half, 2 * half);
+  if (live && drag.moved && drag.at && drag.label) {
+    ctx.font = '500 11px "IBM Plex Mono", monospace';
+    const t = drag.label, tw = ctx.measureText(t).width, p = drag.at;
     ctx.globalAlpha = 0.9; ctx.fillStyle = panel; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
     ctx.fillStyle = color; ctx.fillText(t, p.x + 15, p.y + 4);
   }
@@ -4911,13 +4930,6 @@ function centerOnHorizon(bx, g) {
 }
 // A centered box's top handle grows it evenly above and below eye level: its top goes to where the camera
 // ray through screen point S passes the corner's vertical, and its base goes as far below
-function centeredTop(bx, S, g) {
-  const { cam, B } = box3(bx, g), A = B[bx.anchor], r = cam.unproj(S), hz = r.x * r.x + r.z * r.z;
-  if (hz < 1e-12) return;
-  const t = Math.max(1e-3 * l3(A), (A.x * r.x + A.z * r.z) / hz * r.y);
-  const nb = boxFrom3(bx, B.map(p => V3(p.x, -t, p.z)), 2 * t, g);
-  if (nb) { bx.b0 = nb.b0; bx.b2 = nb.b2; bx.H = nb.H; bx.h = nb.h; }
-}
 
 /* ---------- scaling the whole drawing ---------- */
 // The drawing `from` (a copy of the state as it was) scaled by k around page point C, written into the state:
@@ -5253,7 +5265,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Drag a round handle to set height; it snaps the same way along its vertical. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner across the base, or a round one to move a top corner across the top, the corner diagonally across staying put; either snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Each face has a gumball, as in Rhino, with its rotation circle: hover over the face (or click it) and drag its arrow to move the box along that axis, or the small square on it to stretch the box that way, the face across staying put (hold Shift, even partway, to stretch it both ways from its middle). The top's square is how to change the height. Hold Shift while dragging a corner to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -6032,10 +6044,15 @@ function hitTest(s, reach = "") {
     const G = boxGeo(bx, g);
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
+    // (the gumball of the face last clicked, which reaches out past the face)
+    const Gb = ui.ring && ui.ring.bi === state.sel ? gumballOf(bx, ui.ring.face, g) : null, part = Gb && gumPart(Gb, s);
+    if (part) return { type: part, bi: state.sel, face: ui.ring.face };
     const rf = ringFace();
     if (rf && onRing(ringOf(bx, rf, g), s)) shiftRing = { type: "ring", bi: state.sel, face: rf };
   }
-  // the circle the face under the pointer showed, ghosted, which the pointer has gone on to (on any box)
+  // the gumball the face under the pointer showed, ghosted, which the pointer has gone on to (on any box), and its circle
+  const hf = hoverFace(), hfb = hf && state.boxes[hf.bi], hg = hfb && !seenFromAfar(hfb, g) ? gumballOf(hfb, hf.face, g) : null, hpart = hg && gumPart(hg, s);
+  if (hpart) return { type: hpart, bi: hf.bi, face: hf.face, ghost: true };
   const lr = latchRing();
   if (!shiftRing && lr && !seenFromAfar(state.boxes[lr.bi], g) && onRing(ringOf(state.boxes[lr.bi], lr.face, g), s)) shiftRing = { type: "ring", bi: lr.bi, face: lr.face, ghost: true };
   if (bx) { const own = vpOf(state.sel); if (own) return own; } // (its own before the page's, which move far more)
@@ -6104,7 +6121,9 @@ const FAR_PX = 72;
 function seenFromAfar(bx, g) { const G = boxGeo(bx, g), pts = [...G.B, ...G.T], xs = pts.map(p => p.x), ys = pts.map(p => p.y); return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * view.z < FAR_PX; }
 const HINTS = {
   pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
-  top: "Drag to set the box height · snaps where rays cross this edge · hold Shift to scale the box evenly",
+  top: "Drag the top corner across the top, the corner diagonally across staying put · snaps to ray intersections · hold Shift to scale the box evenly",
+  gmove: "Drag the arrow to move the box along this axis · its corners snap to points on their way · hold Alt to move freely",
+  gscale: "Drag the square to stretch the box along this axis, the face across staying put · hold Shift to stretch it both ways from its middle · hold Alt to place freely",
   bottom: "Drag the base corner · snaps to ray intersections · hold Shift to scale the box evenly · hold Alt to place freely",
   vp: "Drag the vanishing point along the horizon",
   anchor: "Drag to move the horizon and the VPs together",
@@ -6119,7 +6138,7 @@ const HINTS = {
   hide: "Shift-click to hide this face",
   pick: "Shift-click to edit this face with the others picked, or to drop it from them"
 };
-const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer", pick: "copy" };
+const CURSORS = { boxvp: "move", ring: "grab", gmove: "move", gscale: "nwse-resize", pan: "grab", top: "move", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer", pick: "copy" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held, or a face you can see with Shift held, is drawn as a ghost).
 // lastPos lets pressing or letting go of the key update it without the mouse moving.
@@ -6129,7 +6148,7 @@ const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) 
 // reaches it without leaving the face; on the circle, it stays that face's. Anywhere else, there's none.
 let latch = null;
 function keepLatch(h) {
-  if (h.type === "ring") return;
+  if (h.type === "ring" || h.type === "gmove" || h.type === "gscale") return; // (on a circle or a gumball, the face it came with stays)
   // (on a circle that's another face's, behind this one, that face's circle stays)
   if (h.ring && h.ring.ghost && h.ring.face !== h.face) return;
   latch = (h.type === "body" || h.type === "hide" || h.type === "pick") && h.face ? { bi: h.bi, face: h.face, surf: h.surf } : null;
@@ -6206,7 +6225,7 @@ canvas.addEventListener("pointerdown", e => {
     showHover(hitTest(s, faceReach(e))); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view }, wasSel: state.sel === hit.bi };
-  const rb = rayBox(), held = hit.type === "body" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
+  const rb = rayBox(), held = hit.type === "body" || hit.type === "gmove" || hit.type === "gscale" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
   if (rb && held === rb) drag.rays = clone(rb);
   if ((hit.type === "bottom" || hit.type === "top") && turned(state.boxes[state.sel])) drag.turn = turnFrame(state.boxes[state.sel], g);
   else if (hit.type === "ring") {
@@ -6215,6 +6234,12 @@ canvas.addEventListener("pointerdown", e => {
     const R = ringOf(state.boxes[hit.bi], hit.face, g);
     Object.assign(drag, { ring: R, theta: ringTheta(R, w), total: 0, at: s });
     touch();
+  } else if (hit.type === "gmove" || hit.type === "gscale") {
+    // (grabbing a ghosted gumball selects its box, and makes its face the one whose circle and gumball are solid)
+    state.sel = hit.bi; ui.ring = { bi: hit.bi, face: hit.face };
+    const bx = state.boxes[hit.bi], Gb = gumballOf(bx, hit.face, g), at = hit.type === "gscale" ? Gb.sq3 : Gb.tip3;
+    Object.assign(drag, { gum: Gb, F0: Gb.F, A: Gb.out, L0: at, t0: lineParam(Gb.F.cam, at, Gb.out, w), track: gumTrack(bx, Gb, hit.type === "gscale", g), at: s });
+    touch();
   } else if (hit.type === "boxvp") {
     state.sel = hit.bi;
     const bx = state.boxes[hit.bi], F = turnFrame(bx, g);
@@ -6222,13 +6247,12 @@ canvas.addEventListener("pointerdown", e => {
     Object.assign(drag, { M0: F.M, rot0: bx.rot, off: sub(hit.p, w), end: d3(hit.d, F.ax[hit.k]) > 0 ? 1 : -1 });
     touch();
   } else if (hit.type === "bottom" || hit.type === "top") {
-    // Re-anchor the height at the corner that stays put (the opposite base corner, or the dragged top's own base).
-    const bx = state.boxes[state.sel], G = boxGeo(bx, g);
-    const j = hit.type === "bottom" ? (hit.i + 2) % 4 : hit.i;
-    if (g.cam) { bx.H /= l3(G.B3[j]) || 1; drag.base3 = n3(G.B3[j]); }
+    // Re-anchor the height at the corner that stays put: the one diagonally across, under the top corner across for a top one
+    const bx = state.boxes[state.sel], G = boxGeo(bx, g), j = (hit.i + 2) % 4;
+    if (g.cam) bx.H /= l3(G.B3[j]) || 1;
     else bx.h = dot(sub(G.T[j], G.B[j]), g.up(G.B[j]));
     bx.anchor = j;
-    if (hit.type === "bottom") drag.fixed = P(G.B[j].x, G.B[j].y); else drag.base = P(G.B[j].x, G.B[j].y);
+    if (hit.type === "bottom") drag.fixed = P(G.B[j].x, G.B[j].y);
   } else if (hit.type === "body") {
     state.sel = hit.bi; const bx = state.boxes[hit.bi];
     // Moving a box is a rigid move in 3D: it keeps its shape and its depth (through a lens, its distance
@@ -6269,12 +6293,12 @@ canvas.addEventListener("pointerdown", e => {
   else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
   // (the objects going along with it, as they are now; a resize goes about the point that stays put, `pin`)
-  const turning = (hit.type === "ring" || hit.type === "boxvp") && state.boxes[hit.bi];
-  if (hit.type === "body" || turning || ((hit.type === "bottom" || hit.type === "top") && state.boxes[state.sel])) {
-    const bi = hit.type === "body" || turning ? hit.bi : state.sel, bx = state.boxes[bi];
+  const turning = (hit.type === "ring" || hit.type === "boxvp") && state.boxes[hit.bi], gum = (hit.type === "gmove" || hit.type === "gscale") && state.boxes[hit.bi];
+  if (hit.type === "body" || turning || gum || ((hit.type === "bottom" || hit.type === "top") && state.boxes[state.sel])) {
+    const bi = hit.type === "body" || turning || gum ? hit.bi : state.sel, bx = state.boxes[bi];
     drag.group = groupRig(bi, g);
     if (turning) { if (drag.group) drag.F0 = turnFrame(bx, g); }
-    else if (hit.type !== "body") Object.assign(drag, { F0: turnFrame(bx, g), pin: pinOf(bx, hit.i), start: { b0: bx.b0, b2: bx.b2, h: bx.h, H: bx.H } });
+    else if (hit.type === "bottom" || hit.type === "top") Object.assign(drag, { F0: turnFrame(bx, g), pin: pinOf(bx, hit.i), start: { b0: bx.b0, b2: bx.b2, h: bx.h, H: bx.H } });
     // (rays spaced along one of them stay put till it's let go, as they do for the box held)
     const rb2 = !drag.rays && drag.group ? rayBox() : null;
     if (rb2 && drag.group.some(o => o.bx === rb2)) drag.rays = clone(rb2);
@@ -6340,27 +6364,15 @@ canvas.addEventListener("pointermove", e => {
       break;
     }
     case "top": {
+      // a top corner slides across the top, as a base corner does across the base, the top corner diagonally across staying
+      // put and the box keeping its height (that's stretched by the top's gumball)
       const bx = state.boxes[state.sel], held = drag.group ? [state.sel, ...drag.group.map(o => o.i)] : [state.sel];
       if (resizeEvenly(e, bx, w, g, useSnap)) break;
-      if (drag.turn) dragTurnedTop(bx, drag.turn, drag.i, w, g);
-      else if (keptCentered(bx)) {
-        // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
-        let S = w;
-        if (g.cam) { const sp = useSnap && snapTopCurvi(drag.base3, w, g, held); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
-        else { const r = useSnap ? snapOnVertical(drag.base, w, held) : null; S = r ? r.pt : w; if (r && !r.free) snapMark = { pt: r.pt, kind: "point" }; }
-        centeredTop(bx, S, g);
-      } else if (g.cam) {
-        let S = w;
-        if (useSnap) { const sp = snapTopCurvi(drag.base3, w, g, held); if (sp) { S = sp; snapMark = { pt: sp, kind: "point" }; } }
-        bx.H = Math.max(1e-3, topFromScreen(drag.base3, S, g));
-      } else {
-        const r = useSnap ? snapOnVertical(drag.base, w, held) : { s: dot(sub(w, drag.base), g.up(drag.base)), free: true };
-        if (useSnap && !r.free) snapMark = { pt: r.pt, kind: "point" };
-        const h = Math.max(1, r.s);
-        if (staysInView(Object.assign({}, bx, { h }), bx, g)) bx.h = h;
-      }
+      let S = w; if (useSnap) { const sp = snapPoint(w, held); if (sp) { S = sp.pt; snapMark = sp; } }
+      dragTurnedBase(bx, drag.F0, drag.i, S, g, true);
       break;
     }
+    case "gmove": case "gscale": gumDrag(e, s, w, g, useSnap); break;
     case "body": {
       const bx = state.boxes[state.sel], R = drag.rig, grp = drag.group; if (!R) break;
       // snap the visible corner nearest the grab point (see pointerdown), moving the whole box with it
@@ -6463,6 +6475,93 @@ function resizeEvenly(e, bx, w, g, useSnap) {
   if (nb) { Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); E.k = got; }
   return true;
 }
+// The spots a gumball drag snaps by, in the view's 3D as the drag begins: for a move, the box's corners; for a stretch, the
+// corners of the face held. A shape's or model's own corners stand in for its box's, as they do for snapping to it (see
+// spotsOf), up to a few hundred of them.
+function gumTrack(bx, Gb, stretch, g) {
+  const F = Gb.F, corner = n => (n[0] === "b" ? F.B : F.T)[+n[1]], face = stretch ? FACES.find(f => f.id === Gb.face).v.map(corner) : [...F.B, ...F.T];
+  const own = modelCornerSpots(bx, g, boxGeo(bx, g), true).map(c => c.q), size = Math.max(Math.abs(F.a), Math.abs(F.c), F.H);
+  const mine = (stretch ? own.filter(q => Math.abs(d3(s3(q, Gb.base), Gb.out)) < 1e-6 * size) : own).slice(0, 400);
+  return (bx.model && bx.model.frame === false && mine.length ? [] : face).concat(mine);
+}
+// Snapping a gumball drag: spots `pts` (in the view's 3D) all going along A by the same step, t0 where the pointer puts
+// them. A step that brings one of them onto something to snap to near it on the page (another box's or shape's corners
+// and division points, ray crossings, and where a ray, the horizon or a guide crosses its way), or as near as its way
+// passes, within the snap radius: the one nearest where the pointer has it. Gives { t, pt } or null.
+function axisSnap(pts, A, t0, skip, cam, g) {
+  const S = state.snap, r = S.radius / view.z;
+  const on = (p, t) => { const q = a3(p, m3(A, t)); if (!inFront(cam, q)) return null; const s = cam.proj(q); return s && Number.isFinite(s.x) && Number.isFinite(s.y) ? P(s.x, s.y) : null; };
+  const free = pts.map(p => on(p, t0)), fx = free.filter(Boolean); if (!fx.length) return null;
+  const x0 = Math.min(...fx.map(f => f.x)) - r, x1 = Math.max(...fx.map(f => f.x)) + r, y0 = Math.min(...fx.map(f => f.y)) - r, y1 = Math.max(...fx.map(f => f.y)) + r;
+  let best = null, bd = r;
+  const tryAt = (j, p) => {
+    const t = lineParam(cam, pts[j], A, p); if (t === null) return;
+    const q = on(pts[j], t); if (!q) return;
+    const off = len(sub(q, p)); if (off > r) return;
+    const d = Math.hypot(len(sub(q, free[j])), off); if (d < bd) { bd = d; best = { t, pt: q }; }
+  };
+  const each = p => { if (p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1) return; for (let j = 0; j < pts.length; j++) { const f = free[j]; if (f && Math.abs(p.x - f.x) < r && Math.abs(p.y - f.y) < r) tryAt(j, p); } };
+  const data = snapData();
+  if (S.points) for (const p of data.pts) each(p);
+  if (S.corners || S.divisions) eachBoxSpot(skip, e => !(e.x1 < x0 || e.x0 > x1 || e.y1 < y0 || e.y0 > y1), each);
+  if (S.points || S.lines) {
+    const size = Math.max(...pts.map(p => l3(s3(p, pts[0])))) || 1;
+    pts.forEach((p, j) => {
+      const f = free[j]; if (!f) return;
+      if (!g.cam) {
+        // (through a flat camera its way is a straight line on the page)
+        const f2 = on(p, t0 + 0.01 * size); if (!f2) return; const dl = len(sub(f2, f)); if (!(dl > 1e-12)) return; const u = mul(sub(f2, f), 1 / dl);
+        for (const L of data.lines) { const x = isect(f, u, L.p, L.d); if (x && !(L.fwd && x.u < 0) && Math.abs(x.t) <= r) tryAt(j, P(x.x, x.y)); }
+      } else {
+        // (through a lens, a great circle: where the plane through the eye and its way meets each guide's)
+        const N = c3(p, A); if (!(l3(N) > 1e-12)) return;
+        for (const a of data.arcs) {
+          const x = c3(N, a.N), xl = l3(x); if (xl < 1e-12) continue;
+          for (const d of [m3(x, 1 / xl), m3(x, -1 / xl)]) { if (!onArc(a, d)) continue; const q = cam.projG(d); if (q && Math.hypot(q.x - f.x, q.y - f.y) <= r) tryAt(j, P(q.x, q.y)); }
+        }
+      }
+    });
+  }
+  return best;
+}
+// Dragging a gumball, from the box as it was when it was pressed (F0). Its arrow moves the box along the axis, as far as the
+// pointer goes along it. Its square stretches the box along the axis, the face it's on following the pointer and the face
+// across staying put; with Shift held, from the middle, both faces going out or in alike (pressed or let go mid-drag, it
+// changes over at once). A box kept centered on the horizon always stretches from the middle up and down, and moves only
+// across. With faces picked on other objects too, they move or stretch with it, as one piece (see groupMoved and
+// groupScaled). Short of where the view can show it all, it goes as far as it can.
+function gumDrag(e, s, w, g, useSnap) {
+  const bx = state.boxes[state.sel], D = drag, F0 = D.F0, A = D.A, k = D.gum.k; if (!bx || D.t0 === null) return;
+  const tp = lineParam(F0.cam, D.L0, A, w); if (tp === null) return;
+  let t = tp - D.t0;
+  const scale = D.type === "gscale", even = scale && (e.shiftKey || (keptCentered(bx) && k === 2)), held = D.group ? [state.sel, ...D.group.map(o => o.i)] : [state.sel];
+  if (useSnap) { const sp = axisSnap(D.track, A, t, held, F0.cam, g); if (sp) { t = sp.t; snapMark = { pt: sp.pt, kind: "point" }; } }
+  const ext0 = [F0.a, F0.c, F0.H], e0 = Math.abs(ext0[k]), sg = Math.sign(ext0[k]) || 1, least = 0.02 * Math.max(...ext0.map(Math.abs)), dir = D.gum.out;
+  // (stretching, the point that stays put: the middle of the face across, or the box's middle)
+  const pin = even ? F => F.C : F => { const ek = Math.abs([F.a, F.c, F.H][k]); return a3(F.C, m3(dir, -ek / 2)); };
+  const was = { b0: bx.b0, b2: bx.b2, H: bx.H, h: bx.h };
+  const place = t => {
+    let nb, d = null, size = null;
+    if (!scale) {
+      d = m3(A, t); if (keptCentered(bx)) d = V3(d.x, 0, d.z);
+      nb = boxFrom3(bx, homeFrom(F0, a3(F0.C, d), F0.a, F0.c, F0.H), F0.H, g, DRAG_EDGE);
+    } else {
+      const e1 = Math.max(least, e0 + (even ? 2 : 1) * t), ext = ext0.slice(); ext[k] = sg * e1; size = e1 / e0;
+      nb = boxFrom3(bx, homeFrom(F0, even ? F0.C : a3(F0.C, m3(dir, (e1 - e0) / 2)), ext[0], ext[1], ext[2]), ext[2], g);
+    }
+    if (!nb) return null;
+    if (!D.group) return { nb, size };
+    if (!scale) { const list = groupMoved(D.group, d, g); return list && { nb, list }; }
+    Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); const list = groupScaled(D.group, bx, F0, pin, g); Object.assign(bx, was);
+    return list && { nb, list, size };
+  };
+  let got = place(t);
+  if (!got) { let lo = 0, hi = 1; for (let n = 0; n < 16; n++) { const m = (lo + hi) / 2, r = place(t * m); if (r) { lo = m; got = r; } else hi = m; } snapMark = null; }
+  if (!got) return;
+  Object.assign(bx, { b0: got.nb.b0, b2: got.nb.b2, H: got.nb.H, h: got.nb.h });
+  if (got.list) groupSet(D.group, got.list);
+  D.at = s; D.label = scale ? `${AXIS_NAMES[k]} ×${got.size.toFixed(2)}${even ? " both ways" : ""}` : null;
+}
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
@@ -6482,12 +6581,12 @@ function endPointer(e) {
   }
   // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
   // solid; a click anywhere else puts them away
-  if (!drag.moved && drag.type !== "ring" && !["top", "bottom"].includes(drag.type)) {
+  if (!drag.moved && drag.type !== "ring" && !["top", "bottom", "gmove", "gscale"].includes(drag.type)) {
     if (drag.type === "body") { ui.ring = state.rotateFaces ? { bi: drag.bi, face: drag.face } : null; openFaces([{ bi: drag.bi, id: drag.surf || drag.face }], drag.s0); }
     else { ui.ring = null; closeFaces(); }
   }
   // a box you just reshaped or moved keeps this look when you switch perspective
-  if (drag.moved && ["bottom", "top", "body"].includes(drag.type) && state.boxes[state.sel]) { captureFit(state.boxes[state.sel], geo()); if (drag.group) drag.group.forEach(o => captureFit(o.bx, geo())); }
+  if (drag.moved && ["bottom", "top", "body", "gmove", "gscale"].includes(drag.type) && state.boxes[state.sel]) { captureFit(state.boxes[state.sel], geo()); if (drag.group) drag.group.forEach(o => captureFit(o.bx, geo())); }
   if (drag.type === "vscale" && drag.k !== 1) toast(`Scaled the drawing to ${pctText(drag.k)}`);
   drag = null; snapMark = null; canvas.style.cursor = "grab"; commit(); touch();
   if (e.pointerType !== "touch") { lastPos = spos(e); lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } // (a click may just have selected a box, with hidden faces to pick)
