@@ -3124,9 +3124,10 @@ const SHAPES = {
   cone: { name: "Cone", n: 48, of: "Sides", min: 3 }, frustum: { name: "Truncated cone", n: 48, of: "Sides", min: 3 },
   pyramid: { name: "Pyramid", n: 4, of: "Sides of its base", min: 3 }, prism: { name: "Prism", n: 6, of: "Sides", min: 3 },
   wedge: { name: "Wedge" }, torus: { name: "Torus", n: 48, of: "Segments around", min: 6 }, capsule: { name: "Capsule", n: 48, of: "Segments around", min: 6 },
-  poly: { name: "Polyhedron", n: 12, of: "Faces" }
+  poly: { name: "Polyhedron", n: 12, of: "Faces", min: 4, max: 100 }
 };
-// (the polyhedra, by how many faces: the five regular solids and two of the best-known others)
+// (the polyhedra with names, by how many faces: the five regular solids and two of the best-known others; any other number
+// of faces from 4 to 100 makes one with its faces spread as evenly as they go, see evenPolyhedron)
 const POLYHEDRA = [[4, "tetrahedron"], [6, "cube"], [8, "octahedron"], [12, "dodecahedron"], [14, "cuboctahedron"], [20, "icosahedron"], [32, "truncated icosahedron"]];
 // A profile turned about the upright axis in n steps: points [r, z] running up the outside (r 0 is on the axis, a single
 // point), or with `loop` round a closed outline (a tube's wall, a torus's ring). A flat side faces the front.
@@ -3171,7 +3172,8 @@ function polyhedron(nFaces) {
     4: [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]], 6: signs([1, 1, 1]), 8: all([1, 0, 0]), 12: [...signs([1, 1, 1]), ...all([0, 1 / phi, phi])], 14: all([1, 1, 0]),
     20: all([0, 1, phi]), 32: all([0, 1, 3 * phi], [1, 2 + phi, 2 * phi], [phi, 2, 2 * phi + 1])
   };
-  let P = (sets[nFaces] || sets[12]).map(v => V3(v[0], v[1], v[2])); const faces = hullFaces(P);
+  if (!sets[nFaces]) return evenPolyhedron(Math.max(4, Math.min(100, Math.round(nFaces) || 12)));
+  let P = sets[nFaces].map(v => V3(v[0], v[1], v[2])); const faces = hullFaces(P);
   // (set down on a face: the tetrahedron, the dodecahedron and the truncated icosahedron, on one of its five-sided ones;
   // the icosahedron stands on a corner, as the octahedron does already)
   const down = nFaces === 20 ? n3(P[0]) : [4, 12, 32].includes(nFaces) ? (() => { const f = faces.find(q => nFaces !== 32 || q.length === 5); return n3(q3(f.map(q => P[q]))); })() : null;
@@ -3182,10 +3184,56 @@ function polyhedron(nFaces) {
   const pos = P.flatMap(p => [p.x, p.y, p.z]), idx = []; faces.forEach(f => fan(idx, f));
   return { pos, idx };
 }
+// n points spread as evenly as they'll go over a sphere: from a spiral, pushed apart as like charges push each other, in
+// smaller and smaller steps
+function spreadPoints(n) {
+  const P = Array.from({ length: n }, (_, i) => { const z = 1 - (2 * i + 1) / n, r = Math.sqrt(Math.max(0, 1 - z * z)), a = i * Math.PI * (3 - Math.sqrt(5)); return [r * Math.cos(a), r * Math.sin(a), z]; });
+  const gap = Math.sqrt(4 * Math.PI / n), N = 400, F = P.map(() => [0, 0, 0]);
+  for (let it = 0; it < N; it++) {
+    F.forEach(f => { f[0] = f[1] = f[2] = 0; });
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      const dx = P[i][0] - P[j][0], dy = P[i][1] - P[j][1], dz = P[i][2] - P[j][2], r2 = dx * dx + dy * dy + dz * dz, f = 1 / (r2 * Math.sqrt(r2));
+      F[i][0] += dx * f; F[i][1] += dy * f; F[i][2] += dz * f; F[j][0] -= dx * f; F[j][1] -= dy * f; F[j][2] -= dz * f;
+    }
+    // (each goes along the sphere, the one pushed hardest a step that shrinks as they settle)
+    let most = 0;
+    for (let i = 0; i < n; i++) { const p = P[i], f = F[i], k = f[0] * p[0] + f[1] * p[1] + f[2] * p[2]; f[0] -= k * p[0]; f[1] -= k * p[1]; f[2] -= k * p[2]; most = Math.max(most, Math.hypot(f[0], f[1], f[2])); }
+    if (!(most > 0)) break;
+    const step = 0.15 * gap * (1 - it / N) ** 2 / most;
+    for (let i = 0; i < n; i++) { const p = P[i], f = F[i]; p[0] += f[0] * step; p[1] += f[1] * step; p[2] += f[2] * step; const l = Math.hypot(p[0], p[1], p[2]); p[0] /= l; p[1] /= l; p[2] /= l; }
+  }
+  return P.map(p => V3(p[0], p[1], p[2]));
+}
+// A polyhedron of n faces, as alike as they'll go: points spread over a sphere (spreadPoints), and the solid with a flat face
+// square to each, touching the sphere there. It's their hull turned inside out: each of the hull's faces (every plane
+// through three of the points with none beyond, ones nearly on one plane taken together) is one of its corners, and each
+// point one of its faces, with the corners of the hull's faces round that point, in order. So 5 faces make a triangular
+// prism, 7 a pentagonal one, and more make rounder and rounder solids. It's set down on one of its faces.
+function evenPolyhedron(n) {
+  const P = spreadPoints(n), planes = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) {
+    let N = c3(s3(P[j], P[i]), s3(P[k], P[i])); const l = l3(N); if (l < 1e-9) continue;
+    N = m3(N, 1 / l); let d = d3(N, P[i]); if (d < 0) { N = m3(N, -1); d = -d; }
+    let ok = true; for (let m = 0; m < n && ok; m++) if (m !== i && m !== j && m !== k && d3(N, P[m]) > d + 1e-7) ok = false;
+    if (!ok) continue;
+    let pl = planes.find(q => d3(q.N, N) > 1 - 1e-5 && Math.abs(q.d - d) < 2e-4); if (!pl) planes.push(pl = { N, d, on: new Set() });
+    pl.on.add(i); pl.on.add(j); pl.on.add(k);
+  }
+  const V = planes.map(q => m3(q.N, 1 / q.d));
+  const faces = P.map((p, i) => {
+    const u = n3(c3(p, Math.abs(p.x) < 0.9 ? V3(1, 0, 0) : V3(0, 1, 0))), w = c3(p, u);
+    return planes.map((q, c) => (q.on.has(i) ? c : -1)).filter(c => c >= 0).map(c => [c, Math.atan2(d3(V[c], w), d3(V[c], u))]).sort((a, b) => a[1] - b[1]).map(a => a[0]);
+  });
+  // (set down on the first face)
+  const down = n3(P[0]), to = V3(0, 0, -1), cos = d3(down, to), axis = l3(c3(down, to)) > 1e-9 ? n3(c3(down, to)) : V3(1, 0, 0), sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  const W = V.map(p => a3(a3(m3(p, cos), m3(c3(axis, p), sin)), m3(axis, d3(axis, p) * (1 - cos))));
+  const pos = W.flatMap(p => [p.x, p.y, p.z]), idx = []; faces.forEach(f => fan(idx, f));
+  return { pos, idx };
+}
 const q3 = pts => m3(pts.reduce(a3, V3(0, 0, 0)), 1 / pts.length); // (the middle of some points)
 function shapeMesh(id) {
   const m = /^shape-([a-z]+)-(\d+)$/.exec(id || ""), S = m && SHAPES[m[1]]; if (!S) return null;
-  const kind = m[1], n = Math.max(S.min || 3, Math.min(256, +m[2] || S.n || 3)), half = Math.max(3, Math.round(n / 2)), quarter = Math.max(2, Math.round(n / 4));
+  const kind = m[1], n = Math.max(S.min || 3, Math.min(S.max || 256, +m[2] || S.n || 3)), half = Math.max(3, Math.round(n / 2)), quarter = Math.max(2, Math.round(n / 4));
   const arc = (from, to, steps, r, zc) => Array.from({ length: steps + 1 }, (_, i) => { const t = from + (to - from) * i / steps, x = r * Math.cos(t); return [Math.abs(x) < 1e-9 ? 0 : x, zc + r * Math.sin(t)]; });
   const Q = Math.PI / 2;
   const made = kind === "sphere" ? lathe(arc(-Q, Q, half, 0.5, 0), n)
@@ -3208,7 +3256,8 @@ const shapeOf = bx => { const m = bx && bx.model && /^shape-([a-z]+)-(\d+)$/.exe
 const shapeHere = () => (hasBox() ? shapeOf(state.boxes[state.sel]) : null);
 function setShapeN(v) {
   const bx = state.boxes[state.sel], sh = shapeOf(bx); if (!sh) return;
-  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; bx.model.own = {}; bx.model.hide = []; // (its surfaces are new ones; one picked stays picked, as pickValid has it)
+  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; bx.model.own = {}; bx.model.hide = [];
+  if (sh.kind === "poly") bx.model.crease = Math.min(bx.model.crease, 1); // (all its faces flat, with an edge between each, at any number: see addShape) // (its surfaces are new ones; one picked stays picked, as pickValid has it)
   fitModelBox(bx); touch();
 }
 // A new shape, where and as big as a new box would be, with just the shape showing
@@ -3217,6 +3266,9 @@ function addShape(kind) {
   const S = SHAPES[kind]; if (!S) return;
   const g = geo(), bx = makeBox(g, state.boxes.length), G0 = homeGeo(bx, g), sb = screenBox([...G0.B, ...G0.T]);
   bx.name = `${S.name} ${state.boxes.length + 1}`; bx.model = cleanModel({ id: `shape-${kind}-${S.n || 0}`, name: S.name, up: "z", frame: false }); bx.ghost = 0; bx.div.on = false;
+  // (a polyhedron's faces are all flat, with an edge between each, and with many of them the edges meet at shallow angles:
+  // its crease angle at 1° keeps them all, where the 30° that rounds off a smooth shape's facets would lose them)
+  if (kind === "poly") bx.model.crease = 1;
   fitBox(bx, modelDims(bx, g), sb.c, sb.s, g, boxPlace(bx, g)); captureFit(bx, g);
   state.boxes.push(bx); state.sel = state.boxes.length - 1; commit(); touch();
 }
@@ -4085,7 +4137,7 @@ function removeModel() { const bx = state.boxes[state.sel]; if (!bx || !bx.model
 function modelNote() {
   const bx = state.boxes[state.sel], m = modelOf(bx); if (!bx || !bx.model) return "";
   const sh = shapeOf(bx);
-  if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side. Click one of its surfaces to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together; a new number of sides or faces makes new surfaces, so what was set on the old ones goes.`;
+  if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || sh.n + " faces") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side. Click one of its surfaces to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together; a new number of sides or faces makes new surfaces, so what was set on the old ones goes.`;
   if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
   return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points${m.colors ? `, in ${m.colors.pal.length} ${m.colors.pal.length === 1 ? "color" : "colors"} from the file` : ""}. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge. The creases also bound its surfaces: click one to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together. A crease angle that gathers it into different surfaces clears what was set on the old ones.`;
 }
@@ -5314,7 +5366,8 @@ const schema = [
     { t: "sub", label: "Shape", when: () => !!shapeHere() },
     { t: "readout", label: () => (shapeHere() ? "About this shape" : modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
     { t: "range", bind: "boxes.$b.model.sides", label: () => (shapeHere() ? shapeHere().S.of : "Sides"), min: 3, max: 64, step: 1, lo: 3, hi: 256, get: () => (shapeHere() ? Math.max(shapeHere().S.min || 3, shapeHere().n) : undefined), set: v => setShapeN(Math.max((shapeHere() && shapeHere().S.min) || 3, v)), when: () => !!shapeHere() && !!shapeHere().S.of && shapeHere().kind !== "poly" },
-    { t: "select", bind: "boxes.$b.model.faces", label: "Faces", num: true, options: POLYHEDRA.map(([n, name]) => [n, `${n} · ${name}`]), get: () => (shapeHere() ? shapeHere().n : undefined), apply: v => { setShapeN(v); commit(); }, when: () => !!shapeHere() && shapeHere().kind === "poly" },
+    // (a polyhedron: any number of faces from 4 to 100, named where it's one of the solids with names)
+    { t: "range", bind: "boxes.$b.model.faces", label: () => { const sh = shapeHere(), nm = sh && (POLYHEDRA.find(q => q[0] === sh.n) || [])[1]; return nm ? `Faces (${nm})` : "Faces"; }, min: 4, max: 100, step: 1, lo: 4, hi: 100, get: () => (shapeHere() ? shapeHere().n : undefined), set: v => setShapeN(Math.max(4, Math.min(100, Math.round(v)))), when: () => !!shapeHere() && shapeHere().kind === "poly" },
     { t: "toggle", bind: "boxes.$b.model.up", label: "Up axis", options: [["y", "Y"], ["z", "Z"], ["x", "X"]], when: modelHere },
     { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], ["Show all surfaces", () => { state.boxes[state.sel].model.hide = []; commit(); touch(); }, "", () => modelHere() && state.boxes[state.sel].model.hide.length > 0], [() => (shapeHere() ? "Make it a plain box" : "Remove model"), removeModel, "warn"]], when: hasModel },
     { t: "check", bind: "boxes.$b.model.fileColors", label: "Use the file's colors", when: () => modelHere() && !!modelOf(state.boxes[state.sel]).colors },
@@ -6895,9 +6948,10 @@ fpHead.addEventListener("pointerdown", e => {
 });
 window.addEventListener("resize", clampFaces);
 // Escape puts it away (and goes no further); so does a press anywhere but on it, the canvas (whose clicks decide for
-// themselves) or the box for a circle's angle
+// themselves), the box for a circle's angle or the side panel (whose settings can be changed with it up)
 window.addEventListener("keydown", e => { if (e.key === "Escape" && !facePop.hidden) { closeFaces(); e.stopImmediatePropagation(); } }, true);
-document.addEventListener("pointerdown", e => { if (!facePop.hidden && !facePop.contains(e.target) && e.target !== canvas && !ringEntry.contains(e.target)) closeFaces(); }, true);
+const sidePanel = document.getElementById("panel");
+document.addEventListener("pointerdown", e => { if (!facePop.hidden && !facePop.contains(e.target) && e.target !== canvas && !ringEntry.contains(e.target) && !sidePanel.contains(e.target) && !infoTip.contains(e.target)) closeFaces(); }, true);
 
 /* ---------- toolbar ---------- */
 // Add shape: the dropdown chooses a box, one of the other shapes, or a model that's been imported, and the + joined to it
