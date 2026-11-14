@@ -1584,18 +1584,36 @@ function turnFits(bx, g, rot = bx.rot, was = bx, edge = VIEW_EDGE) {
   const q = n3(C), fits = cam.fitsTurned || cam.fits;
   return [...B, ...T].every(p => l3(p) > 0.02 * l3(C) && (!fits || fits(p, q)));
 }
-// The vanishing points a turned box's edges run to, in its axis colors. An axis still on one of the page's own
-// directions has none of its own, nor does one too square to the view to meet on screen (or, in isometric, at all).
-// Each axis has one through a flat camera; through a lens, one at each end, where the view reaches.
+// Which of a turned box's axes lie along one of the page's own directions (to within a few hundredths of a degree): those
+// run to the page's VPs, so they have none of their own
+function pageAligned(bx, g) {
+  const { cam, ax } = turnFrame(bx, g), page = [...cam.axes, UP3].map(n3);
+  return ax.map(a => { const D = n3(a); return page.some(e => Math.abs(d3(D, e)) > 1 - 1e-7); });
+}
+// A box's angles come to rest on a right angle (0, 90, 180 or 270) when a turn leaves them within ANGLE_SETTLE of one, so a
+// box turned back square to the page is square to it, and loses its own VPs
+const ANGLE_SETTLE = 0.05;
+function settleRot(bx) {
+  if (!bx || !bx.rot) return;
+  const r = {}; let changed = false;
+  for (const k of AXIS_KEYS) { const v = bx.rot[k], m = Math.round(v / 90) * 90; r[k] = Math.abs(v - m) < ANGLE_SETTLE ? ((m % 360) + 360) % 360 : v; if (r[k] !== v) changed = true; }
+  if (changed) bx.rot = r;
+}
+// The vanishing points a turned box's edges run to, in its axis colors. An axis on one of the page's own directions has
+// none of its own (the page's VPs are its), nor does one too square to the view to meet on screen (or, in isometric, at
+// all), except the one being dragged, which goes once it's let go. Each axis has one through a flat camera; through a
+// lens, one at each end, where the view reaches.
 function boxVPs(bx, g) {
-  if (g.iso || !turned(bx) || bx.showVPs === false) return [];
-  const { cam, ax } = turnFrame(bx, g), out = [], page = [...cam.axes, UP3].map(n3);
+  const held = drag && drag.type === "boxvp" && state.boxes[drag.bi] === bx ? drag.k : -1; // (dragged square to the page, it stays till let go)
+  if (g.iso || (!turned(bx) && held < 0) || bx.showVPs === false) return [];
+  const { cam, ax } = turnFrame(bx, g), out = [], aligned = pageAligned(bx, g);
   const add1 = (d, k) => { const s = cam.proj(d); if (s && Number.isFinite(s.x) && Number.isFinite(s.y) && Math.hypot(s.x - g.O.x, s.y - g.O.y) < 1e6) out.push({ p: P(s.x, s.y), k, d, label: `${bx.name} ${AXIS_NAMES[k]}` }); };
   ax.forEach((a, k) => {
     const D = n3(a);
-    if (page.some(e => Math.abs(d3(D, e)) > 1 - 1e-9)) return;
+    if (aligned[k] && k !== held) return;
     if (cam.depthOf) { const z = cam.depthOf(D); if (Math.abs(z) > 1e-6) add1(z > 0 ? D : m3(D, -1), k); return; }
-    for (const d of [D, m3(D, -1)]) if (cam.kind === "pano" ? Math.abs(d.y) < Math.sin(80 * deg) : !cam.fits || cam.fits(d)) add1(d, k);
+    // (the one being dragged shows even on the rim of the lens, where the page's own side VPs sit, so it can be seen to snap there)
+    for (const d of [D, m3(D, -1)]) if (cam.kind === "pano" ? Math.abs(d.y) < Math.sin(80 * deg) : k === held || !cam.fits || cam.fits(d)) add1(d, k);
   });
   return out;
 }
@@ -1617,7 +1635,7 @@ function faceDivisions(bx, id, near) {
 // Faces you've hidden send none, and an edge two front faces share sends one. Each comes with its axis and polylines.
 function ownRays(bx, g, b) {
   if (!turned(bx) || bx.showRays === false) return [];
-  const F = turnFrame(bx, g), { cam, B, T, ax } = F, near = nearestOf(B), seen = new Set(), out = [];
+  const F = turnFrame(bx, g), { cam, B, T, ax } = F, near = nearestOf(B), seen = new Set(), out = [], aligned = pageAligned(bx, g); // (an axis on the page's own runs to its VPs: no rays of its own)
   const size = Math.max(Math.abs(F.a), Math.abs(F.c), F.H), mid = m3([...B, ...T].reduce(a3, V3(0, 0, 0)), 1 / 8), axes = ax.map(n3);
   const key = p => [p.x, p.y, p.z].map(v => Math.round(v / size * 1e5)).join();
   for (const f of FACES) {
@@ -1627,6 +1645,7 @@ function ownRays(bx, g, b) {
     for (const [p, r] of [...[0, ...us, 1].map(u => [at(u, 0), at(u, 1)]), ...[0, ...vs, 1].map(v => [at(0, v), at(1, v)])]) {
       const id = [key(p), key(r)].sort().join("|"); if (seen.has(id)) continue; seen.add(id);
       const d = n3(s3(r, p)), k = [1, 2].reduce((m, i) => (Math.abs(d3(d, axes[i])) > Math.abs(d3(d, axes[m])) ? i : m), 0);
+      if (aligned[k]) continue;
       if (cam.depthOf) {
         const z = cam.depthOf(d); if (Math.abs(z) < 1e-6) continue;
         const head = z > 0 ? r : p, to = cam.proj(z > 0 ? d : m3(d, -1)); if (!inFront(cam, head)) continue;
@@ -5521,9 +5540,11 @@ canvas.addEventListener("pointermove", e => {
     case "boxvp": {
       const bx = state.boxes[drag.bi], cam = convCam(g);
       let S = add(w, drag.off);
-      // the horizon catches it, which keeps a level box level
+      // the horizon catches it, which keeps a level box level; and one of the page's VPs catches it, lining that edge up with
+      // the page's own, after which (once let go) it has no VP of its own
       const h = dot(sub(S, g.O), g.n);
       if (useSnap && Math.abs(h) * view.z < 10) { S = sub(S, mul(g.n, h)); snapMark = { pt: S, kind: "line" }; }
+      if (useSnap) for (const mk of vpMarkers(g)) if (len(sub(mk.p, add(w, drag.off))) * view.z < 14) { S = P(mk.p.x, mk.p.y); snapMark = { pt: S, kind: "point" }; break; }
       const M = aimedRot(cam, drag.M0, drag.k, m3(n3(cam.unproj(cam.wrapS ? cam.wrapS(S) : S)), drag.end));
       if (!M) break;
       const rot = rotAngles(M, drag.rot0, 1e4);
@@ -5627,6 +5648,8 @@ function endPointer(e) {
   if (pointers.size < 2) pinch = null;
   if (!drag) return;
   if (drag.type === "pan" && !drag.moved && state.sel !== -1) { state.sel = -1; touch(); }
+  // (a box turned by its circle or its VP comes to rest square to the page if it's that close to it)
+  if (drag.moved && (drag.type === "ring" || drag.type === "boxvp")) settleRot(state.boxes[drag.type === "ring" ? state.sel : drag.bi]);
   if (drag.type === "ring" && !drag.moved) {
     if (drag.alt) {
       // (a click on a circle, with no drag: what clicking the face under it does, with Shift or ⌘ as held)
