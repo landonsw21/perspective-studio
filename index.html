@@ -1696,6 +1696,45 @@ const inFront = (cam, p) => !cam.depthOf || cam.depthOf(p) > 0.02 * l3(p);
 // part of it over the face's middle, which is left to the face and its circle). The arrow is as long as the circle is
 // wide, give or take what keeps it between about 56 and 150 px. Faces only: a plane has none.
 const FACE_OUT = { s30: -1, s12: 1, s01: -1, s23: 1, bottom: -1, top: 1 };
+// A face's axis, as a drag along it takes it: the box's frame F, the axis k, the way out of the box (`out`, a unit length)
+// and the middle of the face (`base`), from its circle R
+function faceAxisOf(bx, face, g, R = ringOf(bx, face, g)) {
+  const side = FACE_OUT[face]; if (!side) return null;
+  const F = R.F, k = R.k, ext = [F.a, F.c, F.H][k];
+  return { F, k, face, out: m3(n3(F.ax[k]), side * (Math.sign(ext) || 1)), base: R.c };
+}
+// The face of the selected box last clicked (with its circle and gumball solid), whose corners and edges' middles then
+// act on it (see dragFaceCorner and faceMids), or null
+const selFace = (bx = state.boxes[state.sel]) => (bx && ui.ring && ui.ring.bi === state.sel && FACE_OUT[ui.ring.face] ? ui.ring.face : null);
+const cornerOf = (F, n) => (n[0] === "b" ? F.B : F.T)[+n[1]];
+// The middles of a face's edges, with a handle each while it's the face selected: on the page (`p`), in 3D (`q`), and the
+// face across that edge (`mate`), the one dragging it out or in moves, as that face's gumball square would (see gumDrag)
+function faceMids(bx, face, g) {
+  const F = turnFrame(bx, g), v = FACES.find(f => f.id === face).v, out = [];
+  for (let e = 0; e < 4; e++) {
+    const q = m3(a3(cornerOf(F, v[e]), cornerOf(F, v[(e + 1) % 4])), 0.5); if (!inFront(F.cam, q)) continue;
+    const s = F.cam.proj(q); if (s && Number.isFinite(s.x) && Number.isFinite(s.y)) out.push({ p: P(s.x, s.y), q, mate: EDGE_MATE[face][e] });
+  }
+  return out;
+}
+// Corner `name` of the face selected dragged to screen point S, from the box as it was (F): it slides over the face's own
+// plane, the corner diagonally across the face staying put, so the face changes its two sides and stays where it was, and
+// the box keeps its depth across it. A face seen almost edge-on keeps the corner on its side of where it would vanish,
+// as a top's does (see dragTurnedBase). A side can't go through nothing: it stops at a hundredth of the box.
+function dragFaceCorner(bx, F, face, name, S, g) {
+  const k = faceAxis(face), v = FACES.find(f => f.id === face).v, fixed = cornerOf(F, v[(v.indexOf(name) + 2) % 4]), n = n3(F.ax[k]), hn = d3(fixed, n);
+  let dir = n3(F.cam.unproj(F.cam.wrapS ? F.cam.wrapS(S) : S)), dn = d3(dir, n);
+  const slant = Math.abs(hn) / (20 * (l3(fixed) || 1));
+  if (!(dn * hn > 0 && Math.abs(dn) >= slant)) { dir = n3(a3(dir, m3(n, Math.sign(hn) * slant - dn))); dn = d3(dir, n); }
+  const t = hn / dn; if (Math.abs(dn) < 1e-6 || !(t > 0)) return;
+  // (each corner sits at ±half of each side from the middle: which way, for the one dragged)
+  const ci = +name[1], sg = [[-1, 1, 1, -1][ci], [-1, -1, 1, 1][ci], name[0] === "t" ? 1 : -1], D = s3(m3(dir, t), fixed), ext = [F.a, F.c, F.H], ax = F.ax.map(n3);
+  const least = 0.01 * Math.max(...ext.map(Math.abs)), e1 = ext.map((e, m) => { if (m === k) return e; const x = sg[m] * d3(D, ax[m]); return Math.sign(e) * Math.max(least, x * Math.sign(e)); });
+  let C = a3(fixed, m3(ax[k], -sg[k] * ext[k] / 2));
+  for (const m of [0, 1, 2]) if (m !== k) C = a3(C, m3(ax[m], sg[m] * e1[m] / 2));
+  const nb = boxFrom3(bx, homeFrom(F, C, e1[0], e1[1], e1[2]), e1[2], g);
+  if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
+}
 function gumballOf(bx, face, g, R = ringOf(bx, face, g)) {
   const side = FACE_OUT[face]; if (!side) return null;
   const F = R.F, k = R.k, ext = [F.a, F.c, F.H][k], out = m3(n3(F.ax[k]), side * (Math.sign(ext) || 1)), cam = F.cam;
@@ -1790,10 +1829,11 @@ function evenScale(F, pin, i, top, S) {
   return Math.max(0.05, Math.min(20, k));
 }
 // Box bx scaled evenly by k about the pin, from frame F, or null where the view can't show it so; and where its corner
-// held lands on screen
-function evenBox(bx, F, pin, k, g) {
-  const P0 = pin(F), H = F.H * k;
-  return boxFrom3(bx, homeFrom(F, a3(P0, m3(s3(F.C, P0), k)), F.a * k, F.c * k, H), H, g);
+// held lands on screen. With `keep`, a face scaled evenly on its own: the box's size along that axis (the face's) stays.
+function evenBox(bx, F, pin, k, g, keep = -1) {
+  const P0 = pin(F), f = [0, 1, 2].map(m => (m === keep ? 1 : k)), ax = F.ax.map(n3), d = s3(F.C, P0);
+  const C = ax.reduce((o, a, m) => a3(o, m3(a, d3(d, a) * f[m])), P0), H = F.H * f[2];
+  return boxFrom3(bx, homeFrom(F, C, F.a * f[0], F.c * f[1], H), H, g);
 }
 function evenCorner(F, pin, i, top, k) {
   const P0 = pin(F), q = F.cam.proj(a3(P0, m3(s3((top ? F.T : F.B)[i], P0), k)));
@@ -2500,8 +2540,22 @@ function frame() {
     ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); G.verts.forEach(paths => paths.forEach(pl => pl.forEach((p, i) => { const s = toS(p); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }))); ctx.stroke(); ctx.setLineDash([]);
     ctx.lineWidth = 1.5;
-    if (!far) G.B.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? accent : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
-    if (!far) G.T.forEach((p, i) => { const s = toS(p); ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? accent : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+    // (with a face selected, its corners and the middles of its edges in its axis's color, as they act on it)
+    const sf = !far && selFace(bx), fv = sf ? FACES.find(f => f.id === sf).v : [], fcol = sf ? AXIS_COLORS[faceAxis(sf)] : accent;
+    if (!far) G.B.forEach((p, i) => { const s = toS(p), on = fv.includes("b" + i); ctx.strokeStyle = on ? fcol : accent; ctx.fillStyle = (hover && hover.type === "bottom" && hover.i === i) ? ctx.strokeStyle : paper; ctx.fillRect(s.x - 5, s.y - 5, 10, 10); ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); });
+    if (!far) G.T.forEach((p, i) => { const s = toS(p), on = fv.includes("t" + i); ctx.strokeStyle = on ? fcol : accent; ctx.fillStyle = (hover && hover.type === "top" && hover.i === i) ? ctx.strokeStyle : paper; ctx.beginPath(); ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+    if (sf) for (const m of faceMids(bx, sf, g)) {
+      const s = toS(m.p), lit = (hover && hover.type === "fmid" && hover.face === m.mate) || (drag && drag.mid && drag.face === m.mate);
+      ctx.strokeStyle = fcol; ctx.fillStyle = lit ? fcol : paper;
+      ctx.beginPath(); ctx.moveTo(s.x, s.y - 6); ctx.lineTo(s.x + 6, s.y); ctx.lineTo(s.x, s.y + 6); ctx.lineTo(s.x - 6, s.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // (while one's dragged, how far the box has stretched that way)
+    if (drag && drag.mid && drag.moved && drag.label && drag.at) {
+      ctx.font = '500 11px "IBM Plex Mono", monospace'; const tw = ctx.measureText(drag.label).width, p = drag.at;
+      ctx.globalAlpha = 0.9; ctx.fillStyle = paper; ctx.fillRect(p.x + 11, p.y - 8, tw + 8, 16); ctx.globalAlpha = 1;
+      ctx.fillStyle = fcol; ctx.fillText(drag.label, p.x + 15, p.y + 4);
+    }
+    ctx.strokeStyle = accent;
   }
   if (snapMark) {
     const s = toS(snapMark.pt); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([]);
@@ -5265,7 +5319,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner across the base, or a round one to move a top corner across the top, the corner diagonally across staying put; either snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Each face has a gumball, as in Rhino, with its rotation circle: hover over the face (or click it) and drag its arrow to move the box along that axis, or the small square on it to stretch the box that way, the face across staying put (hold Shift, even partway, to stretch it both ways from its middle). The top's square is how to change the height. Hold Shift while dragging a corner to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner across the base, or a round one to move a top corner across the top, the corner diagonally across staying put; either snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Each face has a gumball, as in Rhino, with its rotation circle: hover over the face (or click it) and drag its arrow to move the box along that axis, or the small square on it to stretch the box that way, the face across staying put (hold Shift, even partway, to stretch it both ways from its middle). The top's square is how to change the height. With a face clicked, its corners and the diamonds at the middles of its edges act on it: a corner moves over that face, the corner diagonally across it staying put (with Shift it scales just that face evenly), and a diamond stretches the box that one way, the edge across staying put (with Shift, both ways from the middle). Hold Shift while dragging a corner to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -6041,9 +6095,11 @@ function hitTest(s, reach = "") {
   const vpOf = bi => { const m = boxVPs(state.boxes[bi], g).find(v => len(sub(toS(v.p), s)) < 0.75 * VP_MARKER + 7); return m && { type: "boxvp", bi, i: m.k, k: m.k, p: m.p, d: m.d }; };
   // (an object seen from afar, small on screen, has no handles or circles to catch the pointer: pressed anywhere, it moves)
   if (bx && !seenFromAfar(bx, g)) {
-    const G = boxGeo(bx, g);
-    for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i };
-    for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i };
+    const G = boxGeo(bx, g), sf = selFace(bx), fv = sf ? FACES.find(f => f.id === sf).v : [];
+    for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i, onFace: fv.includes("t" + i) };
+    for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i, onFace: fv.includes("b" + i) };
+    // (with a face selected, the middles of its edges)
+    if (sf) for (const m of faceMids(bx, sf, g)) if (len(sub(toS(m.p), s)) < 8) return { type: "fmid", bi: state.sel, face: m.mate, at3: m.q };
     // (the gumball of the face last clicked, which reaches out past the face)
     const Gb = ui.ring && ui.ring.bi === state.sel ? gumballOf(bx, ui.ring.face, g) : null, part = Gb && gumPart(Gb, s);
     if (part) return { type: part, bi: state.sel, face: ui.ring.face };
@@ -6122,6 +6178,8 @@ function seenFromAfar(bx, g) { const G = boxGeo(bx, g), pts = [...G.B, ...G.T], 
 const HINTS = {
   pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
   top: "Drag the top corner across the top, the corner diagonally across staying put · snaps to ray intersections · hold Shift to scale the box evenly",
+  fcorner: "Drag the corner across the face selected, the corner diagonally across it staying put · snaps to ray intersections · hold Shift to scale just this face evenly",
+  fmid: "Drag to stretch the box this way, the edge across staying put · hold Shift to stretch it both ways from its middle · hold Alt to place freely",
   gmove: "Drag the arrow to move the box along this axis · its corners snap to points on their way · hold Alt to move freely",
   gscale: "Drag the square to stretch the box along this axis, the face across staying put · hold Shift to stretch it both ways from its middle · hold Alt to place freely",
   bottom: "Drag the base corner · snaps to ray intersections · hold Shift to scale the box evenly · hold Alt to place freely",
@@ -6138,7 +6196,7 @@ const HINTS = {
   hide: "Shift-click to hide this face",
   pick: "Shift-click to edit this face with the others picked, or to drop it from them"
 };
-const CURSORS = { boxvp: "move", ring: "grab", gmove: "move", gscale: "nwse-resize", pan: "grab", top: "move", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer", pick: "copy" };
+const CURSORS = { boxvp: "move", ring: "grab", gmove: "move", gscale: "nwse-resize", fmid: "nwse-resize", pan: "grab", top: "move", bottom: "move", vp: "ew-resize", anchor: "move", horizon: "ns-resize", vresize: "nwse-resize", vmove: "move", vscale: "nwse-resize", body: "move", hidden: "pointer", hide: "pointer", pick: "copy" };
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held, or a face you can see with Shift held, is drawn as a ghost).
 // lastPos lets pressing or letting go of the key update it without the mouse moving.
@@ -6166,7 +6224,7 @@ function showHover(h) {
     const click = h.type === "pick" ? `Shift-click to edit this ${what} too` : h.type === "hide" ? `Shift-click to hide this ${what}` : h.type === "hidden" ? `⌘-click to bring this ${what} back` : `Click to edit this ${what}`;
     document.getElementById("stHint").textContent = `Drag the circle to turn the box · hold Shift for 45° steps · ${click}`; return;
   }
-  document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
+  document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.onFace ? "fcorner" : h.type] || "").replace("this face", "this " + what);
 }
 const reachChanged = e => {
   if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) return;
@@ -6225,7 +6283,7 @@ canvas.addEventListener("pointerdown", e => {
     showHover(hitTest(s, faceReach(e))); return;
   }
   drag = { ...hit, s0: s, w0: w, moved: false, view0: { ...view }, wasSel: state.sel === hit.bi };
-  const rb = rayBox(), held = hit.type === "body" || hit.type === "gmove" || hit.type === "gscale" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
+  const rb = rayBox(), held = hit.type === "body" || hit.type === "gmove" || hit.type === "gscale" || hit.type === "fmid" ? state.boxes[hit.bi] : hit.type === "bottom" || hit.type === "top" ? state.boxes[state.sel] : null;
   if (rb && held === rb) drag.rays = clone(rb);
   if ((hit.type === "bottom" || hit.type === "top") && turned(state.boxes[state.sel])) drag.turn = turnFrame(state.boxes[state.sel], g);
   else if (hit.type === "ring") {
@@ -6240,6 +6298,11 @@ canvas.addEventListener("pointerdown", e => {
     const bx = state.boxes[hit.bi], Gb = gumballOf(bx, hit.face, g), at = hit.type === "gscale" ? Gb.sq3 : Gb.tip3;
     Object.assign(drag, { gum: Gb, F0: Gb.F, A: Gb.out, L0: at, t0: lineParam(Gb.F.cam, at, Gb.out, w), track: gumTrack(bx, Gb, hit.type === "gscale", g), at: s });
     touch();
+  } else if (hit.type === "fmid") {
+    // (an edge's middle on the face selected: the box stretched out or in that way, as the face across the edge's gumball
+    // square would stretch it, from where it was taken hold of; the face stays the one selected)
+    const bx = state.boxes[hit.bi], ax = faceAxisOf(bx, hit.face, g);
+    Object.assign(drag, { type: "gscale", gum: ax, F0: ax.F, A: ax.out, L0: hit.at3, t0: lineParam(ax.F.cam, hit.at3, ax.out, w), track: gumTrack(bx, ax, true, g), at: s, mid: true });
   } else if (hit.type === "boxvp") {
     state.sel = hit.bi;
     const bx = state.boxes[hit.bi], F = turnFrame(bx, g);
@@ -6293,12 +6356,25 @@ canvas.addEventListener("pointerdown", e => {
   else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
   // (the objects going along with it, as they are now; a resize goes about the point that stays put, `pin`)
-  const turning = (hit.type === "ring" || hit.type === "boxvp") && state.boxes[hit.bi], gum = (hit.type === "gmove" || hit.type === "gscale") && state.boxes[hit.bi];
+  const turning = (hit.type === "ring" || hit.type === "boxvp") && state.boxes[hit.bi], gum = (hit.type === "gmove" || hit.type === "gscale" || hit.type === "fmid") && state.boxes[hit.bi];
   if (hit.type === "body" || turning || gum || ((hit.type === "bottom" || hit.type === "top") && state.boxes[state.sel])) {
     const bi = hit.type === "body" || turning || gum ? hit.bi : state.sel, bx = state.boxes[bi];
     drag.group = groupRig(bi, g);
     if (turning) { if (drag.group) drag.F0 = turnFrame(bx, g); }
-    else if (hit.type === "bottom" || hit.type === "top") Object.assign(drag, { F0: turnFrame(bx, g), pin: pinOf(bx, hit.i), start: { b0: bx.b0, b2: bx.b2, h: bx.h, H: bx.H } });
+    else if (hit.type === "bottom" || hit.type === "top") {
+      Object.assign(drag, { F0: turnFrame(bx, g), pin: pinOf(bx, hit.i), start: { b0: bx.b0, b2: bx.b2, h: bx.h, H: bx.H } });
+      // (a corner of the face selected acts on that face, on a turned box too: one of a side's slides over that side, about
+      // the corner diagonally across it, as the top's and the base's already slide over them, and with Shift any of them
+      // scales just that face evenly)
+      const sf = selFace(bx), name = (hit.type === "top" ? "t" : "b") + hit.i;
+      if (sf && FACES.find(f => f.id === sf).v.includes(name)) drag.faceCorner = { face: sf, name, slide: sf[0] === "s" };
+      // (scaling a face evenly keeps the corner diagonally across it put, or for a box kept centered on the horizon, that
+      // corner's spot at the box's middle height, so it stays centered)
+      if (drag.faceCorner) {
+        const v = FACES.find(f => f.id === drag.faceCorner.face).v, fx = v[(v.indexOf(drag.faceCorner.name) + 2) % 4];
+        drag.pin = keptCentered(bx) ? F => { const c = cornerOf(F, fx), up = n3(F.ax[2]); return a3(c, m3(up, d3(s3(F.C, c), up))); } : F => cornerOf(F, fx);
+      }
+    }
     // (rays spaced along one of them stay put till it's let go, as they do for the box held)
     const rb2 = !drag.rays && drag.group ? rayBox() : null;
     if (rb2 && drag.group.some(o => o.bx === rb2)) drag.rays = clone(rb2);
@@ -6333,6 +6409,7 @@ canvas.addEventListener("pointermove", e => {
       const bx = state.boxes[state.sel];
       if (resizeEvenly(e, bx, w, g, useSnap)) break;
       let m = w; if (useSnap) { const sp = snapPoint(w, drag.group ? [state.sel, ...drag.group.map(o => o.i)] : state.sel); if (sp) { m = sp.pt; snapMark = sp; } }
+      if (drag.faceCorner && drag.faceCorner.slide) { dragFaceCorner(bx, drag.F0, drag.faceCorner.face, drag.faceCorner.name, m, g); break; }
       if (drag.turn) { dragTurnedBase(bx, drag.turn, drag.i, m, g); break; }
       // A base can't cross eye level (its far edges would shoot back out of the VPs), so the dragged
       // corner stays on the same side of the horizon as the fixed one
@@ -6369,7 +6446,8 @@ canvas.addEventListener("pointermove", e => {
       const bx = state.boxes[state.sel], held = drag.group ? [state.sel, ...drag.group.map(o => o.i)] : [state.sel];
       if (resizeEvenly(e, bx, w, g, useSnap)) break;
       let S = w; if (useSnap) { const sp = snapPoint(w, held); if (sp) { S = sp.pt; snapMark = sp; } }
-      dragTurnedBase(bx, drag.F0, drag.i, S, g, true);
+      if (drag.faceCorner && drag.faceCorner.slide) dragFaceCorner(bx, drag.F0, drag.faceCorner.face, drag.faceCorner.name, S, g);
+      else dragTurnedBase(bx, drag.F0, drag.i, S, g, true);
       break;
     }
     case "gmove": case "gscale": gumDrag(e, s, w, g, useSnap); break;
@@ -6470,8 +6548,9 @@ function resizeEvenly(e, bx, w, g, useSnap) {
   if (k === null) k = evenScale(E.F, drag.pin, drag.i, top, w);
   if (k === null) return true;
   // (short of where the view can show it, as far toward that as it can go)
-  let nb = evenBox(bx, E.F, drag.pin, k, g), got = k;
-  if (!nb) { let lo = E.k, hi = k; for (let n = 0; n < 16; n++) { const t = (lo + hi) / 2, b = evenBox(bx, E.F, drag.pin, t, g); if (b) { lo = t; nb = b; } else hi = t; } got = lo; }
+  const keep = drag.faceCorner ? faceAxis(drag.faceCorner.face) : -1; // (a corner of the face selected scales just that face)
+  let nb = evenBox(bx, E.F, drag.pin, k, g, keep), got = k;
+  if (!nb) { let lo = E.k, hi = k; for (let n = 0; n < 16; n++) { const t = (lo + hi) / 2, b = evenBox(bx, E.F, drag.pin, t, g, keep); if (b) { lo = t; nb = b; } else hi = t; } got = lo; }
   if (nb) { Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); E.k = got; }
   return true;
 }
@@ -6576,13 +6655,13 @@ function endPointer(e) {
       const a = drag.alt, id = a.surf || a.face;
       if (a.type === "pick") togglePick(a.bi, id);
       else if (a.type === "hide" || a.type === "hidden") { setSurfaceShown(state.boxes[a.bi], id, a.type === "hidden"); state.sel = a.bi; }
-      else { state.sel = a.bi; ui.ring = state.rotateFaces ? { bi: a.bi, face: a.face } : null; openFaces([{ bi: a.bi, id }], drag.s0); }
+      else { state.sel = a.bi; ui.ring = { bi: a.bi, face: a.face }; openFaces([{ bi: a.bi, id }], drag.s0); }
     } else ringClick = drag.s0;
   }
   // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
   // solid; a click anywhere else puts them away
   if (!drag.moved && drag.type !== "ring" && !["top", "bottom", "gmove", "gscale"].includes(drag.type)) {
-    if (drag.type === "body") { ui.ring = state.rotateFaces ? { bi: drag.bi, face: drag.face } : null; openFaces([{ bi: drag.bi, id: drag.surf || drag.face }], drag.s0); }
+    if (drag.type === "body") { ui.ring = { bi: drag.bi, face: drag.face }; openFaces([{ bi: drag.bi, id: drag.surf || drag.face }], drag.s0); }
     else { ui.ring = null; closeFaces(); }
   }
   // a box you just reshaped or moved keeps this look when you switch perspective
@@ -6770,7 +6849,7 @@ function togglePick(bi, id) {
   if (!ui.faces.length) { closeFaces(); return; }
   // (the one last clicked is the selected box's, with its circle solid)
   // (a model's surface has no circle of its own: the one its box already shows stays)
-  const last = ui.faces[ui.faces.length - 1]; state.sel = last.bi; ui.ring = !state.rotateFaces ? null : isModelSurface(last.id) ? (ui.ring && ui.ring.bi === last.bi ? ui.ring : null) : { bi: last.bi, face: last.id };
+  const last = ui.faces[ui.faces.length - 1]; state.sel = last.bi; ui.ring = isModelSurface(last.id) ? (ui.ring && ui.ring.bi === last.bi ? ui.ring : null) : { bi: last.bi, face: last.id };
   touch();
 }
 fpClose.addEventListener("click", closeFaces);
