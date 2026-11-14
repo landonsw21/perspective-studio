@@ -6030,7 +6030,15 @@ function showHover(h) {
   }
   document.getElementById("stHint").textContent = vd ? vpHint(h.mk) + (h.onAnchor ? " · hold Alt to move the horizon and VPs together" : "") : h.type === "body" ? body() : (HINTS[h.type] || "").replace("this face", "this " + what);
 }
-const reachChanged = e => { if (["Meta", "Control", "Shift", "Alt"].includes(e.key) && !drag && lastPos) { lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); } };
+const reachChanged = e => {
+  if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) return;
+  if (!drag && lastPos) { lastReach = faceReach(e); showHover(hitTest(lastPos, lastReach)); }
+  // (Shift or Alt pressed or let go mid-drag takes effect at once, as if the pointer had moved where it is: a box being
+  // resized snaps to even scaling and back, a turn to its steps, snapping off and on, without waiting for the pointer)
+  const m = drag && drag.ev;
+  if (m && (e.key === "Shift" || e.key === "Alt") && (m.shiftKey !== e.shiftKey || m.altKey !== e.altKey))
+    canvas.dispatchEvent(new PointerEvent("pointermove", { ...m, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
+};
 // VP markers drag in different ways depending on the mode
 const VP_DRAGS = {
   dist: ["Drag the vanishing point along the horizon", "ew-resize"],
@@ -6159,6 +6167,8 @@ canvas.addEventListener("pointermove", e => {
     view.z = z; view.x = mid.x - wm.x * z; view.y = mid.y - wm.y * z; redraw(); return;
   }
   if (!drag) { lastPos = s; lastReach = faceReach(e); showHover(hitTest(s, lastReach)); return; }
+  // (where the pointer is and the keys held, to go again from when one of those keys changes: see reachChanged)
+  drag.ev = { pointerId: e.pointerId, pointerType: e.pointerType, isPrimary: e.isPrimary, clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey };
   if (!drag.moved && len(sub(s, drag.s0)) < 3) return;
   // (a drag only ever moves things: one that follows straight on from the click that opened the face pop-up, as a tap and
   // then a drag on a trackpad does, puts the pop-up away again)
