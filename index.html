@@ -2864,7 +2864,8 @@ function tidyMesh(rawPos, rawIdx, rawCol = null, most = MAX_TRIS) {
 // flipped), and the cosine of the angle between their faces (1 for flat across it). `open` edges are always lines of the
 // model: those with one triangle, or more than two. A thinned mesh has triangles lying over each other where its points
 // were gathered, which are no part of its shape: two that run along an edge the same way with their faces turned the same
-// way, and edges with more than two triangles, are never lines of it. And each triangle's three edges.
+// way, and edges with more than two triangles, are never lines of it. And each triangle's three edges. (A lighter copy,
+// see liteMesh, is thinned like that only in the parts of it made coarser, which `rough` marks.)
 function meshEdges(m) {
   if (m.edges) return m.edges;
   const { pos, idx } = m, nt = idx.length / 3, nv = pos.length / 3, byKey = new Map();
@@ -2883,11 +2884,12 @@ function meshEdges(m) {
     }
   }
   const ne = ea.length, cos = new Float32Array(ne).fill(1), open = new Uint8Array(ne), lap = new Uint8Array(ne);
+  const thin = e => (m.rough ? m.rough[t0[e]] === 1 || (t1[e] >= 0 && m.rough[t1[e]] === 1) : !!m.thin);
   for (let e = 0; e < ne; e++) {
-    if (many[e]) { if (m.thin) lap[e] = 1; else open[e] = 1; continue; }
+    if (many[e]) { if (thin(e)) lap[e] = 1; else open[e] = 1; continue; }
     if (t1[e] < 0) { open[e] = 1; continue; }
     const a = t0[e] * 3, b = t1[e] * 3, dot = nrm[a] * nrm[b] + nrm[a + 1] * nrm[b + 1] + nrm[a + 2] * nrm[b + 2];
-    if (same[e] && dot > 0) { if (m.thin) lap[e] = 1; else cos[e] = -dot; } else cos[e] = same[e] ? -dot : dot;
+    if (same[e] && dot > 0) { if (thin(e)) lap[e] = 1; else cos[e] = -dot; } else cos[e] = same[e] ? -dot : dot;
   }
   return (m.edges = { ne, a: Uint32Array.from(ea), b: Uint32Array.from(eb), t0: Int32Array.from(t0), t1: Int32Array.from(t1), same: Uint8Array.from(same), cos, open, lap, te });
 }
@@ -3139,7 +3141,7 @@ function modelView(bx, g, G, mesh = null) {
       if (!(Number.isFinite(sx[i]) && Number.isFinite(sy[i]))) bad[i] = 1;
     }
   }
-  const far = new Float64Array(nt), lit = new Uint8Array(nt), faces = new Int8Array(m.idx.length / 3), list = [];
+  const far = new Float64Array(nt), lit = new Uint8Array(nt), faces = new Int8Array(m.idx.length / 3), list = [], ok = new Uint8Array(nt);
   for (let t = 0; t < nt; t++) {
     const a = tri[t * 3], b = tri[t * 3 + 1], c = tri[t * 3 + 2];
     if (bad[a] || bad[b] || bad[c]) continue;
@@ -3151,12 +3153,64 @@ function modelView(bx, g, G, mesh = null) {
     faces[par[t]] = toward;
     lit[t] = Math.round(31 * (0.5 + 0.5 * toward * (nx * LIGHT.x + ny * LIGHT.y + nz * LIGHT.z) / l));
     far[t] = Math.hypot(cx, cy, cz);
-    list.push(t);
+    list.push(t); ok[t] = 1;
   }
-  const order = Uint32Array.from(list).sort((i, j) => far[j] - far[i]);
-  const view = { key, S, sx, sy, order, lit, faces, flip };
+  // (its triangles in order, furthest first, worked out the first time they're wanted: a lighter copy goes by its flat
+  // pieces instead)
+  let order = null;
+  const view = { key, S, sx, sy, lit, faces, flip, ok, get order() { return order || (order = Uint32Array.from(list).sort((i, j) => far[j] - far[i])); } };
+  if (m.flats) {
+    // A lighter copy is drawn a flat piece at a time (see flatPieces), or where a lens has cut one of its triangles, a bit
+    // of one at a time, as the model is: each such part (`ia` to `ib` in the pieces' list) as far as its bits on average,
+    // furthest first, and lit and facing as its first is (a flat piece's triangles all face as its first does, so no
+    // outline runs across it). `hand` is whether the model's own space and the view's turn the same way round (1) or
+    // mirrored (-1), which says which way a triangle's corners run round seen from outside a closed part.
+    // (`iloop`: a whole piece, all of it in view, with its corners in order round it, is filled as that one shape)
+    const P = m.flats, np = P.count, by = S.byFlat || (S.byFlat = trianglesByFlat(par, P.of, np)), ia = [], ib = [], ip = [];
+    for (let p = 0; p < np; p++) {
+      const j0 = by.start[p], j1 = by.start[p + 1]; let cut = false;
+      for (let j = j0 + 1; j < j1 && !cut; j++) if (par[by.list[j]] === par[by.list[j - 1]]) cut = true; // (two bits of one triangle)
+      if (!cut) { ia.push(j0); ib.push(j1); ip.push(p); } else for (let j = j0; j < j1; j++) { ia.push(j); ib.push(j + 1); ip.push(-1); }
+    }
+    const ni = ia.length, ifar = new Float64Array(ni), iface = new Int8Array(ni), ifirst = new Int32Array(ni), iloop = new Int32Array(ni).fill(-1), keep = [];
+    for (let i = 0; i < ni; i++) {
+      let sum = 0, cnt = 0, first = -1;
+      for (let j = ia[i]; j < ib[i]; j++) { const t = by.list[j]; if (!ok[t]) continue; sum += far[t]; cnt++; if (first < 0) first = t; }
+      if (!cnt) continue;
+      const f = faces[par[first]];
+      if (ib[i] - ia[i] > 1) for (let j = ia[i]; j < ib[i]; j++) faces[par[by.list[j]]] = f;
+      ifar[i] = sum / cnt; ifirst[i] = first; iface[i] = f; keep.push(i);
+      const p = ip[i]; if (p >= 0 && cnt === ib[i] - ia[i] && P.loopAt[p + 1] > P.loopAt[p]) iloop[i] = p;
+    }
+    const hand = (flip ? -1 : 1) * (d3(c3(ax[0], ax[1]), ax[2]) > 0 ? 1 : -1);
+    Object.assign(view, { iorder: furthestFirst(keep, ifar), ia: Uint32Array.from(ia), ib: Uint32Array.from(ib), ifirst, iface, iloop, hand, byFlat: by });
+  }
   store.set(bx, view);
   return view;
+}
+// Numbers `ids` in order of `dist` (each positive), furthest first: sorted by the bits of each distance as a 32-bit float,
+// which run in the same order as the distances, in two passes of 16 bits
+function furthestFirst(ids, dist) {
+  const n = ids.length, f = new Float32Array(n), key = new Uint32Array(f.buffer);
+  for (let i = 0; i < n; i++) f[i] = dist[ids[i]];
+  let a = Uint32Array.from(ids), b = new Uint32Array(n), ka = key, kb = new Uint32Array(n);
+  for (let shift = 0; shift < 32; shift += 16) {
+    const at = new Uint32Array(65537);
+    for (let i = 0; i < n; i++) at[((ka[i] >>> shift) & 0xffff) + 1]++;
+    for (let i = 0; i < 65536; i++) at[i + 1] += at[i];
+    for (let i = 0; i < n; i++) { const d = (ka[i] >>> shift) & 0xffff, j = at[d]++; b[j] = a[i]; kb[j] = ka[i]; }
+    [a, b] = [b, a]; [ka, kb] = [kb, ka];
+  }
+  return a.reverse();
+}
+// Which triangles (or through a lens, pieces of them, `par` giving the triangle each came from) make up each flat piece,
+// one piece's after another: piece p's are list[start[p]] up to list[start[p + 1]]
+function trianglesByFlat(par, of, np) {
+  const start = new Uint32Array(np + 1); for (let t = 0; t < par.length; t++) start[of[par[t]] + 1]++;
+  for (let p = 0; p < np; p++) start[p + 1] += start[p];
+  const list = new Uint32Array(par.length), fill = start.slice(0, np);
+  for (let t = 0; t < par.length; t++) list[fill[of[par[t]]]++] = t;
+  return { start, list };
 }
 // A model's surfaces: its triangles gathered into the areas its creases bound (edges sharper than the model's crease
 // angle, and open ones), so a cylinder has a side and two ends, a pyramid its faces, and a sphere just one. Each can be
@@ -3269,59 +3323,22 @@ function markSurface(bx, g, id, how, color) {
 // (`from` and `to`: just that run of its triangles, furthest first, as a picture drawn a slice at a time; it gives where it
 // got to, or Infinity when there's nothing to draw)
 function drawModel(c, bx, g, k, G, skip = null, lite = null, from = 0, to = Infinity) {
-  const M = bx.model, view = modelView(bx, g, G, lite); if (!view) return Infinity;
-  // (a lighter copy's triangles each take the surface of the one they came from)
-  const full = meshes.get(M.id), mesh = lite || full, { S, sx, sy, order, lit, faces } = view, { tri, er, par } = S, E = meshEdges(mesh), SF = meshSurfaces(full, M.crease), of = lite ? liteSurfaces(lite, SF) : SF.of;
-  const shadesOf = hex => { const rgb = hex2rgb(hex); return Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1)); }, shades = shadesOf(M.color);
-  // (in the file's colors: each triangle's shades, made for each color as it's first needed)
-  const fileCol = M.fileColors !== false && mesh.colors ? mesh.colors : null, triCol = fileCol && fileCol.tri, palShades = [];
-  const shadesAt = t => palShades[triCol[t]] || (palShades[triCol[t]] = shadesOf(fileCol.pal[triCol[t]] || M.color));
-  const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k);
-  // each surface's own: hidden or not, its shades and opacity, and its lines' look (0 for the model's)
-  const own = M.own || {}, special = Object.keys(own).length > 0 || M.hide.length > 0 || !!skip;
-  const gone = special ? new Uint8Array(SF.count) : null, shadeBy = special ? new Array(SF.count).fill(null) : null, opBy = special ? new Float32Array(SF.count).fill(M.opacity) : null, penBy = special ? new Uint8Array(SF.count) : null;
-  const pens = [{ stroke: M.stroke, lw, alpha: 1 }];
-  if (special) {
-    M.hide.forEach(s => { if (s < SF.count) gone[s] = 1; });
-    if (skip && isModelSurface(skip) && +skip.slice(1) < SF.count) gone[+skip.slice(1)] = 1;
-    for (const [s, o] of Object.entries(own)) {
-      if (!(+s < SF.count)) continue;
-      if (o.fill !== undefined) shadeBy[+s] = shadesOf(o.fill);
-      if (o.opacity !== undefined) opBy[+s] = o.opacity;
-      if (o.stroke !== undefined || o.width !== undefined || o.edgeOp !== undefined) { penBy[+s] = pens.length; pens.push({ stroke: either(o.stroke, M.stroke), lw: Math.max(either(o.width, M.width), 0.6 / k), alpha: either(o.edgeOp, 1) }); }
-    }
-  }
-  // (which edges are lines, and whose look each takes, kept with the view until the choices change)
-  const lineKey = [M.lines, M.crease, fileCol ? 1 : 0, special ? M.hide.join() + "/" + (skip || "") + "/" + JSON.stringify(own) : ""].join(" "); let drawn = view.lineKey === lineKey ? view.drawn : null;
-  if (!drawn) {
-    drawn = new Uint8Array(E.ne); const pen = new Uint8Array(E.ne);
-    if (lines) for (let e = 0; e < E.ne; e++) {
-      // (where the file's colors change is a line too, as it bounds a part)
-      drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0 || (triCol && E.t1[e] >= 0 && triCol[E.t0[e]] !== triCol[E.t1[e]]))) ? 1 : 0;
-      if (!special || !drawn[e]) continue;
-      // (a line between two surfaces goes with them both: gone only if both are, and in the look of the one given its own)
-      const s0 = of[E.t0[e]], s1 = E.t1[e] >= 0 ? of[E.t1[e]] : s0;
-      if (gone[s0] && gone[s1]) drawn[e] = 0; else pen[e] = !gone[s0] && penBy[s0] ? penBy[s0] : !gone[s1] && penBy[s1] ? penBy[s1] : 0;
-    }
-    if (lines && !all && mesh.thin) {
-      // A thinned mesh is rough in small ways, which leaves stray scraps of line. An outline, a crease or an open rim runs
-      // on from edge to edge, so lines joined into fewer than six edges are dropped.
-      const top = new Int32Array(mesh.pos.length / 3).fill(-1), find = v => { let r = v; while (top[r] >= 0) r = top[r]; while (top[v] >= 0) { const n = top[v]; top[v] = r; v = n; } return r; };
-      const size = new Int32Array(mesh.pos.length / 3);
-      for (let e = 0; e < E.ne; e++) if (drawn[e]) { const x = find(E.a[e]), y = find(E.b[e]); if (x !== y) { top[y] = x; size[x] += size[y] + 1; } else size[x]++; }
-      for (let e = 0; e < E.ne; e++) if (drawn[e] && size[find(E.a[e])] < 6) drawn[e] = 0;
-    }
+  const view = modelView(bx, g, G, lite); if (!view) return Infinity;
+  const L = modelLook(bx, k, skip, lite), { M, of, shades, fileCol, shadesAt, lines, all, lw, special, gone, shadeBy, opBy, pens } = L;
+  const { S, sx, sy, order, lit } = view, { tri, er, par } = S, E = meshEdges(L.mesh);
+  modelLines(view, L, E);
+  if (!view.from) {
     // each point's lines, one after another: point v's are at[from[v]] up to at[from[v + 1]]
-    const nv0 = mesh.pos.length / 3, from = new Uint32Array(nv0 + 1);
+    const drawn = view.drawn, nv0 = L.mesh.pos.length / 3, from = new Uint32Array(nv0 + 1);
     // (with every edge a line, each triangle just draws its own sides)
     const whole = e => drawn[e] && !S.cut[e] && !all;
     for (let e = 0; e < E.ne; e++) if (whole(e)) { from[E.a[e] + 1]++; from[E.b[e] + 1]++; }
     for (let v = 0; v < nv0; v++) from[v + 1] += from[v];
     const at = new Uint32Array(from[nv0]), fill = from.slice(0, nv0);
     for (let e = 0; e < E.ne; e++) if (whole(e)) { at[fill[E.a[e]]++] = e; at[fill[E.b[e]]++] = e; }
-    view.drawn = drawn; view.pen = pen; view.lineKey = lineKey; view.from = from; view.at = at;
+    view.from = from; view.at = at;
   }
-  const { from: vfrom, at, pen } = view, nv0 = vfrom.length - 1, EA = E.a, EB = E.b, others = pens.length > 1, later = [], end = Math.min(order.length, to);
+  const { drawn, from: vfrom, at, pen } = view, nv0 = vfrom.length - 1, EA = E.a, EB = E.b, others = pens.length > 1, later = [], end = Math.min(order.length, to);
   c.save(); c.lineJoin = "round"; c.lineCap = "round"; c.setLineDash([]);
   for (let n = from; n < end; n++) {
     const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2], s = special ? of[par[t]] : 0;
@@ -3353,22 +3370,286 @@ function drawModel(c, bx, g, k, G, skip = null, lite = null, from = 0, to = Infi
   c.restore();
   return end;
 }
+// The look box bx's model is drawn in (from `lite`, its lighter copy, or its mesh): its shades, in its own color or each
+// triangle's from the file, and each surface's own: hidden or not, its shades and opacity, and its lines' look (0 for the
+// model's). A lighter copy's triangles each take the surface of the one they came from.
+function modelLook(bx, k, skip, lite) {
+  const M = bx.model, full = meshes.get(M.id), mesh = lite || full, SF = meshSurfaces(full, M.crease), of = lite ? liteSurfaces(lite, SF) : SF.of;
+  const shadesOf = hex => { const rgb = hex2rgb(hex); return Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1)); }, shades = shadesOf(M.color);
+  // (in the file's colors: each triangle's shades, made for each color as it's first needed)
+  const fileCol = M.fileColors !== false && mesh.colors ? mesh.colors : null, triCol = fileCol && fileCol.tri, palShades = [];
+  const shadesAt = t => palShades[triCol[t]] || (palShades[triCol[t]] = shadesOf(fileCol.pal[triCol[t]] || M.color));
+  const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k);
+  const own = M.own || {}, special = Object.keys(own).length > 0 || M.hide.length > 0 || !!skip;
+  const gone = special ? new Uint8Array(SF.count) : null, shadeBy = special ? new Array(SF.count).fill(null) : null, opBy = special ? new Float32Array(SF.count).fill(M.opacity) : null, penBy = special ? new Uint8Array(SF.count) : null;
+  const pens = [{ stroke: M.stroke, lw, alpha: 1 }];
+  if (special) {
+    M.hide.forEach(s => { if (s < SF.count) gone[s] = 1; });
+    if (skip && isModelSurface(skip) && +skip.slice(1) < SF.count) gone[+skip.slice(1)] = 1;
+    for (const [s, o] of Object.entries(own)) {
+      if (!(+s < SF.count)) continue;
+      if (o.fill !== undefined) shadeBy[+s] = shadesOf(o.fill);
+      if (o.opacity !== undefined) opBy[+s] = o.opacity;
+      if (o.stroke !== undefined || o.width !== undefined || o.edgeOp !== undefined) { penBy[+s] = pens.length; pens.push({ stroke: either(o.stroke, M.stroke), lw: Math.max(either(o.width, M.width), 0.6 / k), alpha: either(o.edgeOp, 1) }); }
+    }
+  }
+  const lineKey = [M.lines, M.crease, fileCol ? 1 : 0, special ? M.hide.join() + "/" + (skip || "") + "/" + JSON.stringify(own) : ""].join(" ");
+  return { M, full, mesh, SF, of, shades, fileCol, triCol, shadesAt, lines, all, sharp, lw, special, gone, shadeBy, opBy, penBy, pens, lineKey };
+}
+// Which of a mesh's edges are lines, seen as `view` has it, and whose look each takes (`pen`), kept with the view until
+// the choices change
+function modelLines(view, L, E) {
+  if (view.lineKey === L.lineKey) return;
+  const { mesh, lines, all, sharp, special, of, gone, penBy, triCol } = L, faces = view.faces;
+  {
+    const drawn = new Uint8Array(E.ne), pen = new Uint8Array(E.ne), rough = mesh.rough;
+    // (a crease is an edge sharper than the crease angle; in the parts of a lighter copy made coarser, whose triangles meet
+    // at sharper angles than the model's, it's where the model's own surfaces meet)
+    const crease = rough ? e => (rough[E.t0[e]] || rough[E.t1[e]] ? E.t1[e] >= 0 && of[E.t0[e]] !== of[E.t1[e]] : E.cos[e] < sharp) : e => E.cos[e] < sharp;
+    if (lines) for (let e = 0; e < E.ne; e++) {
+      // (where the file's colors change is a line too, as it bounds a part)
+      drawn[e] = all || (!E.lap[e] && (E.open[e] || crease(e) || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0 || (triCol && E.t1[e] >= 0 && triCol[E.t0[e]] !== triCol[E.t1[e]]))) ? 1 : 0;
+      if (!special || !drawn[e]) continue;
+      // (a line between two surfaces goes with them both: gone only if both are, and in the look of the one given its own)
+      const s0 = of[E.t0[e]], s1 = E.t1[e] >= 0 ? of[E.t1[e]] : s0;
+      if (gone[s0] && gone[s1]) drawn[e] = 0; else pen[e] = !gone[s0] && penBy[s0] ? penBy[s0] : !gone[s1] && penBy[s1] ? penBy[s1] : 0;
+    }
+    if (lines && !all && mesh.thin) {
+      // A thinned mesh is rough in small ways, which leaves stray scraps of line. An outline, a crease or an open rim runs
+      // on from edge to edge, so lines joined into fewer than six edges are dropped (in a lighter copy, only where it was
+      // made coarser).
+      const top = new Int32Array(mesh.pos.length / 3).fill(-1), find = v => { let r = v; while (top[r] >= 0) r = top[r]; while (top[v] >= 0) { const n = top[v]; top[v] = r; v = n; } return r; };
+      const size = new Int32Array(mesh.pos.length / 3);
+      for (let e = 0; e < E.ne; e++) if (drawn[e]) { const x = find(E.a[e]), y = find(E.b[e]); if (x !== y) { top[y] = x; size[x] += size[y] + 1; } else size[x]++; }
+      for (let e = 0; e < E.ne; e++) if (drawn[e] && size[find(E.a[e])] < 6 && (!mesh.rough || mesh.rough[E.t0[e]])) drawn[e] = 0;
+    }
+    view.drawn = drawn; view.pen = pen; view.lineKey = L.lineKey; view.from = null; view.at = null;
+  }
+}
 
 // ---- A lighter copy, for while it moves ----
-// A model of many triangles takes a while to draw, too long to draw it again and again as its box is dragged, turned or
-// resized, or the view under it changes. Meanwhile it's drawn from a lighter copy of about LITE_TRIS triangles, thinned
-// the way an import is: each keeps its color, and knows the triangle it came from (`src`), so it takes that one's surface
-// and look. Made the first time it's needed, and kept with the mesh (not stored).
-const LITE_TRIS = 10000;
+// A model of many triangles takes a while to draw, too long to draw it again and again as its box is turned, or the view
+// under it changes. Meanwhile it's drawn from a lighter copy, which is quicker to draw in three ways:
+//  - Its flat pieces are drawn whole (see flatPieces): a cube's side is one shape filled, not two triangles, with no seam
+//    between them to close.
+//  - Its faces turned away are left out where they can't be seen anyway: a closed part's, the model all opaque.
+//  - Each line is drawn once, with the nearer of the pieces either side of it.
+// That's often enough for the whole model, every triangle of it. Where it isn't, the parts with the most triangles are
+// made coarser, till what's drawn comes to about LITE_COST: each part on its own, so no two run together, and none
+// coarser than its own box (a part made of a box stays as it is). A part is made coarser by gathering its points into a
+// grid of cells, one point each, laid along its own sides, with at least one cell (two points) each way. Each triangle
+// keeps its color and knows the one it came from (`src`), so it takes that one's surface and look. Made the first time
+// it's needed or once the model has been drawn (see paintModel), and kept with the mesh (not stored).
+const LITE_TRIS = 10000, LITE_COST = 10000;
 function liteMesh(m) {
   if (!m) return null;
   if (m.lite !== undefined) return m.lite;
   m.lite = null;
   if (m.idx.length / 3 > LITE_TRIS * 1.5) {
-    try { const t = tidyMesh(m.pos, m.idx, m.colors || null, LITE_TRIS); if (t.idx.length < m.idx.length) m.lite = { name: m.name, pos: t.pos, idx: t.idx, colors: t.colors, src: t.src, thin: true, up: m.up, full: m }; }
+    try { m.lite = makeLite(m); }
     catch (e) { /* it's drawn in full, then */ }
   }
   return m.lite;
+}
+function makeLite(m, most = LITE_COST) {
+  const { pos, idx } = m, nv = pos.length / 3, nt = idx.length / 3, E = meshEdges(m);
+  // its parts: the triangles joined through their points
+  const top = new Int32Array(nv).fill(-1), find = v => { let r = v; while (top[r] >= 0) r = top[r]; while (top[v] >= 0) { const n = top[v]; top[v] = r; v = n; } return r; };
+  const join = (a, b) => { a = find(a); b = find(b); if (a !== b) top[b] = a; };
+  for (let t = 0; t < nt; t++) { join(idx[t * 3], idx[t * 3 + 1]); join(idx[t * 3], idx[t * 3 + 2]); }
+  const pid = new Int32Array(nv), num = new Int32Array(nv).fill(-1); let np = 0;
+  for (let v = 0; v < nv; v++) { const r = find(v); if (num[r] < 0) num[r] = np++; pid[v] = num[r]; }
+  // each part's extent and its count of points; whether it's closed (every edge between two triangles, running along it
+  // opposite ways) and which way its faces point, out (1) or in (-1), by the sign of its volume; and its flat pieces
+  const lo = new Float64Array(np * 3).fill(Infinity), hi = new Float64Array(np * 3).fill(-Infinity), pts = new Int32Array(np), shut = new Uint8Array(np).fill(1), vol = new Float64Array(np), out = new Int8Array(np);
+  for (let v = 0; v < nv; v++) { const p = pid[v]; pts[p]++; for (let c = 0; c < 3; c++) { const x = pos[v * 3 + c]; if (x < lo[p * 3 + c]) lo[p * 3 + c] = x; if (x > hi[p * 3 + c]) hi[p * 3 + c] = x; } }
+  for (let e = 0; e < E.ne; e++) if (E.open[e] || E.lap[e] || E.same[e] || E.t1[e] < 0) shut[pid[idx[E.t0[e] * 3]]] = 0;
+  for (let t = 0; t < nt; t++) {
+    const p = pid[idx[t * 3]], q = [0, 1, 2].map(j => [0, 1, 2].map(c => pos[idx[t * 3 + j] * 3 + c] - (lo[p * 3 + c] + hi[p * 3 + c]) / 2));
+    vol[p] += q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1]) - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0]) + q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
+  }
+  for (let p = 0; p < np; p++) { const d = Math.max(hi[p * 3] - lo[p * 3], hi[p * 3 + 1] - lo[p * 3 + 1], hi[p * 3 + 2] - lo[p * 3 + 2]); if (shut[p] && Math.abs(vol[p]) > 1e-9 * d * d * d) out[p] = Math.sign(vol[p]); }
+  const flats = flatPieces(m, E), flatsOf = new Int32Array(np), seen = new Uint8Array(flats.count);
+  for (let t = 0; t < nt; t++) if (!seen[flats.of[t]]) { seen[flats.of[t]] = 1; flatsOf[pid[idx[t * 3]]]++; }
+  // (what a part costs to draw: its flat pieces, or made coarser, its triangles; a closed one's, about half of them)
+  const share = p => (out[p] ? 0.5 : 1);
+  let whole = 0; for (let p = 0; p < np; p++) whole += flatsOf[p] * share(p);
+  const outOf = Int8Array.from({ length: nt }, (_, t) => out[pid[idx[t * 3]]]);
+  if (whole <= most) return { name: m.name, pos, idx, colors: m.colors || null, src: Uint32Array.from({ length: nt }, (_, t) => t), thin: !!m.thin, rough: null, out: outOf, up: m.up, full: m, edges: E, flats };
+  // Gathered with cells `h` across (in the file's units): each point's cell, by number (`cell`), and how many cells each
+  // part's points fill. A part whose every point has a cell of its own is as it was.
+  let big = 0;
+  for (let c = 0; c < 3; c++) { let a = Infinity, b = -Infinity; for (let p = 0; p < np; p++) { a = Math.min(a, lo[p * 3 + c]); b = Math.max(b, hi[p * 3 + c]); } big = Math.max(big, b - a); }
+  const cell = new Int32Array(nv), cells = new Int32Array(np);
+  const gather = h => {
+    const ids = new Map(), base = new Float64Array(np), n = new Int32Array(np * 3); let at = 0; cells.fill(0);
+    for (let p = 0; p < np; p++) { base[p] = at; let span = 1; for (let c = 0; c < 3; c++) { n[p * 3 + c] = Math.max(1, Math.round((hi[p * 3 + c] - lo[p * 3 + c]) / h)); span *= n[p * 3 + c] + 1; } at += span; }
+    for (let v = 0; v < nv; v++) {
+      const p = pid[v]; let key = 0;
+      for (let c = 2; c >= 0; c--) { const d = hi[p * 3 + c] - lo[p * 3 + c], nc = n[p * 3 + c]; key = key * (nc + 1) + (d > 0 ? Math.round((pos[v * 3 + c] - lo[p * 3 + c]) / d * nc) : 0); }
+      key += base[p];
+      let id = ids.get(key); if (id === undefined) { id = ids.size; ids.set(key, id); cells[p]++; }
+      cell[v] = id;
+    }
+    return ids.size;
+  };
+  const costAt = h => {
+    gather(h);
+    const tris = new Int32Array(np);
+    for (let t = 0; t < nt; t++) { const p = pid[idx[t * 3]]; if (cells[p] === pts[p]) continue; const a = cell[idx[t * 3]], b = cell[idx[t * 3 + 1]], c = cell[idx[t * 3 + 2]]; if (a !== b && b !== c && a !== c) tris[p]++; }
+    let cost = 0; for (let p = 0; p < np; p++) cost += (cells[p] === pts[p] ? flatsOf[p] : tris[p]) * share(p);
+    return cost;
+  };
+  // (the finest that comes to `most`, between 4096 cells across the model and 32: if even 32 is more, that)
+  let fine = big / 4096, coarse = big / 32;
+  if (costAt(coarse) <= most) { for (let i = 0; i < 12; i++) { const mid = Math.sqrt(fine * coarse); if (costAt(mid) <= most) coarse = mid; else fine = mid; } }
+  const nc = gather(coarse), sum = new Float64Array(nc * 3), cnt = new Int32Array(nc);
+  for (let v = 0; v < nv; v++) { const id = cell[v]; cnt[id]++; for (let c = 0; c < 3; c++) sum[id * 3 + c] += pos[v * 3 + c]; }
+  const T = [], src = [], rough = [], got = new Set();
+  for (let t = 0; t < nt; t++) {
+    const p = pid[idx[t * 3]], a = cell[idx[t * 3]], b = cell[idx[t * 3 + 1]], c = cell[idx[t * 3 + 2]], coarser = cells[p] !== pts[p];
+    if (a === b || b === c || a === c) continue;
+    if (coarser) { const l3m = Math.min(a, b, c), h3 = Math.max(a, b, c), key = (l3m * nc + (a + b + c - l3m - h3)) * nc + h3; if (got.has(key)) continue; got.add(key); }
+    T.push(a, b, c); src.push(t); rough.push(coarser || m.thin ? 1 : 0);
+  }
+  // (points no triangle uses go)
+  const used = new Int32Array(nc).fill(-1), P = []; let k = 0;
+  const I = Uint32Array.from(T, v => { if (used[v] < 0) { used[v] = k++; P.push(sum[v * 3] / cnt[v], sum[v * 3 + 1] / cnt[v], sum[v * 3 + 2] / cnt[v]); } return used[v]; });
+  const S = Uint32Array.from(src), lite = { name: m.name, pos: Float32Array.from(P), idx: I, colors: m.colors ? { pal: m.colors.pal, tri: Uint16Array.from(S, t => m.colors.tri[t]) } : null, src: S, thin: true, rough: Uint8Array.from(rough), out: Int8Array.from(S, t => outOf[t]), up: m.up, full: m };
+  lite.flats = flatPieces(lite, meshEdges(lite));
+  return lite;
+}
+// A mesh's flat pieces: its triangles gathered across the edges where they lie in one plane and run round the same way,
+// in one color, into pieces small for the model (a sixteenth of it across, at most) and no more than twice as big across
+// as the biggest triangle in each. (Drawn furthest first, a big piece would go by its middle, and could be drawn over
+// what's nearer than that but behind it, as two triangles wouldn't be, each going by its own: so a big flat face, a
+// floor or a wall, stays in its triangles.) `of` is each triangle's piece; and a piece of more than one triangle, with
+// a single edge all round it, has its corners in order round it (piece p's are loop[loopAt[p]] up to loop[loopAt[p + 1]],
+// none for one that hasn't), to fill as one shape.
+function flatPieces(m, E) {
+  const { pos, idx } = m, nt = idx.length / 3, of = new Int32Array(nt).fill(-1), col = m.colors ? m.colors.tri : null, te = E.te, bb = new Float64Array(nt * 6), size = new Float64Array(nt), todo = [];
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let t = 0; t < nt; t++) {
+    for (let c = 0; c < 3; c++) { let a = Infinity, b = -Infinity; for (let j = 0; j < 3; j++) { const x = pos[idx[t * 3 + j] * 3 + c]; if (x < a) a = x; if (x > b) b = x; } bb[t * 6 + c] = a; bb[t * 6 + 3 + c] = b; if (a < lo[c]) lo[c] = a; if (b > hi[c]) hi[c] = b; }
+    size[t] = Math.hypot(bb[t * 6 + 3] - bb[t * 6], bb[t * 6 + 4] - bb[t * 6 + 1], bb[t * 6 + 5] - bb[t * 6 + 2]);
+  }
+  const small = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 16;
+  let count = 0; const box = new Float64Array(6);
+  for (let s = 0; s < nt; s++) {
+    if (of[s] >= 0) continue;
+    of[s] = count; for (let c = 0; c < 6; c++) box[c] = bb[s * 6 + c]; let most = size[s];
+    if (most <= small) todo.push(s);
+    while (todo.length) {
+      const t = todo.pop();
+      for (let k = 0; k < 3; k++) {
+        const e = te[t * 3 + k]; if (E.open[e] || E.lap[e] || E.same[e] || E.t1[e] < 0 || E.cos[e] < 0.99999) continue;
+        const o = E.t0[e] === t ? E.t1[e] : E.t0[e]; if (of[o] >= 0 || (col && col[o] !== col[t])) continue;
+        const x0 = Math.min(box[0], bb[o * 6]), y0 = Math.min(box[1], bb[o * 6 + 1]), z0 = Math.min(box[2], bb[o * 6 + 2]), x1 = Math.max(box[3], bb[o * 6 + 3]), y1 = Math.max(box[4], bb[o * 6 + 4]), z1 = Math.max(box[5], bb[o * 6 + 5]);
+        const across = Math.hypot(x1 - x0, y1 - y0, z1 - z0); if (across > small || across > 2 * Math.max(most, size[o]) + 1e-12) continue;
+        box[0] = x0; box[1] = y0; box[2] = z0; box[3] = x1; box[4] = y1; box[5] = z1; most = Math.max(most, size[o]);
+        of[o] = count; todo.push(o);
+      }
+    }
+    count++;
+  }
+  // (each piece's triangles, then the edges round it: from each corner, the one edge on its rim running on from there)
+  const at = new Uint32Array(count + 1); for (let t = 0; t < nt; t++) at[of[t] + 1]++;
+  for (let p = 0; p < count; p++) at[p + 1] += at[p];
+  const tris = new Uint32Array(nt), fill = at.slice(0, count); for (let t = 0; t < nt; t++) tris[fill[of[t]]++] = t;
+  const loopAt = new Uint32Array(count + 1), loop = [], next = new Map();
+  for (let p = 0; p < count; p++) {
+    loopAt[p] = loop.length;
+    if (at[p + 1] - at[p] < 2) continue;
+    next.clear(); let simple = true;
+    for (let j = at[p]; j < at[p + 1] && simple; j++) {
+      const t = tris[j];
+      for (let k = 0; k < 3; k++) {
+        const e = te[t * 3 + k], o = E.t0[e] === t ? E.t1[e] : E.t0[e]; if (o >= 0 && of[o] === p) continue;
+        const a = idx[t * 3 + k]; if (next.has(a)) { simple = false; break; } next.set(a, idx[t * 3 + (k + 1) % 3]);
+      }
+    }
+    if (!simple || !next.size) continue;
+    const first = next.keys().next().value, ring = [first]; let v = next.get(first);
+    while (v !== first && v !== undefined && ring.length <= next.size) { ring.push(v); v = next.get(v); }
+    if (v === first && ring.length === next.size) loop.push(...ring);
+  }
+  loopAt[count] = loop.length;
+  return { of, count, loopAt, loop: Uint32Array.from(loop) };
+}
+// The lighter copy drawn: each flat piece (or bit of one, see modelView) filled in one go, furthest first, with a hair
+// of its color along its sides that aren't lines, to close the seam with what's beside it; those turned away left out
+// if nothing of the model's see-through or hidden. Each line beside a piece that's drawn is drawn once, after the last
+// piece drawn that meets either end of it, so that one drawn later just beside it (on a thin part, the next face round)
+// doesn't cover it: where the model's own drawing, drawing the lines at each triangle's corners, leaves it. (Along an
+// edge a lens has cut, each bit of it goes with its piece.) Without a lighter copy, the model's drawn as it is.
+function drawQuick(c, bx, g, k, G, skip, lite) {
+  if (!lite) { drawModel(c, bx, g, k, G, skip); return; }
+  const view = modelView(bx, g, G, lite); if (!view) return;
+  const L = modelLook(bx, k, skip, lite), { M, of, shades, fileCol, shadesAt, lines, lw, special, gone, shadeBy, opBy, pens } = L, E = meshEdges(lite);
+  modelLines(view, L, E);
+  const { S, sx, sy, lit, ok, iorder, ia, ib, ifirst, iface, iloop, hand, byFlat, drawn, pen } = view, { loopAt, loop } = lite.flats, { tri, er, par, cut } = S, out = lite.out, list = byFlat.list;
+  const cull = M.opacity >= 0.999 && !M.hide.length && !skip && Object.values(M.own || {}).every(o => !(o.opacity < 0.999));
+  // (which pieces are drawn, numbered in order; the last drawn along each edge, and at each point)
+  const rank = new Int32Array(ia.length).fill(-1), last = new Int32Array(E.ne).fill(-1), lastAt = new Int32Array(sx.length).fill(-1); let r = 0;
+  for (let n = 0; n < iorder.length; n++) {
+    const i = iorder[n], t0 = par[ifirst[i]];
+    if (special && gone[of[t0]]) continue;
+    if (cull && out[t0] && iface[i] * out[t0] * hand < 0) continue; // (turned away: its outside faces away from the eye)
+    rank[i] = r;
+    for (let j = ia[i]; j < ib[i]; j++) { const t = list[j]; if (ok[t]) for (let q = 0; q < 3; q++) { const e = er[t * 3 + q]; if (e >= 0) last[e] = r; lastAt[tri[t * 3 + q]] = r; } }
+    r++;
+  }
+  // (a side of a piece is its own to draw, for a seam: along an edge, if it's the last drawn there, and along a cut one,
+  // always. The lines, but for cut ones, in the order they go in: line[lineAt[R]] up to line[lineAt[R + 1]] after piece R)
+  const mine = (e, R) => e < 0 || cut[e] || last[e] === R;
+  const lineAt = new Uint32Array(r + 2), when = new Int32Array(E.ne).fill(-1);
+  if (lines) for (let e = 0; e < E.ne; e++) if (drawn[e] && !cut[e] && last[e] >= 0) { when[e] = Math.max(lastAt[E.a[e]], lastAt[E.b[e]]); lineAt[when[e] + 1]++; }
+  for (let R = 0; R <= r; R++) lineAt[R + 1] += lineAt[R];
+  const line = new Uint32Array(lineAt[r + 1]), fill = lineAt.slice(0, r + 1);
+  for (let e = 0; e < E.ne; e++) if (when[e] >= 0) line[fill[when[e]]++] = e;
+  const others = pens.length > 1, later = [];
+  c.save(); c.lineJoin = "round"; c.lineCap = "round"; c.setLineDash([]);
+  // (the canvas's colors, width and opacity, set only when they change)
+  let fillNow = null, strokeNow = null, widthNow = -1, alphaNow = -1;
+  const fillIn = (v, a) => { if (v !== fillNow) c.fillStyle = fillNow = v; if (a !== alphaNow) c.globalAlpha = alphaNow = a; };
+  const penIn = (v, w, a) => { if (v !== strokeNow) c.strokeStyle = strokeNow = v; if (w !== widthNow) c.lineWidth = widthNow = w; if (a !== alphaNow) c.globalAlpha = alphaNow = a; };
+  for (let n = 0; n < iorder.length; n++) {
+    const i = iorder[n], R = rank[i]; if (R < 0) continue;
+    const t0 = ifirst[i], s = special ? of[par[t0]] : 0, op = special ? opBy[s] : M.opacity;
+    if (op > 0) {
+      const tone = (special && shadeBy[s] ? shadeBy[s] : fileCol ? shadesAt(par[t0]) : shades)[lit[t0]];
+      c.beginPath();
+      const p = iloop[i];
+      if (p >= 0) { const j0 = loopAt[p]; c.moveTo(sx[loop[j0]], sy[loop[j0]]); for (let j = j0 + 1; j < loopAt[p + 1]; j++) c.lineTo(sx[loop[j]], sy[loop[j]]); c.closePath(); }
+      else for (let j = ia[i]; j < ib[i]; j++) { const t = list[j]; if (!ok[t]) continue; const a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2]; c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); c.closePath(); }
+      fillIn(tone, op); c.fill();
+      if (op >= 0.999) {
+        let any = false; c.beginPath();
+        for (let j = ia[i]; j < ib[i]; j++) {
+          const t = list[j]; if (!ok[t]) continue;
+          for (let q = 0; q < 3; q++) {
+            const e = er[t * 3 + q]; if (!mine(e, R) || (e >= 0 && lines && drawn[e])) continue;
+            // (inside a piece of more than one triangle, there's no seam: one fill covers them all)
+            if (e >= 0 && ib[i] - ia[i] > 1 && E.t1[e] >= 0 && lite.flats.of[E.t0[e]] === lite.flats.of[E.t1[e]]) continue;
+            const a = tri[t * 3 + q], b = tri[t * 3 + (q + 1) % 3]; c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); any = true;
+          }
+        }
+        if (any) { penIn(tone, 0.7 / k, op); c.stroke(); }
+      }
+    }
+    if (!lines) continue;
+    // (lines in the model's look go in one stroke; any in a surface's own look are kept for a stroke each after it)
+    let any = false; later.length = 0; c.beginPath();
+    const seg = (a, b, e) => { if (others && pen[e]) later.push(a, b, pen[e]); else { c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); any = true; } };
+    for (let j = lineAt[R]; j < lineAt[R + 1]; j++) { const e = line[j]; seg(E.a[e], E.b[e], e); }
+    for (let j = ia[i]; j < ib[i]; j++) {
+      const t = list[j]; if (!ok[t]) continue;
+      for (let q = 0; q < 3; q++) { const e = er[t * 3 + q]; if (e >= 0 && cut[e] && drawn[e]) seg(tri[t * 3 + q], tri[t * 3 + (q + 1) % 3], e); }
+    }
+    if (any) { penIn(M.stroke, lw, 1); c.stroke(); }
+    for (let i = 0; i < later.length; i += 3) { const Q = pens[later[i + 2]]; c.beginPath(); c.moveTo(sx[later[i]], sy[later[i]]); c.lineTo(sx[later[i + 1]], sy[later[i + 1]]); penIn(Q.stroke, Q.lw, Q.alpha); c.stroke(); }
+  }
+  c.restore();
 }
 function liteSurfaces(lite, SF) {
   lite.ofs = lite.ofs || new Map();
@@ -3411,7 +3692,12 @@ function paintModel(c, bx, g, k, G, skip) {
       while (job.n < Infinity && performance.now() - t0 + paintSpent < PAINT_BUDGET) job.n = drawModel(job.ctx, bx, g, k, G, skip, null, job.n, job.n + PIC_SLICE) >= job.total ? Infinity : job.n + PIC_SLICE;
       paintSpent += performance.now() - t0;
     }
-    if (job && job.n === Infinity) { picJobs.delete(bx); modelPics.set(id, job.pic); lastPics.set(bx, job.pic); trimPics(job.pic); putPic(c, job.pic, k); return; }
+    if (job && job.n === Infinity) {
+      picJobs.delete(bx); modelPics.set(id, job.pic); lastPics.set(bx, job.pic); trimPics(job.pic); putPic(c, job.pic, k);
+      // (its lighter copy made while nothing's happening, so it's there the first time the model's turned)
+      const m = modelOf(bx); if (m && m.lite === undefined) (window.requestIdleCallback || (f => setTimeout(f, 300)))(() => liteMesh(m));
+      return;
+    }
     redraw(); // (more next frame)
   } else settleLater();
   // meanwhile: the picture it had; or, moved or resized, its last picture carried along with its box; or (turned, or with
@@ -3420,7 +3706,7 @@ function paintModel(c, bx, g, k, G, skip) {
     // (all of it that's in view, if it has that; a huge one panned past what its picture covers comes from its lighter copy)
     const need = overlap(pic.box, visibleBounds());
     const lite = liteMesh(modelOf(bx));
-    if (!need || (pic.rect && holdsRect(pic.rect, need)) || !lite) putPic(c, pic, k); else drawModel(c, bx, g, k, G, skip, lite);
+    if (!need || (pic.rect && holdsRect(pic.rect, need)) || !lite) putPic(c, pic, k); else drawQuick(c, bx, g, k, G, skip, lite);
     return;
   }
   const last = lastPics.get(bx), turning = drag && drag.moved && (drag.type === "ring" || drag.type === "boxvp");
@@ -3428,7 +3714,7 @@ function paintModel(c, bx, g, k, G, skip) {
     const A = fitAffine(last.corners, [...G.B, ...G.T]);
     if (A) { c.save(); c.transform(...A); c.globalAlpha = 1; c.globalCompositeOperation = "source-over"; c.drawImage(last.canvas, last.rect.x, last.rect.y, last.rect.w, last.rect.h); c.restore(); return; }
   }
-  drawModel(c, bx, g, k, G, skip, liteMesh(modelOf(bx)));
+  drawQuick(c, bx, g, k, G, skip, liteMesh(modelOf(bx)));
 }
 // The map of the page (as a canvas transform: a, b, c, d, e, f) that takes points P nearest onto points Q, keeping
 // straight lines straight; or null if it can't, to within an eighth of Q's size
