@@ -3208,7 +3208,7 @@ const shapeOf = bx => { const m = bx && bx.model && /^shape-([a-z]+)-(\d+)$/.exe
 const shapeHere = () => (hasBox() ? shapeOf(state.boxes[state.sel]) : null);
 function setShapeN(v) {
   const bx = state.boxes[state.sel], sh = shapeOf(bx); if (!sh) return;
-  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; bx.model.own = {}; bx.model.hide = []; ui.faces = ui.faces.filter(p => !isModelSurface(p.id)); // (its surfaces are new ones)
+  bx.model.id = `shape-${sh.kind}-${Math.round(v)}`; bx.model.own = {}; bx.model.hide = []; // (its surfaces are new ones; one picked stays picked, as pickValid has it)
   fitModelBox(bx); touch();
 }
 // A new shape, where and as big as a new box would be, with just the shape showing
@@ -5076,11 +5076,11 @@ function setP(path, val) {
   }
   if (path === "boxes.$b.model.crease") {
     // A new crease angle can gather a model's triangles into different surfaces. If it does, what was set on the old ones
-    // (and which were hidden or picked) no longer means anything, and goes.
+    // (and which were hidden) no longer means anything, and goes; one picked stays picked, as pickValid has it.
     const bx = state.boxes[state.sel], m = modelOf(bx), was = m && meshSurfaces(m, bx.model.crease).of;
     rawSet(parts, val);
     const now = m && meshSurfaces(m, bx.model.crease).of;
-    if (was && now && was.some((v, i) => v !== now[i])) { bx.model.own = {}; bx.model.hide = []; ui.faces = ui.faces.filter(p => !isModelSurface(p.id)); }
+    if (was && now && was.some((v, i) => v !== now[i])) { bx.model.own = {}; bx.model.hide = []; }
     touch(); return;
   }
   if (path === "boxes.$b.model.up") {
@@ -6758,7 +6758,13 @@ const fpTitle = el("span", { class: "fp-title" }), fpClose = el("button", { type
 const fpHead = el("div", { class: "fp-head", title: "Drag to move" }, fpTitle, fpClose), fpBody = el("div", { class: "fp-body" });
 facePop.append(fpHead, fpBody); facePop.hidden = true; document.body.append(facePop);
 const editing = () => !facePop.hidden && ui.faces.length > 0;
-const pickValid = () => { ui.faces = ui.faces.filter(({ bi, id }) => { const b = state.boxes[bi]; return b && (isModelSurface(id) ? !!modelOf(b) && +id.slice(1) < meshSurfaces(modelOf(b), b.model.crease).count : planeAxis(id) < 0 || planeIdsOf(b).includes(id)); }); };
+// (a model's surface picked keeps its number when the model's surfaces are made again, by a shape's number of sides or faces
+// or a crease angle, so the pop-up stays up, and past the last there is, it becomes the last; it goes only with its model)
+const pickValid = () => {
+  ui.faces = ui.faces.map(p => { const b = state.boxes[p.bi], m = b && isModelSurface(p.id) && modelOf(b), n = m ? meshSurfaces(m, b.model.crease).count : 0; return n && +p.id.slice(1) >= n ? { bi: p.bi, id: "m" + (n - 1) } : p; })
+    .filter(({ bi, id }) => { const b = state.boxes[bi]; return b && (isModelSurface(id) ? !!modelOf(b) && +id.slice(1) < meshSurfaces(modelOf(b), b.model.crease).count : planeAxis(id) < 0 || planeIdsOf(b).includes(id)); })
+    .filter((p, i, all) => all.findIndex(q => q.bi === p.bi && q.id === p.id) === i);
+};
 const picks = () => ui.faces.filter(p => state.boxes[p.bi]).map(p => ({ bi: p.bi, id: p.id, bx: state.boxes[p.bi] }));
 const first = () => picks()[0];
 // the first one's setting as it stands (its own, or its box's), and a setting given to them all as their own
