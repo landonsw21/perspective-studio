@@ -58,7 +58,13 @@ body { background: var(--chrome); color: var(--ink); font-family: var(--f-ui); f
 .tb[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
 .tb.primary { background: var(--ink); color: var(--panel); border-color: var(--ink); }
 .tb:disabled { opacity: .45; cursor: default; }
-select.tb { padding: 7px 6px; max-width: none; }
+/* (the toolbar's dropdowns draw their own arrow, a small chevron with room either side of it, in the theme's colors) */
+select.tb {
+  -webkit-appearance: none; appearance: none; max-width: none; padding: 7px 29px 7px 10px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: right 15px top 50%, right 11px top 50%; background-size: 4px 4px; background-repeat: no-repeat;
+}
+select.tb:hover { background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%); }
 /* (the shape dropdown and the + that adds it, joined as one control) */
 .tbjoin { display: inline-flex; }
 .tbjoin > select.tb { border-radius: 6px 0 0 6px; border-right-width: 0; max-width: 136px; text-overflow: ellipsis; }
