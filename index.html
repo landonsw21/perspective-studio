@@ -1924,7 +1924,7 @@ function snapTopCurvi(Bu, w, g, skip = []) {
   return best;
 }
 // Where a dragged point snaps on the other boxes, on screen, as {p, corner}: with Snap to other boxes' corners, their
-// corners; with Snap to other boxes' divisions, where the division lines of their faces and planes cross each other and
+// corners, and a shape's or model's own corners (its box's too only when the box is drawn or it has none); with Snap to other boxes' divisions, where the division lines of their faces and planes cross each other and
 // meet the edges, the middles of their diagonals' crosses, and their planes' corners, all measured in depth as they're
 // drawn. Only faces and planes that show have them, and only on a box that's drawn: a shape or model with its box turned
 // off keeps just its corners. Each spot (a point) goes to `fn`, from the boxes not in `skip` (the ones being dragged) whose extent on
@@ -1947,12 +1947,36 @@ function eachBoxSpot(skip, near, fn) {
   for (const b of spotCache.boxes) if (b && (!near || near(b.e))) { if (!b.spots) b.spots = spotsOf(b.bx, spotCache.g, b.G).map(s => s.p); for (const p of b.spots) fn(p); }
   if (!drag) spotCache = null;
 }
+// A shape's or model's corners (see modelCorners) where they are for its box as it stands, each on the page (`p`, where
+// the model's drawn), with the surfaces it's on (`surfs`) and, with `in3D`, in the view's 3D (`q`, in the box's frame, as
+// moving it takes it). Corners on just hidden surfaces are left out, and so are any behind the eye.
+function modelCornerSpots(bx, g, G = boxGeo(bx, g), in3D = false) {
+  const m = modelOf(bx); if (!m) return [];
+  const C = modelCorners(m, bx.model.crease); if (!C.at.length) return [];
+  const mv = modelView(bx, g, G); if (!mv) return [];
+  const F = boxFrame(bx, g, G), { O, ax } = F, { q } = modelShape(m, bx.model.up, bx.model.turn, 0), hide = new Set(bx.model.hide), out = [];
+  const { sx, sy } = mv, need3 = in3D || F.in3;
+  C.at.forEach((i, n) => {
+    if (hide.size && C.surfs[n].every(sf => hide.has(sf))) return;
+    let X = null;
+    if (need3) {
+      const u = mv.flip ? 1 - q[i * 3] : q[i * 3], v = q[i * 3 + 1], w = q[i * 3 + 2];
+      X = V3(O.x + ax[0].x * u + ax[1].x * v + ax[2].x * w, O.y + ax[0].y * u + ax[1].y * v + ax[2].y * w, O.z + ax[0].z * u + ax[1].z * v + ax[2].z * w);
+      if (F.in3 && !inFront(F.cam, X)) return;
+    }
+    if (Number.isFinite(sx[i]) && Number.isFinite(sy[i])) out.push({ p: P(sx[i], sy[i]), q: X, surfs: C.surfs[n] });
+  });
+  return out;
+}
 // (each face's side of the box: its direction, x, y or z, and 0 at corner 0 or 1 across from it)
 const FACE_AT = { s01: [1, 0], s12: [0, 1], s23: [1, 1], s30: [0, 0], bottom: [2, 0], top: [2, 1] };
 const MOST_SPOTS = 4096; // (past 64 × 64 cells a surface gives just the spots on its edges)
 function spotsOf(bx, g, G = boxGeo(bx, g)) {
-  const out = state.snap.corners ? [...G.B, ...G.T].map(p => ({ p: P(p.x, p.y), corner: true })) : [];
-  if (!state.snap.divisions || (bx.model && bx.model.frame === false)) return out;
+  // (a shape's or model's own corners, and its box's when the box is drawn, or when it has none of its own)
+  const own = state.snap.corners ? modelCornerSpots(bx, g, G).map(c => ({ p: c.p, corner: true })) : [], framed = !(bx.model && bx.model.frame === false);
+  const out = state.snap.corners && (framed || !own.length) ? [...G.B, ...G.T].map(p => ({ p: P(p.x, p.y), corner: true })) : [];
+  out.push(...own);
+  if (!state.snap.divisions || !framed) return out;
   const F = boxFrame(bx, g, G), seen = new Set(["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"].map(c => cornerSpot(c).join()));
   const put = q => {
     const id = q.map(v => Math.round(v * 1e9) / 1e9).join(); if (seen.has(id)) return; seen.add(id);
@@ -3312,6 +3336,32 @@ function meshSurfaces(m, crease) {
   const out = { of, count, flat, nrm, first: starts };
   if (m.surfs.size >= 6) m.surfs.delete(m.surfs.keys().next().value); // (only the last few crease angles tried are kept)
   m.surfs.set(key, out);
+  return out;
+}
+// A model's corners, as its mesh's point numbers (`at`), each with the surfaces it's on (`surfs`): where three or more of
+// its surfaces meet, as its crease angle gathers them (a prism's, a pyramid's or a polyhedron's corners), or where a
+// surface comes to a point, as a cone's does at its tip: the angles of the triangles round it add up to well short of a
+// full turn (only where the mesh is closed all round it, so the rim of an open one doesn't count). Kept for each crease
+// angle.
+const POINTED = 45 * deg;
+function modelCorners(m, crease) {
+  const key = String(crease); m.cornersAt = m.cornersAt || new Map();
+  if (m.cornersAt.has(key)) return m.cornersAt.get(key);
+  const { pos, idx } = m, nv = pos.length / 3, nt = idx.length / 3, of = meshSurfaces(m, crease).of, E = meshEdges(m);
+  const turn = new Float64Array(nv), rim = new Uint8Array(nv), on = Array.from({ length: nv }, () => null);
+  for (let t = 0; t < nt; t++) for (let k = 0; k < 3; k++) {
+    const a = idx[t * 3 + k], b = idx[t * 3 + (k + 1) % 3], c = idx[t * 3 + (k + 2) % 3], e = E.te[t * 3 + k];
+    if (E.open[e] || E.lap[e]) { rim[a] = 1; rim[b] = 1; }
+    const ux = pos[b * 3] - pos[a * 3], uy = pos[b * 3 + 1] - pos[a * 3 + 1], uz = pos[b * 3 + 2] - pos[a * 3 + 2], vx = pos[c * 3] - pos[a * 3], vy = pos[c * 3 + 1] - pos[a * 3 + 1], vz = pos[c * 3 + 2] - pos[a * 3 + 2];
+    const lu = Math.hypot(ux, uy, uz), lv = Math.hypot(vx, vy, vz);
+    if (lu > 0 && lv > 0) turn[a] += Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (lu * lv))));
+    const sf = of[t]; if (!on[a]) on[a] = [sf]; else if (!on[a].includes(sf)) on[a].push(sf);
+  }
+  const at = [], surfs = [];
+  for (let i = 0; i < nv; i++) if (on[i] && (on[i].length >= 3 || (!rim[i] && 2 * Math.PI - turn[i] > POINTED))) { at.push(i); surfs.push(on[i]); }
+  const out = { at: Uint32Array.from(at), surfs };
+  if (m.cornersAt.size >= 6) m.cornersAt.delete(m.cornersAt.keys().next().value);
+  m.cornersAt.set(key, out);
   return out;
 }
 // What a surface is called: the top or the base if it's flat and faces straight up or down as the model sits, a face if
@@ -5203,7 +5253,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings and to other boxes' corners and division points. Drag a round handle to set height; it snaps the same way along its vertical. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Drag a round handle to set height; it snaps the same way along its vertical. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -5271,7 +5321,7 @@ const schema = [
     { t: "range", bind: "snap.radius", label: "Snap radius (screen px)", min: 4, max: 40, step: 1, lo: 1, hi: 400 },
     { t: "check", bind: "snap.points", label: "Snap to ray intersections" },
     { t: "check", bind: "snap.lines", label: "Slide along rays when no crossing is near" },
-    { t: "check", bind: "snap.corners", label: "Snap to other boxes' corners" },
+    { t: "check", bind: "snap.corners", label: "Snap to other boxes' and shapes' corners" },
     { t: "check", bind: "snap.divisions", label: "Snap to other boxes' divisions and planes" },
     { t: "check", bind: "snap.dots", label: "Mark intersections on the canvas" },
     { t: "btns", items: [["Reset everything", resetAll, "warn"]] }
@@ -6196,7 +6246,13 @@ canvas.addEventListener("pointerdown", e => {
     const seeThrough = toward.some(f => bx.faces[f.id] === false || faceOp(f.id) < 0.999);
     const names = seeThrough ? ["b0", "b1", "b2", "b3", "t0", "t1", "t2", "t3"] : [...new Set(toward.flatMap(f => f.v))];
     const onScreen = q => { const p = cam.proj(q); return len(sub(P(p.x, p.y), w)); };
-    const corner = names.map(corner3).reduce((a, q) => (onScreen(q) < onScreen(a) ? q : a));
+    let corner = names.map(corner3).reduce((a, q) => (onScreen(q) < onScreen(a) ? q : a));
+    // (a shape or model taken hold of by one of its own surfaces goes by that surface's corner nearest where you took hold,
+    // if it has any: a prism's side by one of its four, a cone's side by its tip)
+    if (hit.surf) {
+      const sf = +hit.surf.slice(1), own = modelCornerSpots(bx, g, boxGeo(bx, g), true).filter(c => c.surfs.includes(sf));
+      if (own.length) corner = own.reduce((a, c) => (len(sub(c.p, w)) < len(sub(a.p, w)) ? c : a)).q;
+    }
     // the spot taken hold of, from the box's middle: where the line of sight first meets the box
     const d = n3(cam.unproj(cam.wrapS ? cam.wrapS(w) : w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
     drag.rig = { cam, B, H, c0, corner, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
