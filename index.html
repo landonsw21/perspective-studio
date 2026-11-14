@@ -393,6 +393,8 @@ function defaultState() {
     linkRays: true, symmetric: false, lockFrame: false, rotateFaces: true, boxOrder: "distance",
     // the vertical guides follow a pattern of line styles, as rays do, counted from the middle one (or the outermost)
     verticals: { show: true, count: 16, spacing: 100, offset: 0, pattern: "A", from: "center", styles: { A: lineStyle("#7d8b96", 0.6, "solid", 0.4), B: lineStyle("#b3bcc3", 0.4, "solid", 0.3) } },
+    // the ground plane: shown as a grid, its squares `size` px wide at the foot of the page; `keep` keeps every object on it
+    ground: { show: false, size: 80, width: 0.6, opacity: 0.45, keep: false },
     horizontals: { show: true, count: 10, spacing: 60, offset: 0, color: "#7d8b96", width: 0.6, dash: "solid", opacity: 0.4 },
     cone: { show: false, angle: 60, cv: 0, color: "#7d8b96" },
     snap: { on: true, radius: 14, points: true, lines: true, corners: true, dots: true },
@@ -2062,7 +2064,8 @@ function boxSolids(g) {
     return kept;
   };
   // (a stack settles from the bottom up, one level each time round)
-  for (let pass = 0, moved = true; moved && pass < F.length; pass++) {
+  // (with every object kept on the ground, none stands on another)
+  for (let pass = 0, moved = !state.ground.keep; moved && pass < F.length; pass++) {
     moved = false;
     F.forEach((f, i) => { if (!level(f) || foot(f) >= 0) return; const v = standing(f, i); if (Math.abs(v - k[i]) > 1e-9 * k[i]) { k[i] = v; moved = true; } });
   }
@@ -2268,6 +2271,7 @@ function drawScene(c, k, b, inc) {
   const g = geo(), V = state.viewport;
   c.save();
   if (V.clip && inc.clipToView) { c.beginPath(); c.rect(V.x, V.y, V.w, V.h); c.clip(); }
+  if (inc.rays) drawGround(c, k, g);
   drawGuides(c, k, b, inc, g);
   if (inc.rays) drawOwnRays(c, k, b, g);
   if (inc.dots && state.snap.dots && state.snap.points) {
@@ -2996,7 +3000,7 @@ function modelView(bx, g, G) {
     list.push(t);
   }
   const order = Uint32Array.from(list).sort((i, j) => far[j] - far[i]);
-  const view = { key, S, sx, sy, order, lit, faces };
+  const view = { key, S, sx, sy, order, lit, faces, flip };
   modelViews.set(bx, view);
   return view;
 }
@@ -3290,6 +3294,115 @@ function modelNote() {
   if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side. Click one of its surfaces to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together; a new number of sides or faces makes new surfaces, so what was set on the old ones goes.`;
   if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
   return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge. The creases also bound its surfaces: click one to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together. A crease angle that gathers it into different surfaces clears what was set on the old ones.`;
+}
+
+/* ---------- the ground plane ---------- */
+// The ground: the level surface one eye height below the eye. Every box lies in one space with the eye at its origin, and
+// a drawing only fixes each box's direction from the eye, not how far off it is (see boxSolids), so each is read at the
+// distance that puts its lowest point on the ground: any box with its lowest point below eye level is standing on it,
+// wherever it's drawn. One wholly at or above eye level can't be, at any distance: it's floating, and Set objects down
+// drops it straight down onto the ground (from as high above the eye as its lowest point is, so it lands as far below,
+// mirrored across the horizon), keeping its size, its way round and how far off it is.
+// A box's lowest point in its own frame (box3's, at its own scale): its lowest corner, or for one holding a model or
+// shape, the model's own lowest point, with the size of the box to measure "near eye level" by
+function lowestOf(bx, g) {
+  const F = turnFrame(bx, g), size = Math.max(Math.abs(F.a), Math.abs(F.c), Math.abs(F.H)) || 1, m = modelOf(bx);
+  let low = Math.min(...[...F.B, ...F.T].map(p => p.y));
+  if (m) {
+    const Fr = boxFrame(bx, g), v = modelView(bx, g, boxGeo(bx, g));
+    if (v) {
+      const { q } = v.S, { O, ax } = Fr; let lo = Infinity;
+      for (let i = 0; i < q.length; i += 3) { const u = v.flip ? 1 - q[i] : q[i]; lo = Math.min(lo, O.y + ax[0].y * u + ax[1].y * q[i + 1] + ax[2].y * q[i + 2]); }
+      if (Number.isFinite(lo)) low = lo;
+    }
+  }
+  return { low, size };
+}
+const floating = (bx, g) => { const { low, size } = lowestOf(bx, g); return low > -1e-3 * size; };
+// Box bx dropped onto the ground if it's floating, as a new box, or null if it's on the ground already or the view can't
+// show it there
+function dropBox(bx, g) {
+  const { low, size } = lowestOf(bx, g); if (low <= -1e-3 * size) return null;
+  const fall = low > 1e-3 * size ? 2 * low : low + size, { B, H } = box3(bx, g);
+  return boxFrom3(bx, B.map(p => a3(p, V3(0, -fall, 0))), H, g);
+}
+function setObjectsDown() {
+  const g = geo(); let dropped = 0, stuck = 0;
+  state.boxes.forEach((bx, i) => {
+    if (!floating(bx, g)) return;
+    const nb = dropBox(bx, g); if (!nb) { stuck++; return; }
+    Object.assign(bx, { b0: nb.b0, b2: nb.b2, h: nb.h, H: nb.H }); captureFit(bx, g); dropped++;
+  });
+  state.ground.keep = true; commit(); touch();
+  toast(`${dropped ? `Set ${dropped} ${dropped === 1 ? "object" : "objects"} down onto the ground` : "Every object is on the ground already"}${stuck ? `; ${stuck} the view can't show there stayed up` : ""}. They stay on it as you drag them.`);
+}
+// Where a line of sight through screen point S meets the level plane at height y (in a box's frame, or the ground's at
+// -1), or null if it doesn't, in front of you
+function planeHit(cam, S, y) {
+  const d = cam.unproj(cam.wrapS ? cam.wrapS(S) : S); if (!d) return null;
+  const n = n3(d); if (!(n.y * y > 1e-9 * Math.abs(y))) return null;
+  return m3(n, y / n.y);
+}
+// The ground drawn as a grid: lines on it running the two ways the boxes' sides do, so each runs to a VP (in 1-point, to
+// the VP and across the picture), spaced so a square is `size` px wide where the ground meets the foot of the page, and
+// reaching back to where the squares are about 6 px wide. Each way takes the color of the rays of the VP it runs
+// to. Worked out again only when the view, the page or the grid changes.
+let groundCache = null;
+function groundLines(g) {
+  const cam = convCam(g), G = state.ground, V = state.viewport, [A1, A2] = cam.axes;
+  const key = JSON.stringify([state.mode, state.curvi.style4, state.horizon, state.vps.map(v => [v.dist, v.drop]), g.cam ? [state.curvi, state.cone.cv] : 0, G.size, V.x, V.y, V.w, V.h]);
+  if (groundCache && groundCache.key === key) return groundCache.out;
+  const out = [];
+  groundCache = { key, out };
+  // where the grid starts: the ground at the foot of the page, or nearer the horizon if that's above it
+  let O = null;
+  for (const f of [1, 0.85, 0.7, 0.55]) { O = planeHit(cam, P(V.x + V.w / 2, V.y + V.h * f), -1); if (O) break; }
+  if (!O) { const mid = P(g.O.x, g.O.y + 0.25 * V.h); O = planeHit(cam, mid, -1); }
+  if (!O) return out;
+  const e = 1e-3 * l3(O), p0 = cam.proj(O), p1 = cam.proj(a3(O, m3(A1, e))), p2 = cam.proj(a3(O, m3(A2, e)));
+  if (!p0 || !p1 || !p2) return out;
+  const pxPer = Math.max(Math.hypot(p1.x - p0.x, p1.y - p0.y), Math.hypot(p2.x - p0.x, p2.y - p0.y)) / e;
+  if (!(pxPer > 0)) return out;
+  // (back to where squares are about 6 px across, past which they'd only make a dark band along the horizon)
+  const sp = Math.max(1, G.size) / pxPer, far0 = l3(O) * Math.max(12, G.size) / 6, cap = g.cam ? 120 : 300;
+  const n = Math.min(cap, Math.ceil(far0 / sp)), far = n * sp, R0 = l3(O);
+  // each way's color: that of the VP its lines run to
+  const colorOf = dir => {
+    for (const vi of fams()) { const r = rayDir(vi, g, cam); if (r && Math.abs(d3(n3(r), dir)) > 0.999) return state.vps[vi].rays.styles.A.color; }
+    return state.horizontals.color;
+  };
+  for (const [along, across] of [[A1, A2], [A2, A1]]) {
+    const color = colorOf(along), lines = [];
+    for (let i = -n; i <= n; i++) {
+      const base = a3(O, m3(across, i * sp));
+      if (cam.depthOf && !g.cam) {
+        // through a flat camera, the part in front of you, straight
+        const at = t => a3(base, m3(along, t)), d0 = cam.depthOf(at(-far)), d1 = cam.depthOf(at(far)), eps = 1e-3 * R0;
+        let t0 = -far, t1 = far;
+        if (d0 < eps && d1 < eps) continue;
+        if (d0 < eps) t0 = -far + (eps - d0) / (d1 - d0) * 2 * far; else if (d1 < eps) t1 = -far + (eps - d0) / (d1 - d0) * 2 * far;
+        const a = cam.proj(at(t0)), b = cam.proj(at(t1));
+        if (a && b && [a.x, a.y, b.x, b.y].every(Number.isFinite)) lines.push([P(a.x, a.y), P(b.x, b.y)]);
+      } else {
+        // through a lens, sampled most finely near you
+        const sm = Math.atan(far / R0), pts = [];
+        for (let k = 0; k <= 64; k++) pts.push(a3(base, m3(along, R0 * Math.tan(-sm + 2 * sm * k / 64))));
+        lines.push(...projPath(cam, pts, false));
+      }
+    }
+    out.push({ color, lines });
+  }
+  return out;
+}
+function drawGround(c, k, g) {
+  const G = state.ground; if (!G.show || g.iso) return;
+  c.save(); c.lineJoin = "round"; c.lineCap = "butt"; c.setLineDash([]); c.globalAlpha = G.opacity; c.lineWidth = Math.max(G.width, 0.5 / k);
+  for (const { color, lines } of groundLines(g)) {
+    c.strokeStyle = color; c.beginPath();
+    for (const pl of lines) pl.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
+    c.stroke();
+  }
+  c.restore();
 }
 
 /* ---------- boxes ---------- */
@@ -3754,7 +3867,12 @@ function boxFrom3(bx, B, H, g, edge = VIEW_EDGE, clear = 2 / view.z) {
 function moveHeld(bx, R, w, g, { extra = () => [], clear } = {}) {
   // the move that puts the spot held under screen point S (a box kept centered slides along eye level), and the box
   // after a move d, or null where it can't go
-  const moveTo = S => { const mid = heldMiddle(R, S); if (!mid) return null; const d = s3(mid, R.c0); return keptCentered(bx) ? V3(d.x, -R.c0.y, d.z) : d; };
+  // (kept on the ground, the spot held slides along its own level: where the line of sight meets that, so the box keeps
+  // its height above the ground and its size, and comes nearer or goes further as the pointer goes down or up the page)
+  const moveTo = S => {
+    if (R.ground) { const y = R.c0.y + R.held.y, hit = planeHit(R.cam, S, y); return hit ? V3(hit.x - R.c0.x - R.held.x, 0, hit.z - R.c0.z - R.held.z) : null; }
+    const mid = heldMiddle(R, S); if (!mid) return null; const d = s3(mid, R.c0); return keptCentered(bx) ? V3(d.x, -R.c0.y, d.z) : d;
+  };
   const place = d => boxFrom3(bx, R.B.map(p => a3(p, d)), R.H, g, DRAG_EDGE, clear);
   const free = moveTo(w);
   if (!free) return null;
@@ -3849,6 +3967,7 @@ function addBox() { const g = geo(), bx = makeBox(g, state.boxes.length); captur
 // rays if no other box has taken them since.
 function addCopy(c, g, moved = false) {
   if (!moved || rayBox()) c.rayFit = false; // the rays stay with the original
+  if (state.ground.keep) { const nb = dropBox(c, g); if (nb) Object.assign(c, { b0: nb.b0, b2: nb.b2, h: nb.h, H: nb.H }); } // (onto the ground, if it came out floating)
   captureFit(c, g);
   if (!moved) c.name = (c.name.replace(/\s*\d+$/, "") || "Box") + " " + (state.boxes.length + 1); // (a copy keeps what it's called, Cone or a model's name, with a number of its own)
   state.boxes.push(c); state.sel = state.boxes.length - 1; commit(); touch();
@@ -4039,6 +4158,11 @@ function setP(path, val) {
     const bx = state.boxes[state.sel]; rawSet(parts, val);
     if (bx) { bx.planes.hidden = bx.planes.hidden.filter(id => id[0] !== path.slice(-1)); Object.keys(bx.own).forEach(id => { if (id[0] === path.slice(-1)) delete bx.own[id]; }); }
     touch(); return;
+  }
+  if (path === "ground.keep") {
+    // turning it on sets every object down onto the ground
+    if (val) { setObjectsDown(); return; }
+    rawSet(parts, val); touch(); return;
   }
   if (path === "boxes.$b.model.crease") {
     // A new crease angle can gather a model's triangles into different surfaces. If it does, what was set on the old ones
@@ -4259,6 +4383,16 @@ const schema = [
     { t: "range", bind: "horizontals.width", label: "Weight", min: 0.25, max: 6, step: 0.25, hi: 500 },
     { t: "select", bind: "horizontals.dash", label: "Line style", options: DASH },
     { t: "range", bind: "horizontals.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1 }
+  ]},
+  { id: "ground", title: "Ground plane", when: () => !isIso(), rows: [
+    { t: "check", bind: "ground.show", label: "Show the ground plane" },
+    { t: "range", bind: "ground.size", label: "Square size, px at the foot of the page", min: 10, max: 300, step: 1, lo: 2, hi: 5000, when: () => state.ground.show },
+    { t: "range", bind: "ground.width", label: "Line weight", min: 0.25, max: 4, step: 0.05, lo: 0.05, hi: 100, when: () => state.ground.show },
+    { t: "range", bind: "ground.opacity", label: "Opacity", min: 0, max: 1, step: 0.05, hi: 1, when: () => state.ground.show },
+    { t: "note", html: "The ground is the level surface one eye height below the eye: the floor everything stands on. It's drawn as a grid whose lines run along it to the vanishing points (in 1-point, to the VP and across the picture), each way in the color of its VP's rays, with squares as wide as Square size where it meets the foot of the page, shrinking toward the horizon. It's in the export with the rays." },
+    { t: "btns", items: [["Set objects down", setObjectsDown, "solid"]] },
+    { t: "check", bind: "ground.keep", label: "Keep objects on the ground" },
+    { t: "note", html: "A drawing doesn't say how far off a box is, so any box whose lowest point is below eye level can be standing on the ground: it's read at the distance that puts it there. One at or above eye level is floating. Set objects down drops each floating one straight down onto the ground, keeping its size, its way round and how far off it is, with its lowest point (a turned box's lowest corner, or a shape's or model's own lowest point) touching the ground; and keeps every object on the ground from then on. Dragged, an object slides along the ground, keeping its size: down the page it comes nearer and grows, up toward the horizon it goes further off and shrinks, and its corner snaps to ray crossings on its own level. Copies pasted or added land on the ground, and none stands on another. Untick Keep objects on the ground to drag them freely again." },
   ]},
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
@@ -5263,6 +5397,12 @@ canvas.addEventListener("pointerdown", e => {
     // the spot taken hold of, from the box's middle: where the line of sight first meets the box
     const d = n3(cam.unproj(cam.wrapS ? cam.wrapS(w) : w)), t = sightHit({ C: T.C, ax: T.ax, half: [T.a, T.c, T.H].map(v => Math.abs(v) / 2) }, d);
     drag.rig = { cam, B, H, c0, corner, held: s3(m3(d, t < Infinity ? t : d3(d, c0)), c0) };
+    // (kept on the ground, it slides along the ground; held at eye level, by its lowest corner's level instead)
+    if (state.ground.keep && !keptCentered(bx)) {
+      drag.rig.ground = true;
+      const R0 = drag.rig, size = Math.max(Math.abs(T.a), Math.abs(T.c), Math.abs(T.H)) || 1;
+      if (Math.abs(R0.c0.y + R0.held.y) < 0.02 * size) { const lowY = Math.min(...[...Bc, ...Tc].map(p => p.y)); R0.held = V3(R0.held.x, lowY - R0.c0.y, R0.held.z); }
+    }
     touch();
   } else if (hit.type === "vresize" || hit.type === "vmove") drag.vp0 = { ...state.viewport };
   else if (hit.type === "vscale") Object.assign(drag, { from: clone(state), C: exportMid(), range: scaleRange(state), k: 1, at: s });
@@ -5349,7 +5489,10 @@ canvas.addEventListener("pointermove", e => {
       const snapped = free => {
         if (!useSnap || keptCentered(bx)) return [];
         const t = R.cam.proj(a3(R.corner, free)), sp = snapPoint(P(t.x, t.y), state.sel);
-        return sp ? [{ delta: s3(slideTo(R.cam, R.corner, sp.pt), R.corner), sp }] : [];
+        if (!sp) return [];
+        // (on the ground, the corner keeps its own level: it goes where the line of sight to the snap point meets that)
+        if (R.ground) { const hit = planeHit(R.cam, sp.pt, R.corner.y); return hit ? [{ delta: V3(hit.x - R.corner.x, 0, hit.z - R.corner.z), sp }] : []; }
+        return [{ delta: s3(slideTo(R.cam, R.corner, sp.pt), R.corner), sp }];
       };
       const got = moveHeld(bx, R, w, g, { extra: snapped });
       if (!got) break;
