@@ -235,7 +235,7 @@ details.multi .multi-grp { font-size: 10px; letter-spacing: .08em; text-transfor
       <button class="tb" id="tbUndo" type="button" title="Undo (Ctrl/⌘ Z). Redo with Ctrl/⌘ Shift Z or Ctrl/⌘ Y.">Undo</button>
       <button class="tb" id="tbExport" type="button">Export PNG</button>
     </div>
-    <div class="ringentry" id="ringEntry" hidden><label for="ringDeg" id="ringLab"></label><input class="num" id="ringDeg" type="number" step="any"><span>°</span></div>
+    <div class="ringentry" id="ringEntry" hidden><label for="ringDeg" id="ringLab"></label><input class="num" id="ringDeg" type="number" step="any"><span id="ringUnit">°</span></div>
     <div class="status" aria-live="polite"><span id="stCoord">x 0 · y 0</span><span id="stZoom">100%</span><span class="hint" id="stHint">Drag empty space to pan · scroll or pinch to zoom</span></div>
   </main>
   <aside class="panel" id="panel">
@@ -1760,11 +1760,14 @@ function gumballOf(bx, face, g, R = ringOf(bx, face, g)) {
   const sq3 = a3(base, m3(out, 0.6 * L)), tip3 = a3(base, m3(out, L)), sq = on(sq3), tip = on(tip3), from = on(a3(base, m3(out, 0.3 * L)));
   return sq && tip && from ? { F, k, face, out, base, sq3, tip3, b, sq, tip, from, L } : null;
 }
-// The part of gumball Gb under screen point s, if any: its square ("gscale") or its arrow ("gmove")
-function gumPart(Gb, s) {
+// The part of gumball Gb under screen point s, if any: its square ("gscale") or its arrow ("gmove"), whose head and shaft
+// catch the pointer well clear of what's drawn (the square first, where they meet). gumNear says how far off it is too.
+const gumPart = (Gb, s) => { const n = gumNear(Gb, s); return n && n.part; };
+function gumNear(Gb, s) {
   const sq = toS(Gb.sq), tip = toS(Gb.tip), from = toS(Gb.from);
-  if (Math.abs(s.x - sq.x) < 8 && Math.abs(s.y - sq.y) < 8) return "gscale";
-  return len(sub(s, tip)) < 11 || segDist(s, from, tip) < 5 ? "gmove" : null;
+  if (Math.abs(s.x - sq.x) < 10 && Math.abs(s.y - sq.y) < 10) return { part: "gscale", d: len(sub(s, sq)) };
+  const d = Math.min(len(sub(s, tip)), segDist(s, from, tip));
+  return len(sub(s, tip)) < 18 || segDist(s, from, tip) < 10 ? { part: "gmove", d } : null;
 }
 // The step along line P0 + t·A (in the view's 3D) whose point is nearest the line of sight through screen point S, or
 // null where that's behind you or the line runs straight along the line of sight
@@ -2547,8 +2550,7 @@ function frame() {
   // (shown even with the circles turned off, as the way to move and stretch a box along one axis)
   const gSolid = bx && ui.ring && ui.ring.bi === state.sel && !seenFromAfar(bx, g) ? gumballOf(bx, ui.ring.face, g) : null;
   const gGhost = lt && !seenFromAfar(lb, g) && !(gSolid && lt.bi === state.sel && lt.face === ui.ring.face) ? gumballOf(lb, lt.face, g) : null;
-  if (gGhost) drawGumball(gGhost, paper, true);
-  if (gSolid) drawGumball(gSolid, paper);
+
   // selected box handles (none on one seen from afar, which is just moved: its dashed uprights still show it's selected)
   if (bx) {
     const G = boxGeo(bx, g), far = seenFromAfar(bx, g);
@@ -2572,6 +2574,9 @@ function frame() {
     }
     ctx.strokeStyle = accent;
   }
+  // (the gumballs over the handles)
+  if (gGhost) drawGumball(gGhost, paper, true);
+  if (gSolid) drawGumball(gSolid, paper);
   if (snapMark) {
     const s = toS(snapMark.pt); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([]);
     ctx.beginPath(); ctx.arc(s.x, s.y, snapMark.kind === "line" ? 7 : 10, 0, Math.PI * 2); ctx.stroke();
@@ -4205,6 +4210,20 @@ function planeHit(cam, S, y) {
 // color, or its VP's ray color. Worked out again when the view, the page, the grid or the zoom (by half or double) changes.
 const GROUND_GAP = 6;
 let groundCache = null;
+// Where the grid starts, the ground at the middle of the foot of the page (or nearer the horizon if that's above it), and
+// how many px a unit of the space every box shares (see boxSolids) comes to there: the page's own measure, which the grid's
+// spacing is in, and so are the gumball's numbers (see gumNumber). Null where there's no ground to start from.
+function groundFrame(g) {
+  const cam = convCam(g), V = state.viewport, [A1, A2] = cam.axes;
+  let O = null;
+  for (const f of [1, 0.85, 0.7, 0.55]) { O = planeHit(cam, P(V.x + V.w / 2, V.y + V.h * f), -1); if (O) break; }
+  if (!O) { const mid = P(g.O.x, g.O.y + 0.25 * V.h); O = planeHit(cam, mid, -1); }
+  if (!O) return null;
+  const e = 1e-3 * l3(O), p0 = cam.proj(O), p1 = cam.proj(a3(O, m3(A1, e))), p2 = cam.proj(a3(O, m3(A2, e)));
+  if (!p0 || !p1 || !p2) return null;
+  const pxPer = Math.max(Math.hypot(p1.x - p0.x, p1.y - p0.y), Math.hypot(p2.x - p0.x, p2.y - p0.y)) / e;
+  return pxPer > 0 && Number.isFinite(pxPer) ? { O, pxPer } : null;
+}
 function groundLines(g) {
   const cam = convCam(g), G = state.ground, V = state.viewport, [A1, A2] = cam.axes, vb = visibleBounds(), q = 400 / view.z;
   const zoomStep = Math.round(Math.log2(view.z) * 2), round = v => Math.round(v / q);
@@ -4212,15 +4231,8 @@ function groundLines(g) {
   if (groundCache && groundCache.key === key) return groundCache.out;
   const out = [];
   groundCache = { key, out };
-  // where the grid starts: the ground at the foot of the page, or nearer the horizon if that's above it
-  let O = null;
-  for (const f of [1, 0.85, 0.7, 0.55]) { O = planeHit(cam, P(V.x + V.w / 2, V.y + V.h * f), -1); if (O) break; }
-  if (!O) { const mid = P(g.O.x, g.O.y + 0.25 * V.h); O = planeHit(cam, mid, -1); }
-  if (!O) return out;
-  const e = 1e-3 * l3(O), p0 = cam.proj(O), p1 = cam.proj(a3(O, m3(A1, e))), p2 = cam.proj(a3(O, m3(A2, e)));
-  if (!p0 || !p1 || !p2) return out;
-  const pxPer = Math.max(Math.hypot(p1.x - p0.x, p1.y - p0.y), Math.hypot(p2.x - p0.x, p2.y - p0.y)) / e;
-  if (!(pxPer > 0)) return out;
+  const fr = groundFrame(g); if (!fr) return out;
+  const { O, pxPer } = fr;
   const sp = Math.max(1, G.size) / pxPer, R0 = l3(O), gap = GROUND_GAP / view.z, CAP = 1e6;
   // the part of the drawing worth drawing in (flat views): what's in view and the page, with room round them
   const pad = Math.max(V.w, V.h), X0 = Math.min(vb.x, V.x) - pad, Y0 = Math.min(vb.y, V.y) - pad, X1 = Math.max(vb.x + vb.w, V.x + V.w) + pad, Y1 = Math.max(vb.y + vb.h, V.y + V.h) + pad;
@@ -5387,7 +5399,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it (not exported)", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner across the base, or a round one to move a top corner across the top, the corner diagonally across staying put; either snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Each face has a gumball, as in Rhino, with its rotation circle: hover over the face (or click it) and drag its arrow to move the box along that axis, or the small square on it to stretch the box that way, the face across staying put (hold Shift, even partway, to stretch it both ways from its middle). The top's square is how to change the height. With a face clicked, its corners and the diamonds at the middles of its edges act on it: a corner moves over that face, the corner diagonally across it staying put (with Shift it scales just that face evenly), and a diamond stretches the box that one way, the edge across staying put (with Shift, both ways from the middle). Hold Shift while dragging a corner to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner across the base, or a round one to move a top corner across the top, the corner diagonally across staying put; either snaps to ray crossings, to other boxes' corners and division points, and to shapes' corners. Each face has a gumball, as in Rhino, with its rotation circle: hover over the face (or click it) and drag its arrow to move the box along that axis, or the small square on it to stretch the box that way, the face across staying put (hold Shift, even partway, to stretch it both ways from its middle). Click the arrow or the square instead to type a number: where the face sits along its axis, or the box's size along it, in the page's own measure (px at the foot of the page, as the ground grid's spacing), the same for every box. The top's square is how to change the height. With a face clicked, its corners and the diamonds at the middles of its edges act on it: a corner moves over that face, the corner diagonally across it staying put (with Shift it scales just that face evenly), and a diamond stretches the box that one way, the edge across staying put (with Shift, both ways from the middle). Hold Shift while dragging a corner to scale the box evenly instead, its sides and height alike, from its proportions when you pressed the handle, about the base corner diagonally across from the one held, which stays put; let go of Shift to go back to resizing it the usual way from where it started. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, resize one by its handles to resize them all as one piece, about the corner that stays put, or turn one by its circle or its VPs to turn them all about its middle (Shift snaps it to every 45° and the rest follow). A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -6166,11 +6178,12 @@ function hitTest(s, reach = "") {
     const G = boxGeo(bx, g), sf = selFace(bx), fv = sf ? FACES.find(f => f.id === sf).v : [];
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.T[i]), s)) < 10) return { type: "top", i, onFace: fv.includes("t" + i) };
     for (let i = 0; i < 4; i++) if (len(sub(toS(G.B[i]), s)) < 10) return { type: "bottom", i, onFace: fv.includes("b" + i) };
-    // (with a face selected, the middles of its edges)
-    if (sf) for (const m of faceMids(bx, sf, g)) if (len(sub(toS(m.p), s)) < 8) return { type: "fmid", bi: state.sel, face: m.mate, at3: m.q };
-    // (the gumball of the face last clicked, which reaches out past the face)
-    const Gb = ui.ring && ui.ring.bi === state.sel ? gumballOf(bx, ui.ring.face, g) : null, part = Gb && gumPart(Gb, s);
-    if (part) return { type: part, bi: state.sel, face: ui.ring.face };
+    // (the gumball of the face last clicked, which reaches out past the face, and the middles of its edges: whichever is
+    // nearer the pointer, where both are in reach)
+    const Gb = ui.ring && ui.ring.bi === state.sel ? gumballOf(bx, ui.ring.face, g) : null, gn = Gb && gumNear(Gb, s);
+    let mid = null; if (sf) for (const m of faceMids(bx, sf, g)) { const d = len(sub(toS(m.p), s)); if (d < 8 && (!mid || d < mid.d)) mid = { m, d }; }
+    if (mid && (!gn || mid.d < gn.d)) return { type: "fmid", bi: state.sel, face: mid.m.mate, at3: mid.m.q };
+    if (gn) return { type: gn.part, bi: state.sel, face: ui.ring.face };
     const rf = ringFace();
     if (rf && onRing(ringOf(bx, rf, g), s)) shiftRing = { type: "ring", bi: state.sel, face: rf };
   }
@@ -6268,7 +6281,7 @@ const CURSORS = { boxvp: "move", ring: "grab", gmove: "move", gscale: "nwse-resi
 // What the pointer is over, shown by the cursor and the hint, and redrawn when it changes (a hidden face
 // under the pointer with ⌘ or Ctrl held, or a face you can see with Shift held, is drawn as a ghost).
 // lastPos lets pressing or letting go of the key update it without the mouse moving.
-let lastPos = null, lastReach = "", ringClick = null; // (where the circle was just clicked, for the click event that follows)
+let lastPos = null, lastReach = "", ringClick = null, gumClick = null; // (where the circle, or a gumball's arrow or square, was just clicked, for the click event that follows)
 const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) ? "restore" : e.shiftKey ? "hide" : e.altKey ? "behind" : "");
 // The face under the pointer, highlighted with its circle ghosted on it. The circle sits inside the face, so the pointer
 // reaches it without leaving the face; on the circle, it stays that face's. Anywhere else, there's none.
@@ -6327,7 +6340,7 @@ const MIRROR_HINTS = {
 const vpHint = mk => (state.symmetric && MIRROR_HINTS[mk.drag] && !(mk.drag === "dist" && mk.vi > 1) ? MIRROR_HINTS[mk.drag] : VP_DRAGS[mk.drag][0]);
 
 canvas.addEventListener("pointerdown", e => {
-  closeRingEntry(); ringClick = null;
+  closeRingEntry(); ringClick = null; gumClick = null;
   canvas.focus({ preventScroll: true });
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety; dragging works without it */ }
   const s = spos(e); pointers.set(e.pointerId, s); lastPos = s;
@@ -6677,31 +6690,72 @@ function axisSnap(pts, A, t0, skip, cam, g) {
 // changes over at once). A box kept centered on the horizon always stretches from the middle up and down, and moves only
 // across. With faces picked on other objects too, they move or stretch with it, as one piece (see groupMoved and
 // groupScaled). Short of where the view can show it all, it goes as far as it can.
+// A gumball's move or stretch by t (in the box's own space, as F0 reads it), from the box as it was: P.F0 its frame, P.k the
+// axis, P.dir the way out of the face, P.A the way a move goes, P.group the others going with it (see groupRig). A stretch
+// goes from the face across, or with `even` from the middle, both faces moving alike. The box, its factor along the axis
+// (`size`) and the others' (`list`), or null where the view can't show them so.
+function gumPlace(bx, P, scale, even, t, g) {
+  const { F0, k, dir, A, group } = P, ext0 = [F0.a, F0.c, F0.H], e0 = Math.abs(ext0[k]), sg = Math.sign(ext0[k]) || 1, least = 0.02 * Math.max(...ext0.map(Math.abs));
+  // (stretching, the point that stays put: the middle of the face across, or the box's middle)
+  const pin = even ? F => F.C : F => { const ek = Math.abs([F.a, F.c, F.H][k]); return a3(F.C, m3(dir, -ek / 2)); };
+  let nb, d = null, size = null;
+  if (!scale) {
+    d = m3(A, t); if (keptCentered(bx)) d = V3(d.x, 0, d.z);
+    nb = boxFrom3(bx, homeFrom(F0, a3(F0.C, d), F0.a, F0.c, F0.H), F0.H, g, DRAG_EDGE);
+  } else {
+    const e1 = Math.max(least, e0 + (even ? 2 : 1) * t), ext = ext0.slice(); ext[k] = sg * e1; size = e1 / e0;
+    nb = boxFrom3(bx, homeFrom(F0, even ? F0.C : a3(F0.C, m3(dir, (e1 - e0) / 2)), ext[0], ext[1], ext[2]), ext[2], g);
+  }
+  if (!nb) return null;
+  if (!group) return { nb, size };
+  if (!scale) { const list = groupMoved(group, d, g); return list && { nb, list }; }
+  const was = { b0: bx.b0, b2: bx.b2, H: bx.H, h: bx.h };
+  Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); const list = groupScaled(group, bx, F0, pin, g); Object.assign(bx, was);
+  return list && { nb, list, size };
+}
+// The gumball's numbers, in the page's own measure (see groundFrame) and the one space every box shares (boxSolids): for
+// its arrow, where the face sits along its axis, from where the ground's grid starts (so along the ground a number counts
+// the grid's spacing, and up it's the height above the ground); for its square, the box's size along the axis.
+function gumNumber(bi, face, kind, g) {
+  const bx = state.boxes[bi], ax = faceAxisOf(bx, face, g), S = boxSolids(g)[bi], U = groundFrame(g) || { O: V3(0, -1, 0), pxPer: 100 };
+  if (kind === "gscale") return Math.abs([ax.F.a, ax.F.c, ax.F.H][ax.k]) * S.k * U.pxPer;
+  return d3(s3(m3(ax.base, S.k), U.O), n3(ax.F.ax[ax.k])) * U.pxPer;
+}
+// Set a gumball's number: the box moved along the axis (its arrow), or stretched along it (its square: from the face across,
+// or with `both` from the middle), till the number is v. A box's place in the shared space can change with it (one on the
+// ground that's raised is read as further off), so it's found by trying: a step, then closing in. Whether it got there.
+function gumNumberSet(bi, face, kind, v, both, g) {
+  const bx = state.boxes[bi], ax = faceAxisOf(bx, face, g); if (!ax || !Number.isFinite(v)) return false;
+  const scale = kind === "gscale", even = scale && (both || (keptCentered(bx) && ax.k === 2));
+  const GP = { F0: ax.F, k: ax.k, dir: ax.out, A: scale ? ax.out : n3(ax.F.ax[ax.k]), group: groupRig(bi, g) };
+  const was = { b0: bx.b0, b2: bx.b2, H: bx.H, h: bx.h }, others = GP.group ? GP.group.map(o => ({ b0: o.bx.b0, b2: o.bx.b2, H: o.bx.H, h: o.bx.h, rot: o.bx.rot })) : [];
+  const put = got => { Object.assign(bx, { b0: got.nb.b0, b2: got.nb.b2, H: got.nb.H, h: got.nb.h }); if (got.list) groupSet(GP.group, got.list); };
+  const back = () => { Object.assign(bx, was); if (GP.group) GP.group.forEach((o, n) => Object.assign(o.bx, others[n])); };
+  const at = t => { const got = gumPlace(bx, GP, scale, even, t, g); if (!got) return null; put(got); const n = gumNumber(bi, face, kind, g); back(); return { got, n }; };
+  const size = Math.max(Math.abs(ax.F.a), Math.abs(ax.F.c), ax.F.H), tol = 1e-7 * Math.max(1, Math.abs(v));
+  let t0 = 0, n0 = gumNumber(bi, face, kind, g), t1 = 0.01 * size, r1 = at(t1);
+  if (Math.abs(n0 - v) <= tol) return true;
+  if (!r1) { t1 = -t1; r1 = at(t1); } if (!r1) return false;
+  let best = null;
+  for (let i = 0; i < 40; i++) {
+    const slope = (r1.n - n0) / (t1 - t0); if (!(Math.abs(slope) > 1e-12)) break;
+    let t2 = t1 + (v - r1.n) / slope, r2 = at(t2);
+    for (let h = 0; !r2 && h < 20; h++) { t2 = (t1 + t2) / 2; r2 = at(t2); } // (short of where the view can't show it)
+    if (!r2) break;
+    t0 = t1; n0 = r1.n; t1 = t2; r1 = r2;
+    if (Math.abs(r1.n - v) <= tol) { best = r1; break; }
+  }
+  if (!best) return false;
+  put(best.got); captureFit(bx, g); if (GP.group) GP.group.forEach(o => captureFit(o.bx, g));
+  return true;
+}
 function gumDrag(e, s, w, g, useSnap) {
   const bx = state.boxes[state.sel], D = drag, F0 = D.F0, A = D.A, k = D.gum.k; if (!bx || D.t0 === null) return;
   const tp = lineParam(F0.cam, D.L0, A, w); if (tp === null) return;
   let t = tp - D.t0;
   const scale = D.type === "gscale", even = scale && (e.shiftKey || (keptCentered(bx) && k === 2)), held = D.group ? [state.sel, ...D.group.map(o => o.i)] : [state.sel];
   if (useSnap) { const sp = axisSnap(D.track, A, t, held, F0.cam, g); if (sp) { t = sp.t; snapMark = { pt: sp.pt, kind: "point" }; } }
-  const ext0 = [F0.a, F0.c, F0.H], e0 = Math.abs(ext0[k]), sg = Math.sign(ext0[k]) || 1, least = 0.02 * Math.max(...ext0.map(Math.abs)), dir = D.gum.out;
-  // (stretching, the point that stays put: the middle of the face across, or the box's middle)
-  const pin = even ? F => F.C : F => { const ek = Math.abs([F.a, F.c, F.H][k]); return a3(F.C, m3(dir, -ek / 2)); };
-  const was = { b0: bx.b0, b2: bx.b2, H: bx.H, h: bx.h };
-  const place = t => {
-    let nb, d = null, size = null;
-    if (!scale) {
-      d = m3(A, t); if (keptCentered(bx)) d = V3(d.x, 0, d.z);
-      nb = boxFrom3(bx, homeFrom(F0, a3(F0.C, d), F0.a, F0.c, F0.H), F0.H, g, DRAG_EDGE);
-    } else {
-      const e1 = Math.max(least, e0 + (even ? 2 : 1) * t), ext = ext0.slice(); ext[k] = sg * e1; size = e1 / e0;
-      nb = boxFrom3(bx, homeFrom(F0, even ? F0.C : a3(F0.C, m3(dir, (e1 - e0) / 2)), ext[0], ext[1], ext[2]), ext[2], g);
-    }
-    if (!nb) return null;
-    if (!D.group) return { nb, size };
-    if (!scale) { const list = groupMoved(D.group, d, g); return list && { nb, list }; }
-    Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); const list = groupScaled(D.group, bx, F0, pin, g); Object.assign(bx, was);
-    return list && { nb, list, size };
-  };
+  const GP = { F0, k, dir: D.gum.out, A, group: D.group }, place = t => gumPlace(bx, GP, scale, even, t, g);
   let got = place(t);
   if (!got) { let lo = 0, hi = 1; for (let n = 0; n < 16; n++) { const m = (lo + hi) / 2, r = place(t * m); if (r) { lo = m; got = r; } else hi = m; } snapMark = null; }
   if (!got) return;
@@ -6726,6 +6780,8 @@ function endPointer(e) {
       else { state.sel = a.bi; ui.ring = { bi: a.bi, face: a.face }; openFaces([{ bi: a.bi, id }], drag.s0); }
     } else ringClick = drag.s0;
   }
+  // (a gumball's arrow or square clicked, not dragged, opens a box for its number; an edge's middle doesn't)
+  if (!drag.moved && (drag.type === "gmove" || drag.type === "gscale") && !drag.mid) gumClick = { s: drag.s0, kind: drag.type, bi: state.sel, face: drag.face };
   // clicking a face, not dragging it, selects its box, picks the face to edit in the pop-up and makes its rotation circle
   // solid; a click anywhere else puts them away
   if (!drag.moved && drag.type !== "ring" && !["top", "bottom", "gmove", "gscale"].includes(drag.type)) {
@@ -6742,19 +6798,54 @@ function endPointer(e) {
 // box's default and the same one that axis's slider sets. It starts filled in and selected, so typing replaces it.
 // It opens on the click, which comes after everything a tap sends, so nothing that follows the tap takes the focus
 // straight back. Enter sets the angle; Escape or clicking elsewhere leaves it.
-const ringEntry = document.getElementById("ringEntry"), ringDeg = document.getElementById("ringDeg");
-function openRingEntry(s) {
-  const bx = state.boxes[state.sel], face = ringFace(); if (!bx || !face) return;
-  const k = ringOf(bx, face, geo()).k, lab = document.getElementById("ringLab");
-  lab.textContent = `Rotate ${AXIS_NAMES[k]} to`; lab.style.color = AXIS_COLORS[k];
-  ringDeg.value = String(Math.round(bx.rot[AXIS_KEYS[k]] * 100) / 100); ringEntry.hidden = false;
+// A click on a gumball's arrow or square opens the same box for its number (see gumNumber): where the face sits along its
+// axis, or the box's size along it, in the page's own measure. Enter sets it (a size from the face across, or with Shift
+// from the middle, both ways).
+const ringEntry = document.getElementById("ringEntry"), ringDeg = document.getElementById("ringDeg"), ringUnit = document.getElementById("ringUnit");
+let entryFor = null; // (what the box is for: the circle's angle, or a gumball's number, { kind, bi, face })
+function placeEntry(s) {
   const st = document.getElementById("stage"), m = 8;
   ringEntry.style.left = Math.max(m, Math.min(st.clientWidth - ringEntry.offsetWidth - m, s.x + 12)) + "px";
   ringEntry.style.top = Math.max(m, Math.min(st.clientHeight - ringEntry.offsetHeight - m, s.y + 12)) + "px";
   ringDeg.focus({ preventScroll: true }); ringDeg.select();
 }
+function openGumEntry(c) {
+  const bx = state.boxes[c.bi]; if (!bx) return;
+  const g = geo(), ax = faceAxisOf(bx, c.face, g); if (!ax) return;
+  const lab = document.getElementById("ringLab"), k = ax.k;
+  entryFor = c; lab.textContent = c.kind === "gscale" ? (k === 2 ? "Height" : k ? "Length" : "Width") + (turned(bx) ? ` (along ${AXIS_NAMES[k]})` : "") : `${AXIS_NAMES[k]} position`; lab.style.color = AXIS_COLORS[k];
+  ringUnit.textContent = "px"; ringDeg.title = c.kind === "gscale" ? "Enter sets it, the face across staying put; Shift+Enter stretches it both ways from the middle" : "Where this face sits along its axis, from where the ground's grid starts";
+  ringDeg.value = String(Math.round(gumNumber(c.bi, c.face, c.kind, g) * 100) / 100); ringEntry.hidden = false;
+  placeEntry(c.s);
+}
+function openRingEntry(s) {
+  const bx = state.boxes[state.sel], face = ringFace(); if (!bx || !face) return;
+  const k = ringOf(bx, face, geo()).k, lab = document.getElementById("ringLab");
+  entryFor = null; ringUnit.textContent = "°"; ringDeg.title = "";
+  lab.textContent = `Rotate ${AXIS_NAMES[k]} to`; lab.style.color = AXIS_COLORS[k];
+  ringDeg.value = String(Math.round(bx.rot[AXIS_KEYS[k]] * 100) / 100); ringEntry.hidden = false;
+  placeEntry(s);
+}
 const closeRingEntry = () => { ringEntry.hidden = true; };
-function applyRingEntry() {
+function applyRingEntry(both = false) {
+  if (entryFor) {
+    const v = parseFloat(ringDeg.value), c = entryFor;
+    if (Number.isFinite(v) && state.boxes[c.bi]) {
+      const g = geo(), now = gumNumber(c.bi, c.face, c.kind, g);
+      if (Math.abs(now - v) > 1e-9 * Math.max(1, Math.abs(v)) || (both && c.kind === "gscale")) {
+        if (c.kind === "gscale" && !(v > 0)) { toast("A size has to be more than 0"); return; }
+        if (!gumNumberSet(c.bi, c.face, c.kind, v, both, g)) {
+          // (every box stands on the one ground unless it's on another or wholly above eye level: its base stays at 0, and
+          // raising it on the page only reads as further off)
+          const grounded = c.kind === "gmove" && c.face === "bottom" && !turned(state.boxes[c.bi]) && Math.abs(now) < 1e-6 * Math.max(1, Math.abs(v));
+          toast(grounded ? "A box standing on the ground keeps its base at 0: raising it on the page reads as further off" : c.kind === "gscale" ? "The view can't show the box that size" : "The view can't show the box there");
+          return;
+        }
+        commit(); touch();
+      }
+    }
+    closeRingEntry(); canvas.focus({ preventScroll: true }); return;
+  }
   const v = parseFloat(ringDeg.value), bx = state.boxes[state.sel], face = ringFace();
   if (Number.isFinite(v) && bx && face) {
     const g = geo(), key = AXIS_KEYS[ringOf(bx, face, g).k], to = wrapAngle(v), rot = Object.assign({}, bx.rot, { [key]: to });
@@ -6767,11 +6858,11 @@ function applyRingEntry() {
 }
 ringDeg.addEventListener("keydown", e => {
   // (kept from the page's shortcuts, where Escape would go on to deselect the box once the focus has left this box)
-  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); applyRingEntry(); }
+  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); applyRingEntry(e.shiftKey); }
   else if (e.key === "Escape") { e.stopPropagation(); closeRingEntry(); canvas.focus({ preventScroll: true }); }
 });
 ringDeg.addEventListener("blur", closeRingEntry);
-canvas.addEventListener("click", () => { if (ringClick) openRingEntry(ringClick); ringClick = null; });
+canvas.addEventListener("click", () => { if (ringClick) openRingEntry(ringClick); else if (gumClick) openGumEntry(gumClick); ringClick = null; gumClick = null; });
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
 canvas.addEventListener("wheel", e => {
