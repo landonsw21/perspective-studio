@@ -2320,13 +2320,16 @@ function frame() {
   }
   const pk = !drag && hover && hover.type === "pick" && state.boxes[hover.bi], pf = pk && (hover.surf || surfaceGeo(pk, g, hover.face));
   if (pk && hover.surf) markSurface(pk, g, hover.surf, "tint", accent); else if (pf) drawFaceGhost(pf, accent, accent, 0.2);
-  // the face under the pointer, highlighted in the color of its axis, with its circle ghosted (in the accent color
-  // without circles); the solid circle of the face last clicked on the selected box
+  // The face under the pointer, highlighted in the color of its axis (in the accent color without circles), straight away;
+  // the circle ghosted, that of the face the pointer last stopped on (see keepLatch), which can lag a moment behind it; the
+  // solid circle of the face last clicked on the selected box. Over a circle, the face it belongs to stays highlighted.
   const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost = lt && state.rotateFaces && ringOf(lb, lt.face, g);
-  const rf = bx && ringFace(), solid = rf && ringOf(bx, rf, g), gs = lt && surfaceGeo(lb, g, lt.face);
+  const over = !drag && hover && hover.type === "body" && hover.face && state.boxes[hover.bi] ? hover : null, hl = pf ? null : over || lt, hb2 = hl && state.boxes[hl.bi];
+  const hk = hl && state.rotateFaces && (hl === lt ? ghost : ringOf(hb2, hl.face, g));
+  const rf = bx && ringFace(), solid = rf && ringOf(bx, rf, g), gs = hl && surfaceGeo(hb2, g, hl.face);
   // (over a model, its surface under the pointer is what a click picks, so that is tinted, and the box's face only says
   // which circle shows)
-  if (lt && lt.surf) markSurface(lb, g, lt.surf, "tint", accent); else if (gs) drawFaceGhost(gs, ghost ? AXIS_COLORS[ghost.k] : accent, ghost ? AXIS_COLORS[ghost.k] : accent, 0.25);
+  if (hl && hl.surf) markSurface(hb2, g, hl.surf, "tint", accent); else if (gs) drawFaceGhost(gs, hk ? AXIS_COLORS[hk.k] : accent, hk ? AXIS_COLORS[hk.k] : accent, 0.25);
   if (ghost && !(solid && lt.bi === state.sel && solid.k === ghost.k)) drawRing(ghost, paper, true, hover && hover.type === "ring" && hover.ghost); // (a face on the same axis has the same circle)
   if (solid) drawRing(solid, paper);
   // selected box handles
@@ -5114,9 +5117,10 @@ let lastPos = null, lastReach = "", ringClick = null; // (where the circle was j
 const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) ? "restore" : e.shiftKey ? "hide" : e.altKey ? "behind" : "");
 // The face under the pointer stays highlighted, its circle ghosted, while the pointer goes on toward the circle and
 // over empty space near it, so the circle can be grabbed. The way there can cross other faces, so once a circle shows,
-// the highlight moves to another face only once the pointer stops on it (for LATCH_MS), not while it passes over.
+// the circle moves to another face only once the pointer stops on it (for LATCH_MS), not while it passes over. (The face's
+// highlight moves at once: see frame.)
 let latch = null, latchTry = null, latchTimer = 0;
-const LATCH_MS = 150;
+const LATCH_MS = 100;
 function keepLatch(h) {
   clearTimeout(latchTimer);
   if (h.type === "ring") { latchTry = null; return; }
