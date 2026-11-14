@@ -132,6 +132,15 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); m
 #facePop .pick .num { width: 52px; }
 #facePop select { max-width: 120px; }
 #facePop .btn { padding: 5px 9px; font-size: 11.5px; }
+/* the box's own settings, folded away below the face's */
+#facePop details.fp-box { border-top: 1px solid var(--rule); margin-top: 3px; }
+#facePop details.fp-box > summary { list-style: none; cursor: pointer; user-select: none; padding: 9px 0 2px; font: 600 11px/1 var(--f-ui); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+#facePop details.fp-box > summary::-webkit-details-marker { display: none; }
+#facePop details.fp-box > summary::after { content: "+"; font: 400 15px/1 var(--f-data); }
+#facePop details.fp-box[open] > summary::after { content: "–"; }
+#facePop details.fp-box[open] > summary { color: var(--ink); }
+#facePop details.fp-box > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#facePop .fp-boxbody { display: grid; gap: 7px; padding-top: 8px; }
 #infoTip code { font-family: var(--f-data); font-size: 11px; }
 .ph .title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .note code { font-family: var(--f-data); font-size: 11px; color: var(--ink); }
@@ -5458,7 +5467,7 @@ const labelText = r => typeof r.label === "function" ? r.label() : r.label;
 
 function makeRow(r) {
   let node, update;
-  const id = r.bind ? idFor(r.bind) + (r.uid ? "-" + r.uid : "") : "";
+  const sfx = r.uid ? "-" + r.uid : "", id = r.bind ? idFor(r.bind) + sfx : ""; // (a second copy of a row, r.uid, keeps ids of its own)
   const onCommit = () => commit();
   switch (r.t) {
     case "range": {
@@ -5567,7 +5576,7 @@ function makeRow(r) {
     case "checks": {
       // several on/off settings in one row; each one hides where it doesn't apply
       const items = r.items.map(it => {
-        const iid = idFor(it.bind), inp = el("input", { type: "checkbox", id: iid });
+        const iid = idFor(it.bind) + sfx, inp = el("input", { type: "checkbox", id: iid });
         inp.addEventListener("change", () => { setP(it.bind, inp.checked); commit(); });
         const lab = el("label", { for: iid }, labelText(it));
         return { it, inp, lab, cell: el("span", { class: "chk" }, inp, lab) };
@@ -5585,7 +5594,7 @@ function makeRow(r) {
     }
     case "pattern": {
       // a preset, the sequence itself, and a strip showing how it repeats (for rays, or for r.of's lines)
-      const T = r.of, bind = T.path + ".pattern", tid = idFor(bind);
+      const T = r.of, bind = T.path + ".pattern", tid = idFor(bind) + sfx;
       const sel = el("select", { id: tid + "-preset", "aria-label": T.name + " preset" }); PATTERNS.forEach(([v, t]) => sel.append(el("option", { value: v }, t.replace("ray", T.noun))));
       const inp = el("input", { class: "txt", type: "text", id: tid, maxlength: "64", spellcheck: "false", autocomplete: "off", "aria-label": T.name + " sequence" });
       const box = el("div", { class: "patview", "aria-hidden": "true" });
@@ -5611,19 +5620,19 @@ function makeRow(r) {
       // box's diagonals)
       const T = r.of, grid = el("div", { class: "styles" }); let sig = "", ctls = [];
       const color = (bind, aria) => {
-        const inp = el("input", { type: "color", id: idFor(bind), "aria-label": aria });
+        const inp = el("input", { type: "color", id: idFor(bind) + sfx, "aria-label": aria });
         inp.addEventListener("input", () => setP(bind, inp.value)); inp.addEventListener("change", onCommit);
         return { node: inp, update: () => { inp.value = getP(bind); } };
       };
       const line = (bind, aria) => {
-        const sel = el("select", { id: idFor(bind), "aria-label": aria }); DASH.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
+        const sel = el("select", { id: idFor(bind) + sfx, "aria-label": aria }); DASH.forEach(([v, t]) => sel.append(el("option", { value: v }, t)));
         sel.addEventListener("change", () => { setP(bind, sel.value); commit(); });
         return { node: sel, update: () => { sel.value = getP(bind); } };
       };
       // A slider from 0 to max, its value shown on hover. Below `hi`, letting go at the end doubles its reach,
       // as the panel's other sliders do, and it doubles to fit a bigger value.
       const slider = (bind, aria, step, max, hi, text) => {
-        const inp = el("input", { type: "range", id: idFor(bind), min: "0", max: String(max), step: String(step), "aria-label": aria });
+        const inp = el("input", { type: "range", id: idFor(bind) + sfx, min: "0", max: String(max), step: String(step), "aria-label": aria });
         const reach = () => {
           const v = getP(bind); let m = (ui.scales[resolve(bind)] || { max }).max;
           while (v > m && m < hi) m = Math.min(hi, m * 2);
@@ -5758,7 +5767,7 @@ function makeRow(r) {
       break;
     }
     case "pair": {
-      const cells = r.items.map(it => { const iid = idFor(it.bind); const inp = el("input", { class: "num", type: "number", id: iid, step: "1" }); inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) { const v = Math.round(+inp.value); if (it.bind.endsWith(".w") || it.bind.endsWith(".h")) { if (v >= 1) setP(it.bind, v); } else setP(it.bind, v); } }); inp.addEventListener("change", onCommit); return [el("div", { class: "row" }, el("label", { for: iid }, it.label), inp), inp, it]; });
+      const cells = r.items.map(it => { const iid = idFor(it.bind) + sfx; const inp = el("input", { class: "num", type: "number", id: iid, step: "1" }); inp.addEventListener("input", () => { if (inp.value !== "" && Number.isFinite(+inp.value)) { const v = Math.round(+inp.value); if (it.bind.endsWith(".w") || it.bind.endsWith(".h")) { if (v >= 1) setP(it.bind, v); } else setP(it.bind, v); } }); inp.addEventListener("change", onCommit); return [el("div", { class: "row" }, el("label", { for: iid }, it.label), inp), inp, it]; });
       node = el("div", { class: "pair" }, ...cells.map(c => c[0]));
       update = () => cells.forEach(([, inp, it]) => { if (document.activeElement !== inp) inp.value = getP(it.bind); });
       break;
@@ -6818,12 +6827,28 @@ const FACE_ROWS = [
   { t: "btns", items: [[() => (!picks().some(p => isModelSurface(p.id)) ? "Use the box's settings" : !picks().every(p => isModelSurface(p.id)) ? "Use the box's and " + (picks().filter(p => isModelSurface(p.id)).every(p => shapeOf(p.bx)) ? "shape's" : "model's") + " settings" : picks().every(p => shapeOf(p.bx)) ? "Use the shape's settings" : "Use the model's settings"), () => { picks().forEach(p => { delete (isModelSurface(p.id) ? p.bx.model.own : p.bx.own)[isModelSurface(p.id) ? p.id.slice(1) : p.id]; }); commit(); touch(); }, "", () => picks().some(p => ownBag(p.bx, p.id))]] }
 ];
 FACE_ROWS.forEach(r => { if (!r.when) r.when = editing; fpBody.append(makeRow(r)); });
+// The selected box's own settings (its shape's or model's too), below the face's: the Boxes section's rows, in a part of
+// the pop-up that's folded away each time the pop-up comes up, and stays as it's left while it's up. The box is the one
+// whose face was picked last. Not there: the list of boxes and the buttons that add and remove them, the settings for
+// every box (their order, the rotation circles) and the notes, which are in the panel.
+const fpBox = el("details", { class: "fp-box" }), fpBoxSum = el("summary"), fpBoxBody = el("div", { class: "fp-boxbody" });
+fpBox.append(fpBoxSum, fpBoxBody); fpBody.append(fpBox);
+const boxPopOpen = () => editing() && fpBox.open && hasBox();
+schema.find(sec => sec.id === "boxes").rows.forEach(r => {
+  if (r.t === "boxlist" || r.t === "note" || r.t === "readout" || r.bind === "boxOrder" || r.bind === "rotateFaces") return;
+  if (r.t === "btns" && r.items.some(it => it[1] === addBox || it[1] === dupBox || it[1] === delBox)) return;
+  fpBoxBody.append(makeRow(Object.assign({}, r, { uid: "pop", when: () => boxPopOpen() && (r.when ? r.when() : true) })));
+});
+fpBox.addEventListener("toggle", () => { refreshPanel(); clampFaces(); });
 // what's picked, by name: a face by where it sits and a plane by its axis and number, with its box
 function syncFaces() {
   if (facePop.hidden) return;
   pickValid(); if (!ui.faces.length) { closeFaces(); return; }
   const ps = picks(), n = ps.length, planes = ps.filter(p => planeAxis(p.id) >= 0).length, surfs = ps.filter(p => isModelSurface(p.id)).length, boxes = new Set(ps.map(p => p.bi)).size;
   fpTitle.textContent = n === 1 ? `${snapLabel(ps[0].id, ps[0].bx)} · ${ps[0].bx.name}` : `${n} ${surfs ? "surfaces" : planes === n ? "planes" : planes ? "faces and planes" : "faces"}${boxes > 1 ? ` on ${boxes} boxes` : ""}`;
+  // (what the part with the box's own settings is called: the box, shape or model, by name when more than one is picked)
+  const sb = state.boxes[state.sel], t = sb ? `${shapeOf(sb) ? "Shape" : modelOf(sb) || (sb.model && sb.model.id) ? "Model" : "Box"} properties${boxes > 1 ? " · " + sb.name : ""}` : "";
+  fpBox.hidden = !sb; if (fpBoxSum.textContent !== t) fpBoxSum.textContent = t;
 }
 // kept on screen as its rows come and go
 function clampFaces() {
@@ -6836,7 +6861,7 @@ let facesOpened = -Infinity; // (when a click last opened it)
 function openFaces(list, s) {
   ui.faces = list.map(p => ({ bi: p.bi, id: p.id })); facesOpened = performance.now();
   if (facePop.hidden) {
-    const r = canvas.getBoundingClientRect(); facePop.hidden = false;
+    const r = canvas.getBoundingClientRect(); facePop.hidden = false; fpBox.open = false; // (the box's own settings folded away to start with)
     facePop.style.left = r.left + s.x + 18 + "px"; facePop.style.top = r.top + s.y - 20 + "px";
   }
   refreshPanel(); clampFaces(); redraw();
