@@ -2192,7 +2192,7 @@ function drawBox(c, bx, g, k, skip = null, bare = false) {
   const G = boxGeo(bx, g), holds = !!modelOf(bx);
   // (a box holding a model draws it inside, after its back faces and before its front ones; with the box around it turned
   // off, or `bare`, as in an export, just the model: the box only says where it sits)
-  if (holds && (bare || bx.model.frame === false)) { drawModel(c, bx, g, k, G, skip); return; }
+  if (holds && (bare || bx.model.frame === false)) { (bare ? drawModel : paintModel)(c, bx, g, k, G, skip); return; }
   const PL = boxPlanes(bx, g, G), own = bx.own || {};
   const near = bx.div && (bx.div.on || Object.values(own).some(o => o.div)) ? nearestOf(G.B3 || base3(bx, convCam(g))) : 0; // where division patterns count from
   const vis = f => bx.faces[f.id] !== false && f.id !== skip; // (`skip`: a face drawn as if hidden, for the Shift-hover preview)
@@ -2261,7 +2261,7 @@ function drawBox(c, bx, g, k, skip = null, bare = false) {
     if (split) hiddenEdges(pieceRuns(p), p.id);
     else { c.setLineDash([]); planeEdges(p); }
   }
-  if (holds) { drawModel(c, bx, g, k, G, skip); c.lineJoin = "round"; c.lineCap = "round"; }
+  if (holds) { (bare ? drawModel : paintModel)(c, bx, g, k, G, skip); c.lineJoin = "round"; c.lineCap = "round"; }
   for (const f of fronts) {
     if (op(f.id) > 0) fill(f, op(f.id), f.shade);
     drawDivisions(c, f, bx, k, 1, near);
@@ -2359,6 +2359,7 @@ function frame() {
   ctx.save(); ctx.translate(view.x, view.y); ctx.scale(view.z, view.z);
   if (V.show && V.dim) { ctx.fillStyle = paper; ctx.fillRect(V.x, V.y, V.w, V.h); }
   const hiding = !drag && hover && hover.type === "hide" ? hover : null;
+  paintSpent = 0; // (how long this frame has spent drawing models exactly; see paintModel)
   drawScene(ctx, view.z, visibleBounds(), { rays: true, verticals: true, horizon: true, cone: true, boxes: true, vps: true, dots: true, clipToView: V.show, hide: hiding });
   ctx.restore();
 
@@ -2802,8 +2803,9 @@ async function readModel(name, buf) {
 // Points at the same place become one (an STL repeats every corner), triangles with a bad or doubled corner go, and a mesh
 // too fine to draw quickly is thinned by gathering its points into a grid of cells, one point each, finer or coarser until
 // it's under the limit. Gives { pos, idx, from, colors } (`from`: the triangles before thinning, when it was thinned;
-// `colors`: with each raw triangle's color given, as `rawCol` { pal, tri }, the color of each that's left).
-function tidyMesh(rawPos, rawIdx, rawCol = null) {
+// `colors`: with each raw triangle's color given, as `rawCol` { pal, tri }, the color of each that's left; `src`: the raw
+// triangle each came from). `most` is the limit thinned to.
+function tidyMesh(rawPos, rawIdx, rawCol = null, most = MAX_TRIS) {
   const nv = Math.floor(rawPos.length / 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], ok = new Uint8Array(nv);
   for (let i = 0; i < nv; i++) {
     const x = rawPos[i * 3], y = rawPos[i * 3 + 1], z = rawPos[i * 3 + 2];
@@ -2838,7 +2840,13 @@ function tidyMesh(rawPos, rawIdx, rawCol = null) {
   };
   let out = gather(1 << 17); const whole = out.idx.length / 3;
   if (!whole) throw new Error("it has no faces to draw");
-  for (let cells = 320; out.idx.length / 3 > MAX_TRIS && cells >= 8; cells = Math.floor(cells * 0.8)) out = gather(cells);
+  // (thinned far below the usual limit, it starts nearer the cells that will do: a surface's triangles go as the square)
+  const start = most < MAX_TRIS ? Math.max(8, Math.min(320, Math.round(320 * Math.sqrt(most / Math.max(most, whole)) * 1.3))) : 320;
+  let before = null;
+  for (let cells = start; out.idx.length / 3 > most && cells >= 8; cells = Math.floor(cells * 0.8)) { before = out; out = gather(cells); }
+  // (a lighter copy of many small parts can lose most of them in one step, as they shrink to nothing: it keeps the step
+  // before, if that's within twice its aim)
+  if (most < MAX_TRIS && before && out.idx.length / 3 < most / 2 && before.idx.length / 3 <= 2 * most) out = before;
   // (points no triangle uses go too)
   const used = new Int32Array(out.pos.length / 3).fill(-1), pos = [], idx = new Uint32Array(out.idx.length);
   out.idx.forEach((v, i) => { if (used[v] < 0) { used[v] = pos.length / 3; pos.push(out.pos[v * 3], out.pos[v * 3 + 1], out.pos[v * 3 + 2]); } idx[i] = used[v]; });
@@ -2849,7 +2857,7 @@ function tidyMesh(rawPos, rawIdx, rawCol = null) {
     out.src.forEach((t, i) => { const c = rawCol.tri[t] || 0; let j = seen.get(c); if (j === undefined) { j = pal.length; seen.set(c, j); pal.push(rawCol.pal[c] || "#d5dde3"); } tri[i] = j; });
     colors = { pal, tri };
   }
-  return { pos: new Float32Array(pos), idx, from: out.idx.length / 3 < whole ? whole : 0, colors };
+  return { pos: new Float32Array(pos), idx, from: out.idx.length / 3 < whole ? whole : 0, colors, src: Uint32Array.from(out.src) };
 }
 // A mesh's edges, each once: the triangle either side (or -1), whether those two wind opposite ways round as a file may
 // have them (`same`: they run along the edge the same way, with their faces turned opposite ways, so one counts as
@@ -2898,6 +2906,8 @@ function modelShape(m, up, turn, fine) {
     p[i * 3] = x; p[i * 3 + 1] = y; p[i * 3 + 2] = z;
     if (x < lo[0]) lo[0] = x; if (y < lo[1]) lo[1] = y; if (z < lo[2]) lo[2] = z; if (x > hi[0]) hi[0] = x; if (y > hi[1]) hi[1] = y; if (z > hi[2]) hi[2] = z;
   }
+  // (a lighter copy (see liteMesh) goes by its model's own extent, so it fills the box just as the model does)
+  if (m.full) { const f = modelShape(m.full, up, turn, 0); for (let c = 0; c < 3; c++) { lo[c] = f.lo[c]; hi[c] = f.hi[c]; } }
   const dims = [0, 1, 2].map(c => hi[c] - lo[c]), big = Math.max(...dims) || 1, q = [];
   for (let i = 0; i < nv; i++) for (let c = 0; c < 3; c++) q.push(dims[c] > 0 ? (p[i * 3 + c] - lo[c]) / dims[c] : 0.5);
   const te = meshEdges(m).te, cut = new Uint8Array(meshEdges(m).ne); let tri, par, er; // (cut: the edges that were cut into pieces)
@@ -2926,7 +2936,7 @@ function modelShape(m, up, turn, fine) {
     }
     tri = Uint32Array.from(T); par = Uint32Array.from(Pa); er = Int32Array.from(E);
   }
-  return ((m.shapes = m.shapes || {})[key] = { q: Float32Array.from(q), tri, par, er, cut, dims });
+  return ((m.shapes = m.shapes || {})[key] = { q: Float32Array.from(q), tri, par, er, cut, dims, lo, hi });
 }
 // ---- Shapes ----
 // The shapes Add shape makes are models too, made here from their kind and one number (how many sides, segments or
@@ -3055,9 +3065,10 @@ function fitModelBox(bx, g = geo()) {
 // Where a model's points land for the box as it stands, worked out again only when the box or the view changes: each
 // point on the page (sx, sy) and in the view's 3D (the eye at 0), then each triangle's distance, the way it faces and how
 // lit it is, and the order to draw them in, furthest first, so nearer ones cover what's behind them.
-const LIGHT = n3(V3(-0.35, 0.8, -0.5)), modelViews = new WeakMap();
-function modelView(bx, g, G) {
-  const m = modelOf(bx); if (!m) return null;
+const LIGHT = n3(V3(-0.35, 0.8, -0.5)), modelViews = new WeakMap(), liteViews = new WeakMap();
+// What a model's view depends on, as a key: the view, the model and how it sits, and its box on the page; with its box's
+// frame, and how finely a lens cuts it
+function viewKeyOf(bx, g, G) {
   const F = boxFrame(bx, g, G);
   // Through a lens an edge bends by how much of the view it spans, so the cutting goes by the angle the box takes up from
   // the eye: a piece for about every 5°, in steps of double (so a box being moved doesn't recut the model all the time)
@@ -3067,9 +3078,16 @@ function modelView(bx, g, G) {
     for (let c = 0; c < 8; c++) { const p = n3(a3(F.O, a3(a3(m3(F.ax[0], c & 1), m3(F.ax[1], c >> 1 & 1)), m3(F.ax[2], c >> 2 & 1)))); wide = Math.max(wide, 2 * Math.acos(Math.max(-1, Math.min(1, d3(p, mid))))); }
     fine = 2 ** Math.max(0, Math.min(4, Math.ceil(Math.log2(Math.max(1e-6, wide / (5 * deg))))));
   }
-  const S = modelShape(m, bx.model.up, bx.model.turn, fine);
   const key = [state.mode, state.curvi.style4, fine ? JSON.stringify([state.curvi, state.cone.cv, state.horizon]) : "", bx.model.id, bx.model.up, bx.model.turn, F.in3, F.O.x, F.O.y, F.O.z, ...F.ax.flatMap(v => [v.x, v.y, v.z]), ...[...G.B, ...G.T].flatMap(p => [p.x, p.y])].join();
-  const had = modelViews.get(bx); if (had && had.key === key) return had;
+  return { F, fine, key };
+}
+// The model in box bx as seen: each point on the page, and its triangles furthest first, lit. Kept until its key changes.
+// With `mesh`, a lighter copy of it (see liteMesh), kept apart.
+function modelView(bx, g, G, mesh = null) {
+  const m = mesh || modelOf(bx); if (!m) return null;
+  const { F, fine, key } = viewKeyOf(bx, g, G), store = mesh ? liteViews : modelViews;
+  const had = store.get(bx); if (had && had.key === key) return had;
+  const S = modelShape(m, bx.model.up, bx.model.turn, fine);
   const { q, tri, par } = S, nv = q.length / 3, nt = tri.length / 3, { O, ax, cam } = F;
   // A box can be built either way round, and the views differ in which way round their own space runs, either of which
   // would show the model mirrored. So it goes by what's seen: a small triangle in the middle of the box, across two of its
@@ -3121,7 +3139,7 @@ function modelView(bx, g, G) {
       if (!(Number.isFinite(sx[i]) && Number.isFinite(sy[i]))) bad[i] = 1;
     }
   }
-  const far = new Float64Array(nt), lit = new Uint8Array(nt), faces = new Int8Array(meshes.get(bx.model.id).idx.length / 3), list = [];
+  const far = new Float64Array(nt), lit = new Uint8Array(nt), faces = new Int8Array(m.idx.length / 3), list = [];
   for (let t = 0; t < nt; t++) {
     const a = tri[t * 3], b = tri[t * 3 + 1], c = tri[t * 3 + 2];
     if (bad[a] || bad[b] || bad[c]) continue;
@@ -3137,7 +3155,7 @@ function modelView(bx, g, G) {
   }
   const order = Uint32Array.from(list).sort((i, j) => far[j] - far[i]);
   const view = { key, S, sx, sy, order, lit, faces, flip };
-  modelViews.set(bx, view);
+  store.set(bx, view);
   return view;
 }
 // A model's surfaces: its triangles gathered into the areas its creases bound (edges sharper than the model's crease
@@ -3248,9 +3266,12 @@ function markSurface(bx, g, id, how, color) {
 // piece instead, by the triangles along it.) A surface with settings of its own takes them in place of the model's: its
 // color and opacity, and for the lines round and across it their color, weight and opacity; a hidden one (or `skip`, one
 // drawn as if hidden for the Shift-hover preview) is left out, with the lines only it has.
-function drawModel(c, bx, g, k, G, skip = null) {
-  const M = bx.model, view = modelView(bx, g, G); if (!view) return;
-  const mesh = meshes.get(M.id), { S, sx, sy, order, lit, faces } = view, { tri, er, par } = S, E = meshEdges(mesh), SF = meshSurfaces(mesh, M.crease), of = SF.of;
+// (`from` and `to`: just that run of its triangles, furthest first, as a picture drawn a slice at a time; it gives where it
+// got to, or Infinity when there's nothing to draw)
+function drawModel(c, bx, g, k, G, skip = null, lite = null, from = 0, to = Infinity) {
+  const M = bx.model, view = modelView(bx, g, G, lite); if (!view) return Infinity;
+  // (a lighter copy's triangles each take the surface of the one they came from)
+  const full = meshes.get(M.id), mesh = lite || full, { S, sx, sy, order, lit, faces } = view, { tri, er, par } = S, E = meshEdges(mesh), SF = meshSurfaces(full, M.crease), of = lite ? liteSurfaces(lite, SF) : SF.of;
   const shadesOf = hex => { const rgb = hex2rgb(hex); return Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1)); }, shades = shadesOf(M.color);
   // (in the file's colors: each triangle's shades, made for each color as it's first needed)
   const fileCol = M.fileColors !== false && mesh.colors ? mesh.colors : null, triCol = fileCol && fileCol.tri, palShades = [];
@@ -3300,9 +3321,9 @@ function drawModel(c, bx, g, k, G, skip = null) {
     for (let e = 0; e < E.ne; e++) if (whole(e)) { at[fill[E.a[e]]++] = e; at[fill[E.b[e]]++] = e; }
     view.drawn = drawn; view.pen = pen; view.lineKey = lineKey; view.from = from; view.at = at;
   }
-  const { from, at, pen } = view, nv0 = from.length - 1, EA = E.a, EB = E.b, others = pens.length > 1, later = [];
+  const { from: vfrom, at, pen } = view, nv0 = vfrom.length - 1, EA = E.a, EB = E.b, others = pens.length > 1, later = [], end = Math.min(order.length, to);
   c.save(); c.lineJoin = "round"; c.lineCap = "round"; c.setLineDash([]);
-  for (let n = 0; n < order.length; n++) {
+  for (let n = from; n < end; n++) {
     const t = order[n], a = tri[t * 3], b = tri[t * 3 + 1], d = tri[t * 3 + 2], s = special ? of[par[t]] : 0;
     if (special && gone[s]) continue;
     const op = special ? opBy[s] : M.opacity;
@@ -3316,7 +3337,7 @@ function drawModel(c, bx, g, k, G, skip = null) {
     if (!lines) continue;
     // its own sides that are pieces of a cut edge (or with every edge a line, all of them), and the whole lines at its corners
     const e0 = er[t * 3], e1 = er[t * 3 + 1], e2 = er[t * 3 + 2], l0 = e0 >= 0 && drawn[e0] && (all || S.cut[e0]), l1 = e1 >= 0 && drawn[e1] && (all || S.cut[e1]), l2 = e2 >= 0 && drawn[e2] && (all || S.cut[e2]);
-    const na = a < nv0 ? from[a + 1] - from[a] : 0, nb = b < nv0 ? from[b + 1] - from[b] : 0, nd = d < nv0 ? from[d + 1] - from[d] : 0;
+    const na = a < nv0 ? vfrom[a + 1] - vfrom[a] : 0, nb = b < nv0 ? vfrom[b + 1] - vfrom[b] : 0, nd = d < nv0 ? vfrom[d + 1] - vfrom[d] : 0;
     if (!(l0 || l1 || l2 || na || nb || nd)) continue;
     // (lines in the model's look go in one stroke; any in a surface's own look are kept for a stroke each after it)
     later.length = 0; c.beginPath();
@@ -3324,11 +3345,139 @@ function drawModel(c, bx, g, k, G, skip = null) {
     if (l0) seg(a, b, e0); if (l1) seg(b, d, e1); if (l2) seg(d, a, e2);
     for (let i = 0; i < 3; i++) {
       const v = i === 0 ? a : i === 1 ? b : d; if (v >= nv0) continue;
-      for (let j = from[v]; j < from[v + 1]; j++) seg(EA[at[j]], EB[at[j]], at[j]);
+      for (let j = vfrom[v]; j < vfrom[v + 1]; j++) seg(EA[at[j]], EB[at[j]], at[j]);
     }
     c.globalAlpha = 1; c.strokeStyle = M.stroke; c.lineWidth = lw; c.stroke();
     for (let i = 0; i < later.length; i += 3) { const P = pens[later[i + 2]]; c.beginPath(); c.moveTo(sx[later[i]], sy[later[i]]); c.lineTo(sx[later[i + 1]], sy[later[i + 1]]); c.globalAlpha = P.alpha; c.strokeStyle = P.stroke; c.lineWidth = P.lw; c.stroke(); }
   }
+  c.restore();
+  return end;
+}
+
+// ---- A lighter copy, for while it moves ----
+// A model of many triangles takes a while to draw, too long to draw it again and again as its box is dragged, turned or
+// resized, or the view under it changes. Meanwhile it's drawn from a lighter copy of about LITE_TRIS triangles, thinned
+// the way an import is: each keeps its color, and knows the triangle it came from (`src`), so it takes that one's surface
+// and look. Made the first time it's needed, and kept with the mesh (not stored).
+const LITE_TRIS = 10000;
+function liteMesh(m) {
+  if (!m) return null;
+  if (m.lite !== undefined) return m.lite;
+  m.lite = null;
+  if (m.idx.length / 3 > LITE_TRIS * 1.5) {
+    try { const t = tidyMesh(m.pos, m.idx, m.colors || null, LITE_TRIS); if (t.idx.length < m.idx.length) m.lite = { name: m.name, pos: t.pos, idx: t.idx, colors: t.colors, src: t.src, thin: true, up: m.up, full: m }; }
+    catch (e) { /* it's drawn in full, then */ }
+  }
+  return m.lite;
+}
+function liteSurfaces(lite, SF) {
+  lite.ofs = lite.ofs || new Map();
+  let of = lite.ofs.get(SF);
+  if (!of) { if (lite.ofs.size >= 6) lite.ofs.clear(); of = Int32Array.from(lite.src, t => SF.of[t]); lite.ofs.set(SF, of); }
+  return of;
+}
+// ---- Models drawn once, then reused ----
+// On screen each model is drawn once into a picture of its own, at the screen's pixels, and that picture is put down
+// each time the page is drawn, lined up pixel for pixel, until the model's view or look changes (or the zoom). A picture
+// is drawn a slice of triangles at a time, furthest first, over as many frames as it takes, a little each frame
+// (PAINT_BUDGET ms in all), so the page keeps up; till it's done, the model shows from the picture it had (scaled, while
+// zooming) or, for one of many triangles whose box has changed, from its lighter copy (see liteMesh). Nothing new is
+// drawn while something's moving (a drag, a pinch, a scroll or zoom just now, or a slider in the panel). A picture covers
+// the model, or where it's huge, the view and a margin round it. Exports draw every model in full, triangle by triangle.
+const modelPics = new Map(), picJobs = new WeakMap(), lastPics = new WeakMap(), PIC_MARGIN = 0.15, PAINT_BUDGET = 40, PIC_SLICE = 2500, BUSY_MS = 200, PIC_PIXELS = 48e6;
+let busyUntil = 0, paintSpent = 0, settleTimer = 0;
+const busy = () => !!(drag && drag.moved) || !!pinch || performance.now() < busyUntil;
+const nudgeBusy = () => { busyUntil = performance.now() + BUSY_MS; };
+document.addEventListener("input", nudgeBusy, true); // (sliders and color pickers being dragged)
+// (once things are still, the page is drawn again)
+function settleLater() { if (!settleTimer) settleTimer = setTimeout(() => { settleTimer = 0; redraw(); }, BUSY_MS + 30); }
+const overlap = (a, b) => { const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y), x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h); return x1 > x && y1 > y ? { x, y, w: x1 - x, h: y1 - y } : null; };
+const holdsRect = (a, b) => b.x >= a.x - 1e-9 && b.y >= a.y - 1e-9 && b.x + b.w <= a.x + a.w + 1e-9 && b.y + b.h <= a.y + a.h + 1e-9;
+const picFits = (pic, k) => pic.k === k && pic.dpr === dpr && (() => { const need = overlap(pic.box, visibleBounds()); return !need || (pic.rect && holdsRect(pic.rect, need)); })();
+function paintModel(c, bx, g, k, G, skip) {
+  const M = bx.model, key = viewKeyOf(bx, g, G).key;
+  const look = JSON.stringify([M.color, M.opacity, M.shade, M.lines, M.crease, M.stroke, M.width, M.fileColors, M.own, M.hide, skip || ""]);
+  const id = key + "|" + look, pic = modelPics.get(id);
+  if (pic) { modelPics.delete(id); modelPics.set(id, pic); } // (the last used last)
+  if (pic && picFits(pic, k)) { lastPics.set(bx, pic); putPic(c, pic, k); return; }
+  if (!busy()) {
+    // (on with its picture, from where it got to, while this frame has time)
+    let job = picJobs.get(bx);
+    if (job && (job.id !== id || job.pic.k !== k || job.pic.dpr !== dpr)) { picJobs.delete(bx); job = null; }
+    if (paintSpent < PAINT_BUDGET) {
+      const t0 = performance.now();
+      if (!job) { job = startPic(bx, g, k, G, id, look); if (!job) { paintSpent += performance.now() - t0; drawModel(c, bx, g, k, G, skip); return; } picJobs.set(bx, job); } // (too big to keep a picture of)
+      if (!job.ctx) job.n = Infinity; // (nowhere near the view: nothing to draw yet)
+      while (job.n < Infinity && performance.now() - t0 + paintSpent < PAINT_BUDGET) job.n = drawModel(job.ctx, bx, g, k, G, skip, null, job.n, job.n + PIC_SLICE) >= job.total ? Infinity : job.n + PIC_SLICE;
+      paintSpent += performance.now() - t0;
+    }
+    if (job && job.n === Infinity) { picJobs.delete(bx); modelPics.set(id, job.pic); lastPics.set(bx, job.pic); trimPics(job.pic); putPic(c, job.pic, k); return; }
+    redraw(); // (more next frame)
+  } else settleLater();
+  // meanwhile: the picture it had; or, moved or resized, its last picture carried along with its box; or (turned, or with
+  // none) its lighter copy, or for one of few triangles, the model itself
+  if (pic) {
+    // (all of it that's in view, if it has that; a huge one panned past what its picture covers comes from its lighter copy)
+    const need = overlap(pic.box, visibleBounds());
+    const lite = liteMesh(modelOf(bx));
+    if (!need || (pic.rect && holdsRect(pic.rect, need)) || !lite) putPic(c, pic, k); else drawModel(c, bx, g, k, G, skip, lite);
+    return;
+  }
+  const last = lastPics.get(bx), turning = drag && drag.moved && (drag.type === "ring" || drag.type === "boxvp");
+  if (last && last.look === look && last.canvas && !turning) {
+    const A = fitAffine(last.corners, [...G.B, ...G.T]);
+    if (A) { c.save(); c.transform(...A); c.globalAlpha = 1; c.globalCompositeOperation = "source-over"; c.drawImage(last.canvas, last.rect.x, last.rect.y, last.rect.w, last.rect.h); c.restore(); return; }
+  }
+  drawModel(c, bx, g, k, G, skip, liteMesh(modelOf(bx)));
+}
+// The map of the page (as a canvas transform: a, b, c, d, e, f) that takes points P nearest onto points Q, keeping
+// straight lines straight; or null if it can't, to within an eighth of Q's size
+function fitAffine(P, Q) {
+  const M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], rx = [0, 0, 0], ry = [0, 0, 0];
+  P.forEach((p, i) => { const v = [p.x, p.y, 1]; for (let r = 0; r < 3; r++) { for (let c = 0; c < 3; c++) M[r][c] += v[r] * v[c]; rx[r] += v[r] * Q[i].x; ry[r] += v[r] * Q[i].y; } });
+  const Mi = inv3(M); if (!Mi || !Mi.every(r => r.every(Number.isFinite))) return null;
+  const sol = r => [0, 1, 2].map(i => Mi[i][0] * r[0] + Mi[i][1] * r[1] + Mi[i][2] * r[2]), X = sol(rx), Y = sol(ry);
+  const xs = Q.map(q => q.x), ys = Q.map(q => q.y), size = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+  const miss = Math.max(...P.map((p, i) => Math.hypot(X[0] * p.x + X[1] * p.y + X[2] - Q[i].x, Y[0] * p.x + Y[1] * p.y + Y[2] - Q[i].y)));
+  return miss <= size / 8 ? [X[0], Y[0], X[1], Y[1], X[2], Y[2]] : null;
+}
+// The oldest pictures go, past a few for each model or too many pixels (never `keep`)
+function trimPics(keep) {
+  const most = 4 + 3 * state.boxes.filter(b => b.model).length;
+  let px = 0; for (const q of modelPics.values()) px += q.canvas ? q.canvas.width * q.canvas.height : 0;
+  for (const [oid, q] of modelPics) { if (modelPics.size <= most && px <= PIC_PIXELS) break; if (q === keep) continue; modelPics.delete(oid); px -= q.canvas ? q.canvas.width * q.canvas.height : 0; }
+}
+// A picture of box bx's model at zoom k to draw, empty: where it goes on the page, and its canvas (none if the model's
+// nowhere near the view), with how many of its triangles there are; or null if it would be too big to keep
+function startPic(bx, g, k, G, id, look) {
+  const mv = modelView(bx, g, G); if (!mv) return null;
+  if (!mv.box) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; const { sx, sy, order, S } = mv, tri = S.tri;
+    for (let n = 0; n < order.length; n++) for (let j = 0; j < 3; j++) { const v = tri[order[n] * 3 + j], x = sx[v], y = sy[v]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    mv.box = x1 >= x0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: 0, y: 0, w: 0, h: 0 };
+  }
+  const pad = 2 * Math.max(bx.model.width, 0.6 / k) + 2 / k, box = { x: mv.box.x - pad, y: mv.box.y - pad, w: mv.box.w + 2 * pad, h: mv.box.h + 2 * pad };
+  const vb = visibleBounds(), mx = vb.w * PIC_MARGIN, my = vb.h * PIC_MARGIN, r = overlap(box, { x: vb.x - mx, y: vb.y - my, w: vb.w + 2 * mx, h: vb.h + 2 * my });
+  const pic = { box, k, dpr, rect: null, canvas: null, look, corners: [...G.B, ...G.T].map(q => P(q.x, q.y)) }, job = { id, pic, ctx: null, n: 0, total: mv.order.length };
+  if (!r) return job;
+  // (its corner on a whole screen pixel, so its pixels are the screen's)
+  const s = k * dpr, x0 = (Math.floor((view.x + r.x * k) * dpr) / dpr - view.x) / k, y0 = (Math.floor((view.y + r.y * k) * dpr) / dpr - view.y) / k;
+  const W = Math.ceil((r.x + r.w - x0) * s) + 2, H = Math.ceil((r.y + r.h - y0) * s) + 2;
+  if (W * H > PIC_PIXELS / 2 || W > 16384 || H > 16384) return null;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const bc = cv.getContext("2d"); bc.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
+  Object.assign(pic, { rect: { x: x0, y: y0, w: W / s, h: H / s }, canvas: cv });
+  job.ctx = bc;
+  return job;
+}
+// A picture put down on the page: at its own zoom, on whole screen pixels so it lands pixel for pixel; at another (while
+// zooming), scaled to fit
+function putPic(c, pic, k) {
+  if (!pic.canvas) return;
+  c.save(); c.globalAlpha = 1; c.globalCompositeOperation = "source-over";
+  let { x, y } = pic.rect;
+  if (pic.k === k && pic.dpr === dpr) { x = (Math.round((view.x + x * k) * dpr) / dpr - view.x) / k; y = (Math.round((view.y + y * k) * dpr) / dpr - view.y) / k; }
+  c.drawImage(pic.canvas, x, y, pic.rect.w, pic.rect.h);
   c.restore();
 }
 
@@ -5453,7 +5602,7 @@ function fitView() {
   view.x = cw / 2 - (x0 + x1) / 2 * view.z; view.y = ch / 2 - (y0 + y1) / 2 * view.z + 10;
   redraw();
 }
-function zoomAt(s, f) { const w = toW(s); view.z = Math.max(0.02, Math.min(12, view.z * f)); view.x = s.x - w.x * view.z; view.y = s.y - w.y * view.z; redraw(); }
+function zoomAt(s, f) { const w = toW(s); view.z = Math.max(0.02, Math.min(12, view.z * f)); view.x = s.x - w.x * view.z; view.y = s.y - w.y * view.z; nudgeBusy(); redraw(); }
 
 /* ---------- pointer interaction ---------- */
 const pointers = new Map();
@@ -5963,7 +6112,7 @@ canvas.addEventListener("wheel", e => {
   const s = spos(e);
   const mouseWheel = e.deltaMode === 1 || (Math.abs(e.deltaY) >= 40 && e.deltaX === 0 && Number.isInteger(e.deltaY));
   if (e.ctrlKey || e.metaKey || mouseWheel) zoomAt(s, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
-  else { view.x -= e.deltaX; view.y -= e.deltaY; redraw(); }
+  else { view.x -= e.deltaX; view.y -= e.deltaY; nudgeBusy(); redraw(); }
 }, { passive: false });
 
 window.addEventListener("keyup", reachChanged);
