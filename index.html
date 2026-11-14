@@ -439,6 +439,8 @@ function cleanModel(raw) {
     id: raw.id, name: typeof raw.name === "string" ? raw.name.slice(0, 80) : "Model", up: ["x", "y", "z"].includes(raw.up) ? raw.up : "z", turn: [0, 1, 2, 3].includes(raw.turn) ? raw.turn : 0,
     color: col(raw.color, "#d5dde3"), stroke: col(raw.stroke, "#1f2a33"), width: num(raw.width, 0.05, 50, 1), opacity: num(raw.opacity, 0, 1, 1),
     lines: MODEL_LINES.includes(raw.lines) ? raw.lines : "outline", crease: num(raw.crease, 1, 180, 30), shade: raw.shade !== false, frame: raw.frame !== false,
+    // (drawn in its file's colors, for a model that came with them, or in its one color)
+    fileColors: raw.fileColors !== false,
     // (its surfaces' own settings, by number, and the hidden ones: see meshSurfaces)
     own: Object.fromEntries(Object.entries(raw.own && typeof raw.own === "object" ? raw.own : {}).filter(([k, v]) => /^\d{1,6}$/.test(k) && v && typeof v === "object").map(([k, v]) => [k, cleanOwn(v)]).filter(([, v]) => Object.keys(v).length)),
     hide: Array.isArray(raw.hide) ? [...new Set(raw.hide.filter(n => Number.isInteger(n) && n >= 0 && n < 1e6))] : []
@@ -1326,7 +1328,7 @@ const ownOf = (bx, id) => (bx.own && bx.own[id]) || {};
 const either = (v, d) => (v !== undefined ? v : d);
 function surfLook(bx, id) {
   // (a model's surface: its own, or its model's)
-  if (isModelSurface(id)) { const M = bx.model, w = modelOwn(bx, id); return { fill: either(w.fill, M.color), opacity: either(w.opacity, M.opacity), stroke: either(w.stroke, M.stroke), width: either(w.width, M.width), edgeOp: either(w.edgeOp, 1) }; }
+  if (isModelSurface(id)) { const M = bx.model, w = modelOwn(bx, id); return { fill: either(w.fill, modelFill(bx, +id.slice(1))), opacity: either(w.opacity, M.opacity), stroke: either(w.stroke, M.stroke), width: either(w.width, M.width), edgeOp: either(w.edgeOp, 1) }; }
   const o = ownOf(bx, id);
   return { fill: either(o.fill, bx.fill), opacity: either(o.opacity, Math.min(1, Math.max(0, bx.ghost))), stroke: either(o.stroke, bx.stroke), width: either(o.width, bx.width), edgeOp: either(o.edgeOp, 1) };
 }
@@ -2682,6 +2684,8 @@ async function readAMF(buf) {
 // rhino3dm can't turn into triangles itself, so this takes the meshes Rhino saved with them: a mesh object's own, a
 // polysurface's or surface's render mesh (face by face), an extrusion's, a SubD's control net, and blocks, where they
 // sit. Hidden objects and those on hidden layers are left out. A file saved without render meshes has nothing to draw.
+// Each object keeps the color Rhino shows it in: its layer's, its own, its material's, or (in a block) the block's, as
+// its color source says; each triangle's goes with it (`col`: a palette, and each triangle's place in it).
 const RHINO3DM_URL = "https://cdn.jsdelivr.net/npm/rhino3dm@8.35.0/rhino3dm.min.js";
 let rhinoLib = null;
 function loadRhino() {
@@ -2703,35 +2707,55 @@ async function readRhino(buf) {
   let found = 0, nurbsOnly = 0;
   for (let i = 0; i < objs.count; i++) { const o = objs.get(i); if (o) byId.set(o.attributes().id, o); }
   const shown = a => { if (a.visible === false) return false; try { const L = layers.findIndex(a.layerIndex); return !L || L.visible !== false; } catch (e) { return true; } };
-  // a mesh's triangles, each point moved by M (row by row, 4 x 4), added to the rest
-  const addMesh = (m, M) => {
+  // (the colors: Rhino's are { r, g, b, a } from 0 to 255; its enums are objects with a value)
+  const pal = [], palAt = new Map(), triCol = [], mats = doc.materials ? doc.materials() : null, NONE = "#d5dde3";
+  const hexOf = c => { const v = Array.isArray(c) ? c : c && typeof c === "object" ? [c.r, c.g, c.b] : null; return v && v.slice(0, 3).every(Number.isFinite) ? "#" + v.slice(0, 3).map(x => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, "0")).join("") : null; };
+  const val = v => (v && typeof v === "object" && "value" in v ? v.value : v);
+  const CS = n => val(rh.ObjectColorSource && rh.ObjectColorSource[n]), MS = n => val(rh.ObjectMaterialSource && rh.ObjectMaterialSource[n]);
+  const material = i => { try { const m = Number.isInteger(i) && i >= 0 && mats ? (mats.findIndex ? mats.findIndex(i) : mats.get(i)) : null; return m ? hexOf(m.diffuseColor) : null; } catch (e) { return null; } };
+  const colorOf = (a, parent) => {
+    let L = null; try { L = layers.findIndex(a.layerIndex); } catch (e) { /* no layer */ }
+    const layer = (L && hexOf(L.color)) || NONE, src = val(a.colorSource);
+    if (src === CS("ColorFromObject")) return hexOf(a.objectColor) || layer;
+    if (src === CS("ColorFromParent")) return parent || layer;
+    if (src === CS("ColorFromMaterial")) {
+      const ms = val(a.materialSource);
+      if (ms === MS("MaterialFromParent")) return parent || layer;
+      return material(ms === MS("MaterialFromObject") ? a.materialIndex : L ? L.renderMaterialIndex : -1) || layer;
+    }
+    return layer;
+  };
+  const colorAt = hex => { let i = palAt.get(hex); if (i === undefined) { if (pal.length >= 65535) return 0; i = pal.length; pal.push(hex); palAt.set(hex, i); } return i; };
+  // a mesh's triangles, each point moved by M (row by row, 4 x 4), added to the rest in the color `hex`
+  const addMesh = (m, M, hex) => {
     if (!m) return false;
-    const b = m.toThreejsBuffers(false), P = b.position, I = b.index, base = pos.length / 3, n = P.length / 3;
+    const b = m.toThreejsBuffers(false), P = b.position, I = b.index, base = pos.length / 3, n = P.length / 3, t0 = idx.length;
     for (let v = 0; v < n; v++) {
       const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
       if (M) pos.push(M[0] * x + M[1] * y + M[2] * z + M[3], M[4] * x + M[5] * y + M[6] * z + M[7], M[8] * x + M[9] * y + M[10] * z + M[11]); else pos.push(x, y, z);
     }
     if (I && I.length) for (let k = 0; k + 2 < I.length; k += 3) idx.push(base + I[k], base + I[k + 1], base + I[k + 2]);
     else for (let k = 0; k + 2 < n; k += 3) idx.push(base + k, base + k + 1, base + k + 2);
+    const ci = colorAt(hex || NONE); for (let k = t0; k < idx.length; k += 3) triCol.push(ci);
     found++; return true;
   };
   const mul4 = (A, B) => { const C = new Array(16).fill(0); for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) for (let k = 0; k < 4; k++) C[r * 4 + c] += A[r * 4 + k] * B[k * 4 + c]; return C; };
-  const add = (geo, M, depth) => {
+  const add = (geo, M, depth, hex) => {
     if (!geo || depth > 16) return;
-    if (geo instanceof rh.Mesh) addMesh(geo, M);
-    else if (geo instanceof rh.Brep) { const F = geo.faces(); let any = false; for (let f = 0; f < F.count; f++) any = addMesh(F.get(f).getMesh(rh.MeshType.Any), M) || any; if (!any) nurbsOnly++; }
-    else if (rh.Extrusion && geo instanceof rh.Extrusion) { if (!addMesh(geo.getMesh(rh.MeshType.Any), M)) nurbsOnly++; }
-    else if (rh.SubD && geo instanceof rh.SubD) { try { addMesh(rh.Mesh.createFromSubDControlNet(geo), M); } catch (e) { nurbsOnly++; } }
+    if (geo instanceof rh.Mesh) addMesh(geo, M, hex);
+    else if (geo instanceof rh.Brep) { const F = geo.faces(); let any = false; for (let f = 0; f < F.count; f++) any = addMesh(F.get(f).getMesh(rh.MeshType.Any), M, hex) || any; if (!any) nurbsOnly++; }
+    else if (rh.Extrusion && geo instanceof rh.Extrusion) { if (!addMesh(geo.getMesh(rh.MeshType.Any), M, hex)) nurbsOnly++; }
+    else if (rh.SubD && geo instanceof rh.SubD) { try { addMesh(rh.Mesh.createFromSubDControlNet(geo), M, hex); } catch (e) { nurbsOnly++; } }
     else if (rh.Surface && geo instanceof rh.Surface) nurbsOnly++;
     else if (rh.InstanceReference && geo instanceof rh.InstanceReference) {
-      // a block: the objects of its definition, each where the reference puts it
+      // a block: the objects of its definition, each where the reference puts it (in the block's color, if it takes its parent's)
       const def = doc.instanceDefinitions().findId(geo.parentIdefId), X = geo.xform.toFloatArray(true), W = M ? mul4(M, X) : X;
-      if (def) for (const id of def.getObjectIds()) { const o = byId.get(id); if (o) add(o.geometry(), W, depth + 1); }
+      if (def) for (const id of def.getObjectIds()) { const o = byId.get(id); if (o) add(o.geometry(), W, depth + 1, colorOf(o.attributes(), hex)); }
     }
   };
-  for (let i = 0; i < objs.count; i++) { const o = objs.get(i); if (!o) continue; const a = o.attributes(); if (a.isInstanceDefinitionObject || !shown(a)) continue; add(o.geometry(), null, 0); }
+  for (let i = 0; i < objs.count; i++) { const o = objs.get(i); if (!o) continue; const a = o.attributes(); if (a.isInstanceDefinitionObject || !shown(a)) continue; add(o.geometry(), null, 0, colorOf(a, null)); }
   if (!found) throw new Error(nurbsOnly ? "its surfaces were saved without render meshes, which this needs: in Rhino, show the model shaded and save again (or export it as OBJ, STL or 3MF)" : "it has no meshes, surfaces or polysurfaces to draw");
-  return { pos, idx, up: "z" };
+  return { pos, idx, up: "z", col: { pal, tri: triCol } };
 }
 async function readModel(name, buf) {
   const ext = (name.match(/\.([a-z0-9]+)$/i) || [])[1], kind = ext && ext.toLowerCase();
@@ -2750,8 +2774,9 @@ async function readModel(name, buf) {
 // ---- Tidying a mesh ----
 // Points at the same place become one (an STL repeats every corner), triangles with a bad or doubled corner go, and a mesh
 // too fine to draw quickly is thinned by gathering its points into a grid of cells, one point each, finer or coarser until
-// it's under the limit. Gives { pos, idx, from } (`from`: the triangles before thinning, when it was thinned).
-function tidyMesh(rawPos, rawIdx) {
+// it's under the limit. Gives { pos, idx, from, colors } (`from`: the triangles before thinning, when it was thinned;
+// `colors`: with each raw triangle's color given, as `rawCol` { pal, tri }, the color of each that's left).
+function tidyMesh(rawPos, rawIdx, rawCol = null) {
   const nv = Math.floor(rawPos.length / 3), lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity], ok = new Uint8Array(nv);
   for (let i = 0; i < nv; i++) {
     const x = rawPos[i * 3], y = rawPos[i * 3 + 1], z = rawPos[i * 3 + 2];
@@ -2771,18 +2796,18 @@ function tidyMesh(rawPos, rawIdx) {
       if (id === undefined) { id = cnt.length; ids.set(key, id); cnt.push(0); sum.push(0, 0, 0); }
       map[i] = id; cnt[id]++; sum[id * 3] += x; sum[id * 3 + 1] += y; sum[id * 3 + 2] += z;
     }
-    const idx = [], N = cnt.length, got = new Set();
+    const idx = [], src = [], N = cnt.length, got = new Set();
     for (let t = 0; t + 2 < rawIdx.length; t += 3) {
       const a = map[rawIdx[t]], b = map[rawIdx[t + 1]], c = map[rawIdx[t + 2]];
       if (a === undefined || b === undefined || c === undefined || a < 0 || b < 0 || c < 0 || a === b || b === c || a === c) continue;
       // (the same three points make one triangle, however many gathered onto them)
       const lo3 = Math.min(a, b, c), hi3 = Math.max(a, b, c), key = (lo3 * N + (a + b + c - lo3 - hi3)) * N + hi3;
       if (N < 200000) { if (got.has(key)) continue; got.add(key); }
-      idx.push(a, b, c);
+      idx.push(a, b, c); src.push(t / 3);
     }
     const pos = new Float32Array(cnt.length * 3);
     for (let i = 0; i < cnt.length; i++) for (let c = 0; c < 3; c++) pos[i * 3 + c] = sum[i * 3 + c] / cnt[i];
-    return { pos, idx };
+    return { pos, idx, src };
   };
   let out = gather(1 << 17); const whole = out.idx.length / 3;
   if (!whole) throw new Error("it has no faces to draw");
@@ -2790,7 +2815,14 @@ function tidyMesh(rawPos, rawIdx) {
   // (points no triangle uses go too)
   const used = new Int32Array(out.pos.length / 3).fill(-1), pos = [], idx = new Uint32Array(out.idx.length);
   out.idx.forEach((v, i) => { if (used[v] < 0) { used[v] = pos.length / 3; pos.push(out.pos[v * 3], out.pos[v * 3 + 1], out.pos[v * 3 + 2]); } idx[i] = used[v]; });
-  return { pos: new Float32Array(pos), idx, from: out.idx.length / 3 < whole ? whole : 0 };
+  // (each triangle left takes the color of the one it came from; only the colors still used stay in the palette)
+  let colors = null;
+  if (rawCol && Array.isArray(rawCol.pal) && rawCol.pal.length && rawCol.tri) {
+    const tri = new Uint16Array(out.src.length), seen = new Map(), pal = [];
+    out.src.forEach((t, i) => { const c = rawCol.tri[t] || 0; let j = seen.get(c); if (j === undefined) { j = pal.length; seen.set(c, j); pal.push(rawCol.pal[c] || "#d5dde3"); } tri[i] = j; });
+    colors = { pal, tri };
+  }
+  return { pos: new Float32Array(pos), idx, from: out.idx.length / 3 < whole ? whole : 0, colors };
 }
 // A mesh's edges, each once: the triangle either side (or -1), whether those two wind opposite ways round as a file may
 // have them (`same`: they run along the edge the same way, with their faces turned opposite ways, so one counts as
@@ -3089,11 +3121,12 @@ const isModelSurface = id => /^m\d+$/.test(id);
 function meshSurfaces(m, crease) {
   const key = String(crease); m.surfs = m.surfs || new Map();
   if (m.surfs.has(key)) return m.surfs.get(key);
-  const E = meshEdges(m), { pos, idx } = m, nt = idx.length / 3, of = new Int32Array(nt).fill(-1), sharp = Math.cos(crease * deg), te = E.te, todo = [], flat = [], nrm = [];
+  const E = meshEdges(m), { pos, idx } = m, nt = idx.length / 3, of = new Int32Array(nt).fill(-1), sharp = Math.cos(crease * deg), te = E.te, todo = [], flat = [], nrm = [], starts = [];
+  const col = m.colors ? m.colors.tri : null;
   let count = 0;
   for (let t0 = 0; t0 < nt; t0++) {
     if (of[t0] >= 0) continue;
-    of[t0] = count; todo.push(t0);
+    of[t0] = count; todo.push(t0); starts.push(t0);
     let sx = 0, sy = 0, sz = 0, fx = 0, fy = 0, fz = 0, first = true, even = true;
     while (todo.length) {
       const t = todo.pop(), a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
@@ -3104,12 +3137,12 @@ function meshSurfaces(m, crease) {
       for (let k = 0; k < 3; k++) {
         const e = te[t * 3 + k]; if (E.open[e] || E.lap[e] || E.cos[e] < sharp) continue;
         const o = E.t0[e] === t ? E.t1[e] : E.t0[e];
-        if (o >= 0 && of[o] < 0) { of[o] = count; todo.push(o); }
+        if (o >= 0 && of[o] < 0 && (!col || col[o] === col[t])) { of[o] = count; todo.push(o); }
       }
     }
     const l = Math.hypot(sx, sy, sz) || 1; flat.push(even); nrm.push([sx / l, sy / l, sz / l]); count++;
   }
-  const out = { of, count, flat, nrm };
+  const out = { of, count, flat, nrm, first: starts };
   if (m.surfs.size >= 6) m.surfs.delete(m.surfs.keys().next().value); // (only the last few crease angles tried are kept)
   m.surfs.set(key, out);
   return out;
@@ -3124,6 +3157,15 @@ function modelSurfaceName(bx, id) {
   const kind = S.flat.map((f, j) => (f && Math.abs(S.nrm[j][up]) > 0.999 ? "end" : f ? "face" : "curved")), mine = kind[i], same = kind.filter(x => x === mine).length;
   const nth = kind.slice(0, i + 1).filter(x => x === mine).length;
   return (mine === "face" ? "Face" : "Curved surface") + (same > 1 ? " " + nth : "");
+}
+// Whether a model's drawn in its file's colors (one that came with them, unless Use the file's colors is off)
+const usesFileColors = bx => !!bx && !!bx.model && bx.model.fileColors !== false && !!(modelOf(bx) || {}).colors;
+// A model surface's color before any of its own: the file's color for it (its first triangle's, as a surface is all one
+// color), or the model's
+function modelFill(bx, i) {
+  const M = bx.model; if (!usesFileColors(bx)) return M.color;
+  const m = modelOf(bx), S = meshSurfaces(m, M.crease);
+  return i < S.count ? m.colors.pal[m.colors.tri[S.first[i]]] || M.color : M.color;
 }
 // A model surface's own settings, each in place of its model's (bx.model.own, by the surface's number)
 const modelOwn = (bx, id) => (bx.model && bx.model.own && bx.model.own[id.slice(1)]) || {};
@@ -3183,6 +3225,9 @@ function drawModel(c, bx, g, k, G, skip = null) {
   const M = bx.model, view = modelView(bx, g, G); if (!view) return;
   const mesh = meshes.get(M.id), { S, sx, sy, order, lit, faces } = view, { tri, er, par } = S, E = meshEdges(mesh), SF = meshSurfaces(mesh, M.crease), of = SF.of;
   const shadesOf = hex => { const rgb = hex2rgb(hex); return Array.from({ length: 32 }, (_, i) => shade(rgb, M.shade ? 0.6 + 0.4 * i / 31 : 1)); }, shades = shadesOf(M.color);
+  // (in the file's colors: each triangle's shades, made for each color as it's first needed)
+  const fileCol = M.fileColors !== false && mesh.colors ? mesh.colors : null, triCol = fileCol && fileCol.tri, palShades = [];
+  const shadesAt = t => palShades[triCol[t]] || (palShades[triCol[t]] = shadesOf(fileCol.pal[triCol[t]] || M.color));
   const lines = M.lines !== "none", all = M.lines === "all", sharp = Math.cos(M.crease * Math.PI / 180), lw = Math.max(M.width, 0.6 / k);
   // each surface's own: hidden or not, its shades and opacity, and its lines' look (0 for the model's)
   const own = M.own || {}, special = Object.keys(own).length > 0 || M.hide.length > 0 || !!skip;
@@ -3199,11 +3244,12 @@ function drawModel(c, bx, g, k, G, skip = null) {
     }
   }
   // (which edges are lines, and whose look each takes, kept with the view until the choices change)
-  const lineKey = [M.lines, M.crease, special ? M.hide.join() + "/" + (skip || "") + "/" + JSON.stringify(own) : ""].join(" "); let drawn = view.lineKey === lineKey ? view.drawn : null;
+  const lineKey = [M.lines, M.crease, fileCol ? 1 : 0, special ? M.hide.join() + "/" + (skip || "") + "/" + JSON.stringify(own) : ""].join(" "); let drawn = view.lineKey === lineKey ? view.drawn : null;
   if (!drawn) {
     drawn = new Uint8Array(E.ne); const pen = new Uint8Array(E.ne);
     if (lines) for (let e = 0; e < E.ne; e++) {
-      drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0)) ? 1 : 0;
+      // (where the file's colors change is a line too, as it bounds a part)
+      drawn[e] = all || (!E.lap[e] && (E.open[e] || E.cos[e] < sharp || faces[E.t0[e]] * faces[E.t1[e]] * (E.same[e] ? -1 : 1) < 0 || (triCol && E.t1[e] >= 0 && triCol[E.t0[e]] !== triCol[E.t1[e]]))) ? 1 : 0;
       if (!special || !drawn[e]) continue;
       // (a line between two surfaces goes with them both: gone only if both are, and in the look of the one given its own)
       const s0 = of[E.t0[e]], s1 = E.t1[e] >= 0 ? of[E.t1[e]] : s0;
@@ -3234,7 +3280,7 @@ function drawModel(c, bx, g, k, G, skip = null) {
     if (special && gone[s]) continue;
     const op = special ? opBy[s] : M.opacity;
     if (op > 0) {
-      const tone = (special && shadeBy[s] ? shadeBy[s] : shades)[lit[t]];
+      const tone = (special && shadeBy[s] ? shadeBy[s] : fileCol ? shadesAt(par[t]) : shades)[lit[t]];
       c.beginPath(); c.moveTo(sx[a], sy[a]); c.lineTo(sx[b], sy[b]); c.lineTo(sx[d], sy[d]); c.closePath();
       c.globalAlpha = op; c.fillStyle = tone; c.fill();
       // (a hair of the same color closes the seams between triangles, which would show as a mesh of light lines)
@@ -3282,9 +3328,16 @@ const upOf = v => (["x", "y", "z"].includes(v) ? v : "z");
 function keepMesh(id, m) {
   m.up = upOf(m.up); m.at = Number.isFinite(m.at) ? m.at : Date.now();
   meshes.set(id, m); meshMissing.delete(id);
-  return meshDB("readwrite", st => st.put({ name: m.name, pos: m.pos, idx: m.idx, thin: !!m.thin, up: m.up, at: m.at }, id));
+  return meshDB("readwrite", st => st.put({ name: m.name, pos: m.pos, idx: m.idx, thin: !!m.thin, up: m.up, at: m.at, colors: m.colors || null }, id));
 }
-const meshFrom = rec => ({ name: rec.name, pos: new Float32Array(rec.pos), idx: new Uint32Array(rec.idx), thin: !!rec.thin, up: upOf(rec.up), at: Number.isFinite(rec.at) ? rec.at : 0 });
+// A mesh's colors from the file, if they're whole: a palette of colors, and each of its `nt` triangles' place in it
+function cleanColors(c, nt) {
+  if (!c || !Array.isArray(c.pal) || !c.pal.length || c.pal.length > 65535 || !c.pal.every(h => typeof h === "string" && /^#[0-9a-f]{6}$/i.test(h))) return null;
+  const tri = c.tri instanceof Uint16Array ? c.tri : ArrayBuffer.isView(c.tri) || Array.isArray(c.tri) ? Uint16Array.from(c.tri) : null;
+  if (!tri || tri.length !== nt || tri.some(v => v >= c.pal.length)) return null;
+  return { pal: c.pal.map(h => h.toLowerCase()), tri };
+}
+const meshFrom = rec => { const idx = new Uint32Array(rec.idx); return { name: rec.name, pos: new Float32Array(rec.pos), idx, thin: !!rec.thin, up: upOf(rec.up), at: Number.isFinite(rec.at) ? rec.at : 0, colors: cleanColors(rec.colors, idx.length / 3) }; };
 // The meshes the drawing names, fetched if they aren't here yet, then the other models kept on the device; and of those
 // not in the drawing, all but the last few imported are forgotten
 const namedMeshes = () => new Set(state.boxes.filter(b => b.model).map(b => b.model.id));
@@ -3311,7 +3364,7 @@ async function pruneMeshes() {
 const bytesB64 = bytes => { let sOut = ""; for (let i = 0; i < bytes.length; i += 0x8000) sOut += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(sOut); };
 function packMeshes() {
   const out = {};
-  for (const b of state.boxes) { const m = modelOf(b); if (m && !m.shape && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, up: m.up, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)) }; }
+  for (const b of state.boxes) { const m = modelOf(b); if (m && !m.shape && !out[b.model.id]) out[b.model.id] = { name: m.name, thin: !!m.thin, up: m.up, pos: bytesB64(new Uint8Array(m.pos.buffer, m.pos.byteOffset, m.pos.byteLength)), idx: bytesB64(new Uint8Array(m.idx.buffer, m.idx.byteOffset, m.idx.byteLength)), ...(m.colors ? { pal: m.colors.pal, col: bytesB64(new Uint8Array(m.colors.tri.buffer, m.colors.tri.byteOffset, m.colors.tri.byteLength)) } : {}) }; }
   return out;
 }
 function unpackMeshes(raw) {
@@ -3321,7 +3374,9 @@ function unpackMeshes(raw) {
       if (!/^[\w-]{4,40}$/.test(id) || !r || typeof r.pos !== "string" || typeof r.idx !== "string") continue;
       const pb = b64bytes(r.pos), ib = b64bytes(r.idx), pos = new Float32Array(pb.buffer.slice(0, pb.length - pb.length % 4)), idx = new Uint32Array(ib.buffer.slice(0, ib.length - ib.length % 4));
       if (!pos.length || idx.length < 3 || idx.length % 3 || idx.some(v => v >= pos.length / 3)) continue;
-      keepMesh(id, { name: typeof r.name === "string" ? r.name.slice(0, 80) : "Model", pos, idx, thin: !!r.thin, up: r.up });
+      let colors = null;
+      if (Array.isArray(r.pal) && typeof r.col === "string") { const cb = b64bytes(r.col); colors = cleanColors({ pal: r.pal, tri: new Uint16Array(cb.buffer.slice(0, cb.length - cb.length % 2)) }, idx.length / 3); }
+      keepMesh(id, { name: typeof r.name === "string" ? r.name.slice(0, 80) : "Model", pos, idx, thin: !!r.thin, up: r.up, colors });
     } catch (e) { /* a mesh that can't be read is left out; its box says it's missing */ }
   }
 }
@@ -3342,9 +3397,9 @@ async function importModel(file) {
     if (file.size > MAX_MODEL_BYTES) throw new Error("it is over " + Math.round(MAX_MODEL_BYTES / 1048576) + " MB");
     toast("Reading " + file.name + "…");
     await new Promise(r => setTimeout(r, 30)); // (so the message shows before the work starts)
-    const raw = await readModel(file.name, await file.arrayBuffer()), mesh = tidyMesh(raw.pos, raw.idx);
+    const raw = await readModel(file.name, await file.arrayBuffer()), mesh = tidyMesh(raw.pos, raw.idx, raw.col);
     const name = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 60) || "Model", id = "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    keepMesh(id, { name, pos: mesh.pos, idx: mesh.idx, thin: !!mesh.from, up: raw.up });
+    keepMesh(id, { name, pos: mesh.pos, idx: mesh.idx, thin: !!mesh.from, up: raw.up, colors: mesh.colors });
     ui.shape = "model:" + id; syncShapeList(); // (it joins the shapes Add shape offers, and is the one chosen)
     addModel(id);
     const n = mesh.idx.length / 3;
@@ -3370,7 +3425,7 @@ function modelNote() {
   const sh = shapeOf(bx);
   if (sh && m) return `${sh.S.name}${sh.kind === "poly" ? " (" + ((POLYHEDRA.find(q => q[0] === sh.n) || [])[1] || "") + ")" : ""}: ${(m.idx.length / 3).toLocaleString()} triangles. It fills its box, so moving, turning and resizing the box does the same to the shape: stretch the box and a sphere becomes an egg, a cylinder a pipe or a disc, and Match its proportions puts it back.${sh.S.of ? " " + sh.S.of + " sets how it's made: few sides give flat faces with an edge between each, many a smooth round." : ""} Up axis and Turn 90° lay it on its side. Click one of its surfaces to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together; a new number of sides or faces makes new surfaces, so what was set on the old ones goes.`;
   if (!m) return meshMissing.has(bx.model.id) ? "This model's shape isn't stored on this device (it was imported somewhere else, or the browser cleared it). Import the file again, or load a setup file saved with it." : "Fetching the model…";
-  return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge. The creases also bound its surfaces: click one to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together. A crease angle that gathers it into different surfaces clears what was set on the old ones.`;
+  return `${bx.model.name}: ${(m.idx.length / 3).toLocaleString()} triangles, ${(m.pos.length / 3).toLocaleString()} points${m.colors ? `, in ${m.colors.pal.length} ${m.colors.pal.length === 1 ? "color" : "colors"} from the file` : ""}. It fills its box, so moving, turning and resizing the box does the same to the model; a box reshaped by its handles stretches it, and Match its proportions puts that right. Up axis and Turn 90° set which way it sits in the box. Its lines are the outline, open edges and creases sharper than the crease angle, or every triangle edge. The creases also bound its surfaces: click one to edit it on its own (its color, opacity and edges, or to hide it), and Shift-click more to edit them together. A crease angle that gathers it into different surfaces clears what was set on the old ones.`;
 }
 
 /* ---------- the ground plane ---------- */
@@ -4536,7 +4591,7 @@ const schema = [
   { id: "boxes", title: "Boxes", rows: [
     { t: "boxlist" },
     { t: "btns", items: [["Add box", addBox, "solid"], ["Duplicate", dupBox, "", hasBox], ["Delete", delBox, "warn", hasBox]] },
-    { t: "note", html: "On the toolbar, choose a shape from the dropdown and press the + beside it to add one: a box, sphere, hemisphere, cylinder, tube, cone, truncated cone, pyramid, prism, wedge, torus, capsule or polyhedron. Each sits in a box of its own, which it fills, like a model. Import, next to it, brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF, AMF or Rhino 3DM file, or drop the file on the page. (A 3DM is read by McNeel's rhino3dm, fetched from the internet the first time one comes in, and brings in the render meshes Rhino saved with it.) It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. A model that's been imported joins the dropdown, under Imported, so the + adds another of it. Models are kept on this device (those in the drawing, and the last " + KEEP_MODELS + " others) and written into a saved setup file." },
+    { t: "note", html: "On the toolbar, choose a shape from the dropdown and press the + beside it to add one: a box, sphere, hemisphere, cylinder, tube, cone, truncated cone, pyramid, prism, wedge, torus, capsule or polyhedron. Each sits in a box of its own, which it fills, like a model. Import, next to it, brings in a 3D model from an OBJ, STL, PLY, OFF, glTF (.glb, or a .gltf with its data inside), 3MF, AMF or Rhino 3DM file, or drop the file on the page. (A 3DM is read by McNeel's rhino3dm, fetched from the internet the first time one comes in, and brings in the render meshes Rhino saved with it, in the colors Rhino shows: each object's layer color, or its own or its material's where it's set to use that. Each color's part is a surface of its own, to pick and edit, and outlined where it meets another. Untick Use the file's colors to draw it all in one Model color.) It arrives in a box of its own, which it fills: move, turn and resize the box and the model goes with it, in every view. STEP and IGES files hold exact CAD surfaces this can't read: export those as one of the others first. A very detailed model is thinned to " + MAX_TRIS.toLocaleString() + " triangles so it stays quick to draw. A model that's been imported joins the dropdown, under Imported, so the + adds another of it. Models are kept on this device (those in the drawing, and the last " + KEEP_MODELS + " others) and written into a saved setup file." },
     { t: "sub", label: "3D model", when: () => hasModel() && !shapeHere() },
     { t: "sub", label: "Shape", when: () => !!shapeHere() },
     { t: "readout", label: () => (shapeHere() ? "About this shape" : modelHere() ? "About this model" : "Model not on this device"), text: modelNote, when: hasModel },
@@ -4544,7 +4599,8 @@ const schema = [
     { t: "select", bind: "boxes.$b.model.faces", label: "Faces", num: true, options: POLYHEDRA.map(([n, name]) => [n, `${n} · ${name}`]), get: () => (shapeHere() ? shapeHere().n : undefined), apply: v => { setShapeN(v); commit(); }, when: () => !!shapeHere() && shapeHere().kind === "poly" },
     { t: "toggle", bind: "boxes.$b.model.up", label: "Up axis", options: [["y", "Y"], ["z", "Z"], ["x", "X"]], when: modelHere },
     { t: "btns", items: [["Turn 90°", turnModel, ""], ["Match its proportions", matchModel, "", () => modelHere() && modelStretched(state.boxes[state.sel], geo())], ["Show all surfaces", () => { state.boxes[state.sel].model.hide = []; commit(); touch(); }, "", () => modelHere() && state.boxes[state.sel].model.hide.length > 0], [() => (shapeHere() ? "Make it a plain box" : "Remove model"), removeModel, "warn"]], when: hasModel },
-    { t: "color", bind: "boxes.$b.model.color", label: "Model color", when: modelHere },
+    { t: "check", bind: "boxes.$b.model.fileColors", label: "Use the file's colors", when: () => modelHere() && !!modelOf(state.boxes[state.sel]).colors },
+    { t: "color", bind: "boxes.$b.model.color", label: "Model color", when: () => modelHere() && !usesFileColors(state.boxes[state.sel]) },
     { t: "range", bind: "boxes.$b.model.opacity", label: "Model opacity", min: 0, max: 1, step: 0.05, hi: 1, when: modelHere },
     { t: "check", bind: "boxes.$b.model.shade", label: "Shade it by which way it faces", when: modelHere },
     { t: "select", bind: "boxes.$b.model.lines", label: "Lines", options: [["outline", "Outline and creases"], ["all", "Every triangle edge"], ["none", "None"]], when: modelHere },
