@@ -1626,20 +1626,24 @@ function ownRays(bx, g, b) {
   }
   return out;
 }
-// The circle a clicked face shows: around the box's middle, square to the axis through that face, wide enough to
-// clear the box. Dragging it turns the box around that axis, which leaves the circle where it is.
+// The circle a clicked face shows: on the face itself, centered on it and square to the axis through it, small enough to
+// sit inside it. Dragging it turns the box around that axis, which leaves the face, and the circle, where they are.
 const ringFace = () => (state.rotateFaces && ui.ring && ui.ring.bi === state.sel && state.boxes[state.sel] ? ui.ring.face : null);
-// Before that, the face under the pointer, on any box, is highlighted for a click to pick it, with its circle ghosted,
-// which the pointer can go on to and grab (see keepLatch)
+// Before that, the face under the pointer, on any box, is highlighted for a click to pick it, with its circle ghosted on
+// it, which the pointer can go on to and grab without leaving the face (see keepLatch)
 const hoverFace = () => (!drag && latch && state.boxes[latch.bi] && surfaceGeo(state.boxes[latch.bi], geo(), latch.face) ? latch : null);
 const latchRing = () => (state.rotateFaces ? hoverFace() : null);
 // The axis through a face or plane: X through the sides across the width, Y through those along it, Z through the top
 // and bottom
 const faceAxis = id => (planeAxis(id) >= 0 ? planeAxis(id) : id === "top" || id === "bottom" ? 2 : id === "s01" || id === "s23" ? 1 : 0);
 function ringOf(bx, face, g) {
-  const F = turnFrame(bx, g), k = faceAxis(face), i = (k + 1) % 3, j = (k + 2) % 3;
-  const side = [Math.abs(F.a), Math.abs(F.c), F.H], r = 0.58 * Math.hypot(side[i], side[j]);
-  return { F, k, r, at: t => a3(F.C, a3(m3(F.ax[i], r * Math.cos(t)), m3(F.ax[j], r * Math.sin(t)))) };
+  const F = turnFrame(bx, g), k = faceAxis(face), i = (k + 1) % 3, j = (k + 2) % 3, ext = [F.a, F.c, F.H];
+  // where the face sits along its axis, from the middle: half the box out to one side or the other, or for a plane, its
+  // share of the way across from corner 0 (see turnFrame for which way each side lies)
+  const pk = planeAxis(face), side = { s30: -0.5, s12: 0.5, s01: -0.5, s23: 0.5, bottom: -0.5, top: 0.5 }[face];
+  const at0 = pk >= 0 ? +face.slice(1) / bx.planes["xyz"[pk]] - 0.5 : side === undefined ? 0 : side;
+  const c = a3(F.C, m3(F.ax[k], at0 * ext[k])), r = 0.36 * Math.min(Math.abs(ext[i]), Math.abs(ext[j]));
+  return { F, k, r, c, at: t => a3(c, a3(m3(F.ax[i], r * Math.cos(t)), m3(F.ax[j], r * Math.sin(t)))) };
 }
 // (a spot behind you through a flat camera has nowhere to go on screen)
 const inFront = (cam, p) => !cam.depthOf || cam.depthOf(p) > 0.02 * l3(p);
@@ -2320,9 +2324,9 @@ function frame() {
   }
   const pk = !drag && hover && hover.type === "pick" && state.boxes[hover.bi], pf = pk && (hover.surf || surfaceGeo(pk, g, hover.face));
   if (pk && hover.surf) markSurface(pk, g, hover.surf, "tint", accent); else if (pf) drawFaceGhost(pf, accent, accent, 0.2);
-  // The face under the pointer, highlighted in the color of its axis (in the accent color without circles), straight away;
-  // the circle ghosted, that of the face the pointer last stopped on (see keepLatch), which can lag a moment behind it; the
-  // solid circle of the face last clicked on the selected box. Over a circle, the face it belongs to stays highlighted.
+  // The face under the pointer, highlighted in the color of its axis (in the accent color without circles), with its circle
+  // ghosted on it (see keepLatch); the solid circle of the face last clicked on the selected box. Over a circle, the face it
+  // belongs to stays highlighted.
   const bx = state.boxes[state.sel], lt = !pf && hoverFace(), lb = lt && state.boxes[lt.bi], ghost = lt && state.rotateFaces && ringOf(lb, lt.face, g);
   const over = !drag && hover && hover.type === "body" && hover.face && state.boxes[hover.bi] ? hover : null, hl = pf ? null : over || lt, hb2 = hl && state.boxes[hl.bi];
   const hk = hl && state.rotateFaces && (hl === lt ? ghost : ringOf(hb2, hl.face, g));
@@ -2364,7 +2368,7 @@ function ringLabel(k, a) {
 }
 // The rotation circle, with a dashed line along its axis, and while it's being dragged the box's angle around it
 function drawRing(R, panel, ghosted = false, over = false) {
-  const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.F.C;
+  const live = !ghosted && drag && drag.type === "ring", color = AXIS_COLORS[R.k], cam = R.F.cam, ax = R.F.ax[R.k], C = R.c; // (its axis, through its middle)
   ctx.save(); ctx.strokeStyle = color; ctx.lineJoin = "round"; ctx.lineCap = "round";
   if (ghosted) ctx.globalAlpha = over ? 0.75 : 0.4; // (`over`: a ghosted circle under the pointer, ready to grab)
   ctx.lineWidth = live || over || (!ghosted && hover && hover.type === "ring" && !hover.ghost) ? 3.5 : 2.25;
@@ -4262,7 +4266,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.showVPs", label: "Show this box's vanishing points", when: () => hasBox() && !isIso() && turned(state.boxes[state.sel]) },
     { t: "check", bind: "boxes.$b.showRays", label: () => (isIso() ? "Show rays from its front faces" : "Show rays from its front faces to them"), when: () => hasBox() && turned(state.boxes[state.sel]) },
     { t: "btns", items: [["Clear rotation", () => { state.boxes[state.sel].rot = { x: 0, y: 0, z: 0 }; commit(); touch(); }, "", () => hasBox() && turned(state.boxes[state.sel])]], when: hasBox },
-    { t: "note", html: "Hover over a face or plane of any box to highlight it and ghost its rotation circle, square to the axis through it: red for X, green for Y, blue for Z (on the selected box, hidden faces too). Hold Alt (⌥) for the face behind it. Go on to the circle, which stays while you head for it, and drag it to turn the box around that axis. Click the face and the circle turns solid, as the face's pop-up opens: drag the circle, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
+    { t: "note", html: "Hover over a face or plane of any box to highlight it and ghost its rotation circle on it, square to the axis through it: red for X, green for Y, blue for Z (on the selected box, hidden faces too). Hold Alt (⌥) for the face behind it. The circle sits inside the face, so move onto it and drag it to turn the box around that axis. Click the face and the circle turns solid, as the face's pop-up opens: drag the circle, or click it to type that axis's angle from the box's default, the same one its slider sets. Its arrows show which way is positive. Dragging a face still moves the box, and its handles reshape it along its own axes. A rotated box gets vanishing points of its own in the same colors, wherever its edges meet on the page, with rays running back to them from the edges and division lines of its front faces. Drag one to turn the box, its edges following the point and the others moving to stay square to them. It catches on the horizon, which keeps a level box level; hold Alt (⌥) to stop that. Rays spaced along a rotated box stay on the page's VPs, spaced as if it weren't rotated." },
     { t: "sub", label: "Size and place", when: hasBox },
     ...[0, 1, 2].map(k => ({ t: "range", bind: "boxes.$b.side" + k, get: () => boxSide(k), set: v => setBoxSide(k, v), label: () => sideLabel(k), min: 1, max: 600, step: 1, lo: 1, hi: 100000, when: hasBox })),
     { t: "check", bind: "boxes.$b.centerH", label: "Center on horizon", when: () => hasBox() && !isIso() },
@@ -5115,31 +5119,12 @@ const CURSORS = { boxvp: "move", ring: "grab", pan: "grab", top: "ns-resize", bo
 // lastPos lets pressing or letting go of the key update it without the mouse moving.
 let lastPos = null, lastReach = "", ringClick = null; // (where the circle was just clicked, for the click event that follows)
 const restoreKey = e => e.metaKey || e.ctrlKey, faceReach = e => (restoreKey(e) ? "restore" : e.shiftKey ? "hide" : e.altKey ? "behind" : "");
-// The face under the pointer stays highlighted, its circle ghosted, while the pointer goes on toward the circle and
-// over empty space near it, so the circle can be grabbed. The way there can cross other faces, so once a circle shows,
-// the circle moves to another face only once the pointer stops on it (for LATCH_MS), not while it passes over. (The face's
-// highlight moves at once: see frame.)
-let latch = null, latchTry = null, latchTimer = 0;
-const LATCH_MS = 100;
+// The face under the pointer, highlighted with its circle ghosted on it. The circle sits inside the face, so the pointer
+// reaches it without leaving the face; on the circle, it stays that face's. Anywhere else, there's none.
+let latch = null;
 function keepLatch(h) {
-  clearTimeout(latchTimer);
-  if (h.type === "ring") { latchTry = null; return; }
-  if (h.type === "body" && h.face) {
-    // (a model's surface under the pointer changes at once: the circle stays the same)
-    if (!latchRing() || (latch && latch.bi === h.bi && latch.face === h.face)) { latch = { bi: h.bi, face: h.face, surf: h.surf }; latchTry = null; return; }
-    latchTry = { bi: h.bi, face: h.face, surf: h.surf };
-    latchTimer = setTimeout(() => { if (latchTry && !drag) { latch = latchTry; latchTry = null; redraw(); } }, LATCH_MS);
-    return;
-  }
-  latchTry = null;
-  // (elsewhere, it stays while the pointer is within the circle's reach: around it, or over the box inside it)
-  const lr = latchRing();
-  if (!lr || !lastPos || !nearRing(ringOf(state.boxes[lr.bi], lr.face, geo()), lastPos, 28)) latch = null;
-}
-function nearRing(R, s, m) {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const pl of ringPaths(R)) for (const p of pl) { const q = toS(p); x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
-  return s.x > x0 - m && s.x < x1 + m && s.y > y0 - m && s.y < y1 + m;
+  if (h.type === "ring") return;
+  latch = h.type === "body" && h.face ? { bi: h.bi, face: h.face, surf: h.surf } : null;
 }
 function showHover(h) {
   const key = x => x && [x.type, x.i, x.bi, x.face, x.ghost, x.surf].join(), was = latch && [latch.bi, latch.face, latch.surf].join();
@@ -5452,7 +5437,7 @@ canvas.addEventListener("wheel", e => {
 }, { passive: false });
 
 window.addEventListener("keyup", reachChanged);
-canvas.addEventListener("pointerleave", () => { lastPos = null; latch = null; latchTry = null; if (hover && ["hidden", "hide", "pick", "body", "ring"].includes(hover.type)) hover = null; redraw(); });
+canvas.addEventListener("pointerleave", () => { lastPos = null; latch = null; if (hover && ["hidden", "hide", "pick", "body", "ring"].includes(hover.type)) hover = null; redraw(); });
 // on a Mac, Ctrl-click would also open the context menu
 canvas.addEventListener("contextmenu", e => { if (e.ctrlKey && hover && hover.type === "hidden") e.preventDefault(); });
 window.addEventListener("keydown", e => {
