@@ -1740,6 +1740,33 @@ function dragTurnedTop(bx, F, i, S, g) {
   const nb = boxFrom3(bx, homeFrom(F, a3(F.C, m3(F.ax[2], (H - F.H) / 2)), F.a, F.c, H), H, g);
   if (nb) Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h });
 }
+// The point a resize by corner i keeps still, as a function of the box's frame: the base corner across from it (the one
+// diagonally opposite), or for a box kept centered on the horizon (which grows evenly above and below it) the middle of
+// the upright edge there. Dragging a base corner keeps that corner put, and the height handle keeps the whole base put.
+const pinOf = (bx, i) => { const j = (i + 2) % 4; return keptCentered(bx) ? F => m3(a3(F.B[j], F.T[j]), 0.5) : F => F.B[j]; };
+// Shift held while resizing: the box grows or shrinks evenly, its sides and height alike, about that point (`pin`), so
+// it keeps its proportions and its footing, from F, the box as it was when Shift went down. The corner held (top corner i
+// with `top`, else base corner i) goes along the line out from the pin through where it was, to the point on it nearest
+// the line of sight through screen point S. Gives the factor that puts it there, or null.
+function evenScale(F, pin, i, top, S) {
+  const P0 = pin(F), D = s3((top ? F.T : F.B)[i], P0), cam = F.cam, r = cam.unproj(cam.wrapS ? cam.wrapS(S) : S);
+  if (!r) return null;
+  const a = d3(D, D), b = d3(D, r), c = d3(r, r), d = d3(D, P0), e = d3(r, P0), den = a * c - b * b;
+  if (!(den > 1e-12 * a * c)) return null; // (looking straight along the line)
+  const k = (b * e - c * d) / den;
+  if (!((e + k * b) / c > 0)) return null; // (nearest it behind you)
+  return Math.max(0.05, Math.min(20, k));
+}
+// Box bx scaled evenly by k about the pin, from frame F, or null where the view can't show it so; and where its corner
+// held lands on screen
+function evenBox(bx, F, pin, k, g) {
+  const P0 = pin(F), H = F.H * k;
+  return boxFrom3(bx, homeFrom(F, a3(P0, m3(s3(F.C, P0), k)), F.a * k, F.c * k, H), H, g);
+}
+function evenCorner(F, pin, i, top, k) {
+  const P0 = pin(F), q = F.cam.proj(a3(P0, m3(s3((top ? F.T : F.B)[i], P0), k)));
+  return q ? P(q.x, q.y) : null;
+}
 // Height for a camera box whose anchor corner sits at unit direction Bu, so that the anchor's top corner
 // lands on screen point S (S's direction is projected onto that corner's vertical plane).
 const TALLEST = 50; // (a box's height reads back as at most this many times its corner's distance from the eye)
@@ -4111,13 +4138,13 @@ function groupMoved(grp, d, g) {
   }
   return out;
 }
-// The group resized as held box bx was, from F0 (bx as the drag began) with its corner `fixed` staying put: bx's sides
-// and height have each grown by some factor, along its own axes, about that corner, and the whole group is scaled by the
-// same factors about the same corner, so each object's size and its place around that corner scale alike. (Another
+// The group resized as held box bx was, from F0 (bx as the drag began) with the point `pin` gives staying put (see pinOf):
+// bx's sides and height have each grown by some factor, along its own axes, about that point, and the whole group is
+// scaled by the same factors about the same point, so each object's size and its place around that corner scale alike. (Another
 // object turned some other way takes each of its sides' share of the scale, staying a box.) A new box for each, or null
 // if any can't be shown so.
-function groupScaled(grp, bx, F0, fixed, g) {
-  const F1 = turnFrame(bx, g), P0 = F0.B[fixed], lam = l3(P0) / (l3(F1.B[fixed]) || 1); // (bx read again, at its old scale)
+function groupScaled(grp, bx, F0, pin, g) {
+  const F1 = turnFrame(bx, g), P0 = pin(F0), lam = l3(P0) / (l3(pin(F1)) || 1); // (bx read again, at its old scale)
   const f = [F1.a * lam / F0.a, F1.c * lam / F0.c, F1.H * lam / F0.H];
   if (!f.every(Number.isFinite)) return null;
   const u = F0.ax.map(n3), lin = v => u.reduce((o, uk, k) => a3(o, m3(uk, f[k] * d3(v, uk))), V3(0, 0, 0));
@@ -4658,7 +4685,7 @@ const schema = [
     { t: "check", bind: "boxes.$b.model.frame", label: "Show the box around it", when: modelHere },
     { t: "select", bind: "boxOrder", label: "Box order", options: [["distance", "By distance"], ["custom", "Custom order"]], when: () => state.boxes.length > 1 },
     { t: "note", html: "The list runs from the box in front to the one at the back. By distance, the nearer box goes in front: boxes share one ground, so the lower on the page the nearer, and a box whose base sits inside another's top stands on it. Drag a box in the list to put it in front of or behind another, which switches to Custom order.", when: () => state.boxes.length > 1 },
-    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, or resize one by its handles to resize them all as one piece, about the corner that stays put. A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
+    { t: "note", html: "Drag a square handle to move a base corner; it snaps to ray crossings. Drag a round handle to set height. Hold Shift while dragging either to scale the box evenly instead, its sides and height alike, about the base corner diagonally across from the one held, which stays put. Drag the body to move the box. Click a face or plane, on any box, to edit it on its own in the pop-up that comes up: whether it shows, the box's turn around the axis through it, whether the rays snap to it, and its own opacity, color, edges, divisions and diagonals, each in place of the box's until Use the box's settings puts them back. With one picked, Shift-click more, on any box, to edit them together (Shift-click one again to drop it). With faces picked on more than one object, those objects also go together: drag any of them to move them all, or resize one by its handles to resize them all as one piece, about the corner that stays put. A shape's or a model's own surfaces are picked the same way, each the area its creases bound: a cylinder's side and its two ends, each face of a pyramid, the whole of a sphere. Otherwise, hold Shift over a face to see it ghosted, as it will look hidden, and Shift-click to hide it. Hold ⌘ (Ctrl) over a hidden face to see a ghost of it, and ⌘-click (Ctrl-click) to bring it back, furthest back first. Hold Alt (⌥) to place freely. ⌘ C, ⌘ X and ⌘ V (Ctrl on Windows) copy, cut and paste the selected box: a paste goes under the pointer, or if the pointer hasn't moved, in place, exactly over the box copied.", when: hasBox },
     { t: "sub", label: "Rotation" },
     { t: "check", bind: "rotateFaces", label: "Rotation circles on faces" },
     ...[["x", "X (width)"], ["y", "Y (length)"], ["z", "Z (height)"]].map(([key, name]) => ({ t: "range", bind: "boxes.$b.rot." + key, set: v => setBoxRot(key, v), label: `Rotate around ${name}, °`, min: 0, max: 360, step: 0.1, lo: 0, hi: 360, wrap: true, when: hasBox })),
@@ -5507,8 +5534,8 @@ const FAR_PX = 72;
 function seenFromAfar(bx, g) { const G = boxGeo(bx, g), pts = [...G.B, ...G.T], xs = pts.map(p => p.x), ys = pts.map(p => p.y); return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * view.z < FAR_PX; }
 const HINTS = {
   pan: "Drag empty space to pan · scroll or pinch to zoom · F fits the view",
-  top: "Drag to set the box height · snaps where rays cross this edge",
-  bottom: "Drag the base corner · snaps to ray intersections · hold Alt to place freely",
+  top: "Drag to set the box height · snaps where rays cross this edge · hold Shift to scale the box evenly",
+  bottom: "Drag the base corner · snaps to ray intersections · hold Shift to scale the box evenly · hold Alt to place freely",
   vp: "Drag the vanishing point along the horizon",
   anchor: "Drag to move the horizon and the VPs together",
   horizon: "Drag to raise or lower eye level",
@@ -5657,11 +5684,11 @@ canvas.addEventListener("pointerdown", e => {
   else if (hit.type === "vp" && g.cam) { drag.cv0 = state.cone.cv; drag.lens0 = clone(state.curvi); drag.cam0 = g.cam; }
   else if (hit.type === "anchor" || hit.type === "horizon" || hit.type === "vp") drag.h0 = { x: state.horizon.x, y: state.horizon.y };
   if ((hit.type === "vp" || hit.type === "anchor" || hit.type === "horizon") && !g.cam) drag.plans = boxPlans(g);
-  // (the objects going along with it, as they are now; resizing goes about the corner that stays put, `stays`)
+  // (the objects going along with it, as they are now; a resize goes about the point that stays put, `pin`)
   if (hit.type === "body" || ((hit.type === "bottom" || hit.type === "top") && state.boxes[state.sel])) {
     const bi = hit.type === "body" ? hit.bi : state.sel;
     drag.group = groupRig(bi, g);
-    if (drag.group && hit.type !== "body") Object.assign(drag, { F0: turnFrame(state.boxes[bi], g), stays: hit.type === "bottom" ? (hit.i + 2) % 4 : hit.i });
+    if (hit.type !== "body") Object.assign(drag, { F0: turnFrame(state.boxes[bi], g), pin: pinOf(state.boxes[bi], hit.i) });
     // (rays spaced along one of them stay put till it's let go, as they do for the box held)
     const rb2 = !drag.rays && drag.group ? rayBox() : null;
     if (rb2 && drag.group.some(o => o.bx === rb2)) drag.rays = clone(rb2);
@@ -5692,6 +5719,7 @@ canvas.addEventListener("pointermove", e => {
     case "pan": view.x = drag.view0.x + s.x - drag.s0.x; view.y = drag.view0.y + s.y - drag.s0.y; redraw(); return;
     case "bottom": {
       const bx = state.boxes[state.sel];
+      if (resizeEvenly(e, bx, w, g, useSnap)) break;
       let m = w; if (useSnap) { const sp = snapPoint(w, drag.group ? [state.sel, ...drag.group.map(o => o.i)] : state.sel); if (sp) { m = sp.pt; snapMark = sp; } }
       if (drag.turn) { dragTurnedBase(bx, drag.turn, drag.i, m, g); break; }
       // A base can't cross eye level (its far edges would shoot back out of the VPs), so the dragged
@@ -5725,6 +5753,7 @@ canvas.addEventListener("pointermove", e => {
     }
     case "top": {
       const bx = state.boxes[state.sel];
+      if (resizeEvenly(e, bx, w, g, useSnap)) break;
       if (drag.turn) dragTurnedTop(bx, drag.turn, drag.i, w, g);
       else if (keptCentered(bx)) {
         // a box kept centered on the horizon grows evenly above and below it, with this top under the pointer
@@ -5815,9 +5844,34 @@ canvas.addEventListener("pointermove", e => {
     }
   }
   // (only once the held box has changed: the others follow it, or it goes back to where it was if they can't)
-  if (sized && ["b0", "b2", "h", "H"].some(key => sized[key] !== was[key])) { const list = groupScaled(drag.group, sized, drag.F0, drag.stays, g); if (list) groupSet(drag.group, list); else Object.assign(sized, was); }
+  if (sized && ["b0", "b2", "h", "H"].some(key => sized[key] !== was[key])) { const list = groupScaled(drag.group, sized, drag.F0, drag.pin, g); if (list) groupSet(drag.group, list); else Object.assign(sized, was); }
   touch();
 });
+// Shift held while dragging a corner or height handle scales the box evenly (see evenScale), and letting go of Shift carries
+// on the usual way from where the box is then. True while Shift is held. Snapping puts the corner held on the snap
+// point when the line it moves along passes close enough to it.
+function resizeEvenly(e, bx, w, g, useSnap) {
+  if (!e.shiftKey || !drag.pin) {
+    if (drag.even) {
+      // (the usual resize goes on from the box as it is now)
+      drag.even = null;
+      if (drag.turn) drag.turn = turnFrame(bx, g);
+      else if (drag.type === "top") { const G = boxGeo(bx, g); if (g.cam) drag.base3 = n3(G.B3[drag.i]); else drag.base = P(G.B[drag.i].x, G.B[drag.i].y); }
+    }
+    return false;
+  }
+  if (!drag.even) drag.even = { F: turnFrame(bx, g), k: 1 };
+  const E = drag.even, top = drag.type === "top", sp = useSnap ? snapPoint(w, drag.group ? [state.sel, ...drag.group.map(o => o.i)] : state.sel) : null;
+  let k = null;
+  if (sp) { const ks = evenScale(E.F, drag.pin, drag.i, top, sp.pt), at = ks !== null && evenCorner(E.F, drag.pin, drag.i, top, ks); if (at && len(sub(at, sp.pt)) * view.z <= state.snap.radius) { k = ks; snapMark = sp; } }
+  if (k === null) k = evenScale(E.F, drag.pin, drag.i, top, w);
+  if (k === null) return true;
+  // (short of where the view can show it, as far toward that as it can go)
+  let nb = evenBox(bx, E.F, drag.pin, k, g), got = k;
+  if (!nb) { let lo = E.k, hi = k; for (let n = 0; n < 16; n++) { const t = (lo + hi) / 2, b = evenBox(bx, E.F, drag.pin, t, g); if (b) { lo = t; nb = b; } else hi = t; } got = lo; }
+  if (nb) { Object.assign(bx, { b0: nb.b0, b2: nb.b2, H: nb.H, h: nb.h }); E.k = got; }
+  return true;
+}
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
